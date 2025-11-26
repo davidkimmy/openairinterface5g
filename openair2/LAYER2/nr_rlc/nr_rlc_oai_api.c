@@ -58,6 +58,7 @@ static int      nr_rlc_current_time_last_subframe;
 int nr_rlc_packet_counter = 0;
 uint64_t nr_rlc_last_check_time = 0;
 
+#ifdef IP_TRAFFIC_MONITORING
 static uint64_t get_current_time_ms() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);  // Monotonic time since boot
@@ -76,11 +77,11 @@ void nr_ue_SL_UEAsistance_trigger(int module_id, int frame, int ch_id, bool is_p
   itti_send_msg_to_task(TASK_RRC_NRUE, GNB_MODULE_ID_TO_INSTANCE(module_id), message_p);
 }
 
-static void monitor_trafffic_pattern(const module_id_t         module_idP,
-                                     const frame_t             frameP,
-                                     nr_rlc_entity_t           *rb,
-                                     const logical_chan_id_t   channel_idP,
-                                     bool                      is_pc5_link)
+static void monitor_traffic_pattern(const module_id_t         module_idP,
+                                    const frame_t             frameP,
+                                    nr_rlc_entity_t           *rb,
+                                    const logical_chan_id_t   channel_idP,
+                                    bool                      is_pc5_link)
 {
   static uint32_t traffic_pattern_type;
   uint64_t now = get_current_time_ms();
@@ -129,6 +130,7 @@ static void monitor_trafffic_pattern(const module_id_t         module_idP,
     nr_rlc_last_check_time = now;
   }
 }
+#endif
 
 void mac_rlc_data_ind (const module_id_t         module_idP,
                        const rnti_t              rntiP,
@@ -187,9 +189,11 @@ void mac_rlc_data_ind (const module_id_t         module_idP,
     LOG_D(RLC, "RB found! (channel ID %d) \n", channel_idP);
     rb->set_time(rb, nr_rlc_current_time);
     rb->recv_pdu(rb, buffer_pP, tb_sizeP);
-    if(channel_idP > 3 && is_pc5_link == 1 && enb_flagP == 0) {
-      monitor_trafffic_pattern(module_idP, frameP, rb, channel_idP, is_pc5_link);
+#ifdef IP_TRAFFIC_MONITORING
+    if(channel_idP >= 3 && is_pc5_link == 1 && enb_flagP == 0) {
+      monitor_traffic_pattern(module_idP, frameP, rb, channel_idP, is_pc5_link);
     }
+#endif
   } else {
     LOG_E(RLC, "%s:%d:%s: fatal: no RB found (channel ID %d)\n",
           __FILE__, __LINE__, __FUNCTION__, channel_idP);

@@ -53,7 +53,7 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
   uint8_t relay_type = get_softmodem_params()->relay_type;
   uint8_t header_size;
   uint8_t src_id;
-  uint8_t dest_id;
+  uint8_t ue_id;
   U2NHeader_t u2n_header;
   U2UHeader_t u2u_header;
   if (relay_type == U2N) {
@@ -74,7 +74,7 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
   nr_srap_manager_t  *m = get_nr_srap_manager();
   char *entity_types[] = {"NR_SRAP_UU", "NR_SRAP_PC5"};
   src_id = relay_type == U2N ? -1 : u2u_header.octet2;
-  dest_id = relay_type == U2N ? u2n_header.octet2 : u2u_header.octet3;
+  ue_id = relay_type == U2N ? u2n_header.octet2 : u2u_header.octet3;
   bool is_relay_ue = get_softmodem_params()->is_relay_ue;
   if (is_relay_ue) {
     if (entity->type == NR_SRAP_PC5) {
@@ -85,10 +85,10 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
     AssertFatal(forwarding_entity != NULL, "Forwarding entity is NULL!!!");
     LOG_D(NR_SRAP, "%s: Received SRAP SDU from %s; forwarding to %s with rb_id %ld.\n", __FUNCTION__, entity_types[entity->type], entity_types[forwarding_entity->type], rb_id);
     ctxt_pP->rntiMaybeUEid = forwarding_entity->rnti;
-    srap_forward_sdu_drb(ctxt_pP, forwarding_entity, srb_flagP, MBMS_flagP, buffer, size, rb_id, src_id, dest_id);
+    srap_forward_sdu_drb(ctxt_pP, forwarding_entity, srb_flagP, MBMS_flagP, buffer, size, rb_id, src_id, ue_id);
   }
   if (!is_relay_ue || (!is_relay_ue && (entity->type == NR_SRAP_UU))) {
-    LOG_D(NR_SRAP, "Sending upstream: src_id = %d  dest_id = %d\n", src_id, dest_id);
+    LOG_D(NR_SRAP, "Sending sdu: rb_id %lu ue_id = %d\n", rb_id, ue_id);
     if (entity->type == NR_SRAP_PC5) {
       LOG_D(NR_SRAP, "Sending PC5 SRAP indication to above layer from SRAP %s\n", __FUNCTION__);
     } else {
