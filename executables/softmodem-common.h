@@ -112,6 +112,7 @@ extern "C"
 #define CONFIG_HLP_RELAY_TYPE    "Set Relay type to represent No Relay (0), U2N (1) and U2U (2) cases. Later this will be properly configured from RRC."
 #define CONFIG_HLP_REMOTE_UE_ID  "Set Remote UE ID to fill in SRAP header"
 #define CONFIG_HLP_IS_RELAY_UE   "Set to configure a UE Relay role"
+#define CONFIG_HLP_IP_DEMO       "set demo mode for NR sidelink (0: normal mode (not demo mode), 1: drb_id update per destination IP address, 2: IP header decoding)\n"
 
 /*-----------------------------------------------------------------------------------------------------------------------------------------------------*/
 /*                                            command line parameters common to eNodeB and UE                                                          */
@@ -149,6 +150,7 @@ extern "C"
 #define RELAY_TYPE          softmodem_params.relay_type
 #define REMOTE_UE_ID        softmodem_params.remote_ue_id
 #define IS_RELAY_UE         softmodem_params.is_relay_ue
+#define IP_DEMO             softmodem_params.ip_demo
 
 #define REORDER_THREAD_DISABLE    softmodem_params.reorder_thread_disable
 #define DEFAULT_RFCONFIG_FILE    "/usr/local/etc/syriq/ue.band7.tm1.PRB100.NR40.dat";
@@ -199,6 +201,7 @@ extern int usrp_tx_thread;
   {"relay-type",            CONFIG_HLP_RELAY_TYPE,    0,              .u8ptr=&RELAY_TYPE,                     .defintval=0,             TYPE_UINT8,  0},  \
   {"remote-ue-id",          CONFIG_HLP_REMOTE_UE_ID,  0,              .u8ptr=&REMOTE_UE_ID,                   .defintval=0,             TYPE_UINT8,  0},  \
   {"is-relay-ue",           CONFIG_HLP_IS_RELAY_UE,   0,              .u8ptr=&IS_RELAY_UE,                    .defintval=0,             TYPE_UINT8,  0},  \
+  {"ip-demo",               CONFIG_HLP_IP_DEMO,       0,              .u8ptr=&IP_DEMO,                        .defintval=0,             TYPE_UINT8,  0},  \
 }
 // clang-format on
 
@@ -241,6 +244,7 @@ extern int usrp_tx_thread;
                {"MONOLITHIC", "PNF", "VNF","UE_STUB_PNF","UE_STUB_OFFNET","STANDALONE_PNF"}, \
                {NFAPI_MONOLITHIC, NFAPI_MODE_PNF, NFAPI_MODE_VNF,NFAPI_UE_STUB_PNF,NFAPI_UE_STUB_OFFNET,NFAPI_MODE_STANDALONE_PNF}, \
                6 } }, \
+    { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
@@ -364,6 +368,7 @@ typedef struct {
   uint8_t        relay_type;
   uint8_t        remote_ue_id;
   uint8_t        is_relay_ue;
+  uint8_t        ip_demo;
 } softmodem_params_t;
 
 extern uint64_t get_softmodem_optmask(void);
