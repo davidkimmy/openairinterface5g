@@ -25,13 +25,13 @@ In this tutorial, we describe how to configure and run a **5G NR sidelink (SL)**
 This implementation extends the **OpenAirInterface (OAI)** codebase with support for **5G NR sidelink (SL)**, enabling both mode 1 and mode 2 operations. In SL mode 1, device-to-device (D2D) communication is scheduled and managed with assistance from the network infrastructure, while in SL mode 2, UEs communicate directly in a fully distributed manner without relying on network support. Currently, the following features are implemented:
 
 #### &emsp; ✅ **Key Features**
-&emsp;&emsp; ◉ **SL Synchronization:**<br>&emsp;&emsp;&emsp;&emsp; Devices can autonomously synchronize over the PC5 interface, Sidelink, using predefined synchronization resources.<br>
-&emsp;&emsp; ◉ **SL Configuration:**<br>&emsp;&emsp;&emsp;&emsp; Pre-configured SL resource pools are supported to enable flexible networking scenarios.<br>
+&emsp;&emsp; ◉ **SL Synchronization:**<br>&emsp;&emsp;&emsp;&emsp; Devices can achieve synchronization over the PC5 interface (Sidelink) either by using predefined synchronization resources or by utilizing the resources provided through a Configured Grant Type 1.<br>
+&emsp;&emsp; ◉ **SL Configuration:**<br>&emsp;&emsp;&emsp;&emsp; Pre-configured Sidelink resource configuration for SL Mode 2, as well as Configured Grant Type 1 configuration for SL Mode 1, are supported to provide greater flexibility in networking scenarios.<br>
 &emsp;&emsp; ◉ **Data Transmission and Reception:**<br>&emsp;&emsp;&emsp;&emsp; End-to-end transmission and reception of SL data packets, including SL-SCH and SL-PSCCH channel handling.<br>
 &emsp;&emsp; ◉ **CSI Reporting:**<br>&emsp;&emsp;&emsp;&emsp; Support for basic Channel State Information (CSI) reporting mechanisms for better link adaptation.<br>
-&emsp;&emsp; ◉ **Basic Scheduling:**<br>&emsp;&emsp;&emsp;&emsp; A basic SL MAC scheduler has been implemented to enable time resource allocations in mode 2.<br>
-&emsp;&emsp; ◉ **Resource Pool Scheme:**<br>&emsp;&emsp;&emsp;&emsp; Static and pre-configured resource pool definitions are supported to enable mode 2 communication.<br>
-&emsp;&emsp; ◉ **Data Feedback:**<br>&emsp;&emsp;&emsp;&emsp; Provided a data feedback for 5G SL communication to share the reception status with the transmitter.<br>
+&emsp;&emsp; ◉ **Basic Scheduling:**<br>&emsp;&emsp;&emsp;&emsp; A basic Sidelink MAC scheduler has been implemented to manage time resource allocations in Mode 2, and it has been enhanced to support Mode 1 transmissions using Configured Grant Type 1 configurations.<br>
+&emsp;&emsp; ◉ **Resource Pool Scheme:**<br>&emsp;&emsp;&emsp;&emsp; Static and pre-configured resource pools are supported to facilitate Mode 2 communication, while Configured Grant Type 1 is supported for resource pool configurations in SL Mode 1.<br>
+&emsp;&emsp; ◉ **Data Feedback:**<br>&emsp;&emsp;&emsp;&emsp; Provided a data feedback for 5G SL communication to share the reception status with the transmitter in 5G SL both modes.<br>
 &emsp;&emsp; ◉ **Hybrid Automatic Repeat reQuest:**<br>&emsp;&emsp;&emsp;&emsp; Enhances reliability and throughput by combining error detection with retransmission and error correction.<br>
 &emsp;&emsp; ◉ **UE-to-Network (U2N) Relay**<br>&emsp;&emsp;&emsp;&emsp; U2N Relay capabilities are supported to facilitate the communication between Remote UE and gNB via Relay UE.<br>
 &emsp;&emsp; ◉ **UE Radio Resource Allocation via Configured Grant (CG) type 1**<br>&emsp;&emsp;&emsp;&emsp; Relay UE and Remote UE radio resouces are allocated via RRC message from gNB.<br>
@@ -52,7 +52,9 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp;&emsp;&emsp;🔹 CSI Reference Signals (CSI-RS)<br>
 &emsp;&emsp;&emsp;&emsp;🔹 SINR Estimation<br>
 &emsp;&emsp; ◉ Basic MAC scheduling for mode 2 operation<br>
+&emsp;&emsp; ◉ Basic Configured Grant Type 1 based MAC scheduling for mode 1 operation<br>
 &emsp;&emsp; ◉ Resource pool configuration (pre-configured/static)<br>
+&emsp;&emsp; ◉ Dedicated Sidelink Resource pool configuration<br>
 &emsp;&emsp; ◉ Dynamic MCS support (currently up to MCS 9)<br>
 &emsp;&emsp; ◉ HARQ retransmission handling (basic)<br>
 &emsp;&emsp; ◉ SL pre-configuration support (static configuration via .conf files)<br>
@@ -62,6 +64,7 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp; ◉ 5G Sidelink SL-SRB1 setup<br>
 &emsp;&emsp; ◉ Control plane RRC message update for Sidelink Radio Resource Allocation<br>
 &emsp;&emsp; ◉ 5G Sidelink SLSS ID update for synchronization via SSSB<br>
+&emsp;&emsp; ◉ Separate PC5 and Uu entities for RLC, SRAP, PDCP layers at Relay UE<br>
 
 
 ### 3.2 Missing Features or Features Needing Updates
@@ -91,7 +94,7 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 
 &emsp;&emsp;✅ Working Setup:<br>
 &emsp;&emsp;&emsp;&emsp; ◉ Two UE devices communicating over SL mode 2 using Ettus B210 SDRs basic SL transmission and reception are confirmed functional in this setup<br>
-&emsp;&emsp;&emsp;&emsp; ◉ Three node Relay scenario (Remote UE, Relay UE and gNB) is working only on RFSIM<br>
+&emsp;&emsp;&emsp;&emsp; ◉ Three node Relay scenario (Remote UE, Relay UE and gNB) is working on RFSIM and B210s setup; At present, the implementation supports MCS indices up to 9 (MCS 0–9) only.<br>
 &emsp;&emsp;❌ Unsupported or Non-Functional Setup:<br>
 &emsp;&emsp;&emsp;&emsp; ◉ Ettus N310 devices: Current implementation does not work. Debugging in work.<br>
 
@@ -154,6 +157,7 @@ For the implementation of CG type 1 resource allocation, we applied the followin
 &emsp;&emsp; ◉ parsing of configuration message and adoptation.<br>
 &emsp;&emsp; ◉ RRC message exchange through SL-SRB1 entity over PC5 interface.<br>
 
+Based on the received Configured Grant Type 1 configurations, the SL MAC scheduler determines the transmission opportunities and allocates the corresponding sidelink resources for UE data transmission.
 
 ### 6.3 **Pre-requisite: Core Network**
 
