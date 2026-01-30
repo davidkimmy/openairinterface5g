@@ -355,8 +355,9 @@ void free_nr_sl_SetupRelease_SL_ConfigDedicatedNR_r16(NR_SetupRelease_SL_ConfigD
       if (nr_sl_PHY_MAC_RLC_Config->sl_CSI_Acquisition_r16)
         free_and_zero(nr_sl_PHY_MAC_RLC_Config->sl_CSI_Acquisition_r16);
 
-      if (nr_sl_PHY_MAC_RLC_Config->sl_ScheduledConfig_r16)
-        free_nr_sl_ScheduledConfig_r16(nr_sl_PHY_MAC_RLC_Config->sl_ScheduledConfig_r16);
+      // TODO: Need to free the following on appropriate place as it is regularly used by "get_scheduled_slots_for_sl_ue()"
+      // if (nr_sl_PHY_MAC_RLC_Config->sl_ScheduledConfig_r16)
+      //   free_nr_sl_ScheduledConfig_r16(nr_sl_PHY_MAC_RLC_Config->sl_ScheduledConfig_r16);
 
       free_and_zero(nr_sl_PHY_MAC_RLC_Config);
     }

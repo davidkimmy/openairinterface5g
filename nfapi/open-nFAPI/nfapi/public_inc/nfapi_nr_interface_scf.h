@@ -1284,6 +1284,7 @@ typedef struct
 
   uint8_t  sr_flag;
   uint8_t  bit_len_harq;
+  uint16_t bit_len_sl_harq_summary;
   uint16_t bit_len_csi_part1;
   uint16_t bit_len_csi_part2;
 

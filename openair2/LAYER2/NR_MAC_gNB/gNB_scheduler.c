@@ -238,6 +238,12 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, frame_t frame, sub_frame_
     nr_schedule_RA(module_idP, frame, slot, &sched_info->UL_dci_req, &sched_info->DL_req, &sched_info->TX_req);
   }
 
+  // Insert here pucch scheduling for harq summary
+  NR_UE_sched_ctrl_t *sched_ctrl = NULL;
+  NR_UE_info_t *UE_info = NULL;
+  if (get_softmodem_params()->sl_mode == 1)
+    UE_info = set_sl_fb_schedule(gNB, frame, slot, sched_ctrl);
+
   // This schedules the DCI for Uplink and subsequently PUSCH
   nr_schedule_ulsch(module_idP, frame, slot, &sched_info->UL_dci_req);
 
@@ -248,7 +254,15 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, frame_t frame, sub_frame_
 
   nr_sr_reporting(gNB, frame, slot);
 
-  nr_schedule_pucch(gNB, frame, slot);
+  bool is_feedback = false;
+  if (UE_info)
+    is_feedback = is_fb_time(UE_info, frame, slot);
+
+  if(!is_feedback)
+    nr_schedule_pucch(gNB, frame, slot);
+
+  if(is_feedback)
+    nr_schedule_sl_pucch(gNB, frame, slot);
 
   /* TODO: we copy from gNB->UL_tti_req_ahead[0][current_index], ie. CC_id == 0,
    * is more than 1 CC supported?
@@ -261,3 +275,119 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, frame_t frame, sub_frame_
   NR_SCHED_UNLOCK(&gNB->sched_lock);
   VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_gNB_DLSCH_ULSCH_SCHEDULER,VCD_FUNCTION_OUT);
 }
+
+int compare_frame_slots(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1, uint16_t frame2, uint8_t slot2)
+{
+  NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+  const int mu = ul_bwp->scs;
+  const int num_slots_frame = nr_slots_per_frame[mu];
+  uint32_t total_slots = num_slots_frame * 1024;
+
+  int t1 = frame1 * num_slots_frame + slot1;
+  int t2 = frame2 * num_slots_frame + slot2;
+
+  if (t1 == t2)
+    return 0;
+
+  /* forward distance from t1 to t2 with wrap-around */
+  int diff = (t2 - t1 + total_slots) % total_slots;
+
+  /* If t2 is within half the cycle ahead of t1, t2 is later */
+  if (diff < total_slots / 2)
+    return 1;   // time2 is later
+  else
+    return -1;  // time1 is later
+}
+
+void add_feedback_event(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint16_t fb_frame, uint8_t fb_slot) {
+  NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
+  /* Prefer empty slot */
+  for (uint8_t i = 0; i < 2; i++) {
+    if (!sched_ctrl->fb_events[i].valid) {
+      sched_ctrl->fb_events[i] = (feedback_event_t){fb_frame, fb_slot, 1};
+      return;
+    }
+  }
+
+  /* Both slots full: update the earlier one */
+  int first_is_earlier = compare_frame_slots(UE, sched_ctrl->fb_events[0].frame, sched_ctrl->fb_events[0].slot, sched_ctrl->fb_events[1].frame, sched_ctrl->fb_events[1].slot);
+  if (first_is_earlier == 1) {
+    sched_ctrl->fb_events[0] = (feedback_event_t){fb_frame, fb_slot, 1};
+  } else {
+    sched_ctrl->fb_events[1] = (feedback_event_t){fb_frame, fb_slot, 1};
+  }
+}
+
+bool is_fb_time(NR_UE_info_t *UE, uint16_t current_frame, uint8_t current_slot) {
+  if (UE == NULL)
+    return false;
+  NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
+  if (sched_ctrl == NULL)
+    return false;
+  for (uint8_t i = 0; i < 2; i++) {
+    if (compare_frame_slots(UE, current_frame, current_slot,
+                            sched_ctrl->fb_events[i].frame,
+                            sched_ctrl->fb_events[i].slot) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/*
+ * Computes time difference between (f1,s1) and (f2,s2)
+ * Result is the number of slots from time1 → time2
+ * Range: 0 to TOTAL_SLOTS-1
+ */
+uint32_t diff_frame_slot(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1,
+                         uint16_t frame2, uint8_t slot2)
+{
+  NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+  const int mu = ul_bwp->scs;
+  const int num_slots_frame = nr_slots_per_frame[mu];
+  uint32_t total_slots = num_slots_frame * 1024;
+
+  int32_t t1 = (frame1 * num_slots_frame) + slot1;
+  int32_t t2 = (frame2 * num_slots_frame) + slot2;
+
+  int32_t diff = t2 - t1;
+  /* Handle wrap-around */
+  if (diff < 0)
+      diff += total_slots;
+
+  return diff;
+}
+
+void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint32_t num_slots_per_cg_period, uint16_t fb_frame, uint8_t fb_slot) {
+  static uint32_t slot_counter;
+  static bool first_fb_scheduled;
+  static uint16_t prev_frame = 0;
+  static uint8_t prev_slot = 0;
+
+  bool sched_cg_event =
+      (slot_counter == 0 && !first_fb_scheduled) ||
+      (slot_counter == num_slots_per_cg_period);
+
+  if (sched_cg_event) {
+    slot_counter = 0;
+
+    if (!first_fb_scheduled) {
+      first_fb_scheduled = true;
+      prev_frame = frame;
+      prev_slot = slot;
+    }
+
+    add_feedback_event(UE, frame, slot, fb_frame, fb_slot);
+    LOG_D(NR_MAC,
+          "CG START at %u.%u → FB scheduled at %4u.%2u slot_counter %u\n",
+          frame, slot, fb_frame, fb_slot, slot_counter);
+  }
+
+  if (first_fb_scheduled) {
+    uint16_t diff = diff_frame_slot(UE, prev_frame, prev_slot, frame, slot);
+    slot_counter += diff;
+    prev_frame = frame;
+    prev_slot = slot;
+  }
+}
+

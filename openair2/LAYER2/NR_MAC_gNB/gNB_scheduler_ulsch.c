@@ -728,6 +728,11 @@ static void _nr_rx_sdu(const module_id_t gnb_mod_idP,
         }
 
         NR_UE_info_t *UE_msg3_stage = UE ? UE : add_new_nr_ue(gNB_mac, ra->rnti, ra->CellGroup);
+        UE_msg3_stage->NR_SL_MAC_PARAMS = CALLOC(1, sizeof(sl_nr_mac_params_t));
+        UE_msg3_stage->NR_SL_MAC_PARAMS->sl_tx_res_pool = CALLOC(1, sizeof(NR_SL_ResourcePool_r16_t));
+        UE_msg3_stage->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1 = CALLOC(1, sizeof(struct NR_SL_ResourcePool_r16__ext1));
+        UE_msg3_stage->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16 = CALLOC(1, sizeof(BIT_STRING_t));
+
         if (!UE_msg3_stage) {
           LOG_W(NR_MAC, "Random Access %i discarded at state %i (TC_RNTI %04x RNTI %04x): max number of users achieved!\n", i, ra->state, ra->rnti, current_rnti);
 
@@ -1910,6 +1915,53 @@ static void pf_ul(module_id_t module_id,
   }
 }
 
+static void exclude_sl_pucch_resources(uint16_t *vrb_map_UL,
+                                       uint16_t bwpStart,
+                                       uint16_t pucch_start_prb,
+                                       uint16_t pucch_nrof_prbs,
+                                       uint16_t pucch_symb_mask) {
+  for (int prb = 0; prb < pucch_nrof_prbs; prb++) {
+    int rb = bwpStart + pucch_start_prb + prb;
+    vrb_map_UL[rb] |= pucch_symb_mask;
+  }
+}
+
+void avoid_sl_pucch_resources(gNB_MAC_INST *nr_mac,
+                              NR_ServingCellConfigCommon_t *scc,
+                              NR_UE_sched_ctrl_t *sched_ctrl,
+                              NR_UE_UL_BWP_t *current_BWP,
+                              uint16_t *vrb_map_UL,
+                              uint16_t bwpStart,
+                              int sched_frame,
+                              int sched_slot,
+                              int mu,
+                              int CC_id) {
+  const int n_slots_frame = nr_slots_per_frame[mu];
+  const NR_TDD_UL_DL_Pattern_t *tdd = scc->tdd_UL_DL_ConfigurationCommon ? &scc->tdd_UL_DL_ConfigurationCommon->pattern1 : NULL;
+  AssertFatal(tdd || nr_mac->common_channels[CC_id].frame_type == FDD, "Dynamic TDD not handled yet\n");
+
+  int pucch_index = get_pucch_index(sched_frame, sched_slot, n_slots_frame, tdd, sched_ctrl->sched_pucch_size);
+  NR_sched_pucch_t *sched_pucch = &sched_ctrl->sched_pucch[pucch_index];
+  NR_PUCCH_Config_t *pucch_Config = current_BWP->sl_pucch_Config;
+  if (pucch_Config) {
+    const int m = pucch_Config->resourceToAddModList->list.count;
+    for (int j = 0; j < m; j++) {
+      NR_PUCCH_Resource_t *pucchres = pucch_Config->resourceToAddModList->list.array[j];
+      uint64_t mask = 0;
+      /* Exclude SL-PUCCH resources (Relay UE HARQ feedback to gNB) */
+      if (sched_pucch->sl_pucch_active) {
+        mask = SL_to_bitmap(pucchres->format.choice.format2->startingSymbolIndex, pucchres->format.choice.format2->nrofSymbols);
+        int nrofPRBs = pucchres->format.choice.format2->nrofPRBs;
+        exclude_sl_pucch_resources(vrb_map_UL,
+                                   bwpStart,
+                                   pucchres->startingPRB,
+                                   nrofPRBs,
+                                   mask);
+      }
+    }
+  }
+}
+
 static bool nr_fr1_ulsch_preprocessor(module_id_t module_id, frame_t frame, sub_frame_t slot)
 {
   gNB_MAC_INST *nr_mac = RC.nrmac[module_id];
@@ -1965,6 +2017,8 @@ static bool nr_fr1_ulsch_preprocessor(module_id_t module_id, frame_t frame, sub_
 
   const uint16_t bwpSize = current_BWP->BWPSize;
   const uint16_t bwpStart = current_BWP->BWPStart;
+
+  avoid_sl_pucch_resources(nr_mac, scc, sched_ctrl, current_BWP, vrb_map_UL, bwpStart, sched_frame, sched_slot, mu, CC_id);
 
   const int startSymbolAndLength = tdaList->list.array[tda]->startSymbolAndLength;
   int startSymbolIndex, nrOfSymbols;

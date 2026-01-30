@@ -434,7 +434,7 @@ int main(int argc, char **argv)
   UE->frame_parms.nb_antennas_rx = 1;
 
   //phy_init_nr_top(frame_parms);
-  if (init_nr_ue_signal(UE, 1) != 0) {
+  if (init_nr_ue_signal(UE, 1, false) != 0) {
     printf("Error at UE NR initialisation.\n");
     exit(-1);
   }
@@ -628,7 +628,7 @@ int main(int argc, char **argv)
     free(gNB->gNB_config.tdd_table.max_tdd_periodicity_list[i].max_num_of_symbol_per_slot_list);
   free(gNB->gNB_config.tdd_table.max_tdd_periodicity_list);
 
-  term_nr_ue_signal(UE, 1);
+  term_nr_ue_signal(UE, 1, false);
   free(UE);
 
   phy_free_nr_gNB(gNB);

@@ -616,7 +616,7 @@ int main(int argc, char **argv)
   if(eps!=0.0)
 	UE->UE_fo_compensation = 1; // if a frequency offset is set then perform fo estimation and compensation
 
-  if (init_nr_ue_signal(UE, 1) != 0) {
+  if (init_nr_ue_signal(UE, 1, false) != 0) {
     printf("Error at UE NR initialisation\n");
     exit(-1);
   }
@@ -861,7 +861,7 @@ int main(int argc, char **argv)
   free(RC.gNB[0]);
   free(RC.gNB);
 
-  term_nr_ue_signal(UE, 1);
+  term_nr_ue_signal(UE, 1, false);
   free(UE);
 
   for (i=0; i<2; i++) {

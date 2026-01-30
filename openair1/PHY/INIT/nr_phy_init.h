@@ -33,8 +33,8 @@ int nr_init_frame_parms_ue_sl(NR_DL_FRAME_PARMS *fp,
                               sl_nr_phy_config_request_t* config,
                               int threequarter_fs,
                               uint32_t ofdm_offset_divisor);
-int init_nr_ue_signal(PHY_VARS_NR_UE *ue,int nb_connected_eNB);
-void term_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB);
+int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_eNB, bool is_sl);
+void term_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB, bool is_sl);
 void init_nr_ue_transport(PHY_VARS_NR_UE *ue);
 void init_N_TA_offset(PHY_VARS_NR_UE *ue);
 void nr_dump_frame_parms(NR_DL_FRAME_PARMS *frame_parms);

@@ -34,6 +34,7 @@
 #include "common/ran_context.h"
 #include "common/utils/nr/nr_common.h"
 #include "nfapi/oai_integration/vendor_ext.h"
+#include "RRC/NR/nr_rrc_common.h"
 
 extern RAN_CONTEXT_t RC;
 
@@ -45,8 +46,14 @@ static void nr_fill_nfapi_pucch(gNB_MAC_INST *nrmac,
                                 const NR_sched_pucch_t *pucch,
                                 NR_UE_info_t* UE)
 {
+  int pucch_slot = is_fb_time(UE, frame, slot) ?
+                                                  slot : pucch->ul_slot;
 
-  const int index = ul_buffer_index(pucch->frame, pucch->ul_slot, UE->current_UL_BWP.scs, nrmac->UL_tti_req_ahead_size);
+  int pucch_frame = is_fb_time(UE, frame, slot) ?
+                                                  frame : pucch->frame;
+
+  const int index = ul_buffer_index(pucch_frame, pucch_slot, UE->current_UL_BWP.scs, nrmac->UL_tti_req_ahead_size);
+
   nfapi_nr_ul_tti_request_t *future_ul_tti_req = &nrmac->UL_tti_req_ahead[0][index];
   if (future_ul_tti_req->SFN != pucch->frame || future_ul_tti_req->Slot != pucch->ul_slot)
     LOG_W(MAC,
@@ -93,6 +100,7 @@ static void nr_fill_nfapi_pucch(gNB_MAC_INST *nrmac,
                      pucch->csi_bits,
                      pucch->dai_c,
                      pucch->sr_flag,
+                     pucch->O_sl_ack,
                      pucch->r_pucch);
 }
 
@@ -145,7 +153,7 @@ static const int diff_rsrp_ssb_csi_meas_10_1_6_1_2[16] = {
     -30 // 10 - 15
 };
 
-static int get_pucch_index(int frame, int slot, int n_slots_frame, const NR_TDD_UL_DL_Pattern_t *tdd, int sched_pucch_size)
+int get_pucch_index(int frame, int slot, int n_slots_frame, const NR_TDD_UL_DL_Pattern_t *tdd, int sched_pucch_size)
 {
   // PUCCH structures are indexed by slot in the PUCCH period determined by sched_pucch_size number of UL slots
   // this functions return the index to the structure for slot passed to the function
@@ -162,6 +170,45 @@ static int get_pucch_index(int frame, int slot, int n_slots_frame, const NR_TDD_
   // the sum gives the index of current UL slot in the frame which is normalized wrt sched_pucch_size
   return (frame_start + ul_period_start + ul_period_slot) % sched_pucch_size;
 
+}
+
+NR_UE_info_t* set_sl_fb_schedule(gNB_MAC_INST *gNB, frame_t frame, sub_frame_t slot, NR_UE_sched_ctrl_t *sched_ctrl) {
+  int sl_pucch_index = -1;
+  NR_UE_info_t* UE_info = nr_sl_fb_scheduling(gNB, frame, slot, &sl_pucch_index);
+  if (sl_pucch_index != -1) {
+    UE_info->is_cg_sent[0] = true;
+    sched_ctrl = &UE_info->UE_sched_ctrl;
+  } else {
+    LOG_D(NR_MAC, "sl_pucch_index %d\n", sl_pucch_index);
+  }
+  return UE_info;
+}
+
+NR_UE_info_t* nr_sl_fb_scheduling(gNB_MAC_INST *nrmac,
+                                  frame_t frame,
+                                  sub_frame_t slot,
+                                  int *pucch_index) {
+  UE_iterator(nrmac->UE_info.list, UE) {
+      if (UE->is_cg_sent[UE->active_cg_id]) {
+        const uint16_t rnti = UE->rnti;
+        if (UE->NR_SL_MAC_PARAMS->scheduling_rrc_reconfig) {
+          nr_sl_harq_fb_report_frame_slot(nrmac, UE, frame, slot);
+          if (is_fb_time(UE, frame, slot)) {
+            *pucch_index = virtual_resource_schedule(nrmac, UE, frame, slot);
+            if (*pucch_index < 0) {
+              LOG_W(NR_MAC, "[UE %04x][%4d.%2d] could not find SL_PUCCH_CONFIG for DL DCI\n",
+                    rnti,
+                    frame,
+                    slot);
+            }
+          }
+          return UE;
+        }
+      } else {
+        *pucch_index = -1;
+      }
+    }
+  return NULL;
 }
 
 void nr_schedule_pucch(gNB_MAC_INST *nrmac,
@@ -194,7 +241,39 @@ void nr_schedule_pucch(gNB_MAC_INST *nrmac,
           pucch_index,UE->rnti,curr_pucch->frame,curr_pucch->ul_slot,O_ack,O_sr,O_csi);
     nr_fill_nfapi_pucch(nrmac, frameP, slotP, curr_pucch, UE);
     memset(curr_pucch, 0, sizeof(*curr_pucch));
+  }
+}
 
+void nr_schedule_sl_pucch(gNB_MAC_INST *nrmac,
+                          frame_t frameP,
+                          sub_frame_t slotP)
+{
+  /* already mutex protected: held in gNB_dlsch_ulsch_scheduler() */
+  NR_SCHED_ENSURE_LOCKED(&nrmac->sched_lock);
+  if (!is_xlsch_in_slot(nrmac->ulsch_slot_bitmap[slotP / 64], slotP))
+    return;
+
+  UE_iterator(nrmac->UE_info.list, UE) {
+    NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
+    NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+    const int n_slots_frame = nr_slots_per_frame[ul_bwp->scs];
+    const NR_ServingCellConfigCommon_t *scc = nrmac->common_channels[0].ServingCellConfigCommon;
+    const NR_TDD_UL_DL_Pattern_t *tdd = scc->tdd_UL_DL_ConfigurationCommon ? &scc->tdd_UL_DL_ConfigurationCommon->pattern1 : NULL;
+    AssertFatal(tdd || nrmac->common_channels[0].frame_type == FDD, "Dynamic TDD not handled yet\n");
+    const int pucch_index = get_pucch_index(frameP, slotP, n_slots_frame, tdd, sched_ctrl->sched_pucch_size);
+    NR_sched_pucch_t *curr_pucch = &UE->UE_sched_ctrl.sched_pucch[pucch_index];
+    if (!curr_pucch->sl_pucch_active)
+      continue;
+    bool is_feedback = is_fb_time(UE, frameP, slotP);
+    curr_pucch->O_sl_ack = is_feedback ? 16 : 0;
+
+    const uint16_t O_ack = curr_pucch->dai_c;
+    const uint16_t O_csi = curr_pucch->csi_bits;
+    const uint8_t O_sr = curr_pucch->sr_flag;
+    LOG_D(NR_MAC, "Scheduling SL PUCCH[%d] RX for UE %04x in %4d.%2d O_ack %d, O_sr %d, O_csi %d O_sl_ack %d\n",
+          pucch_index,UE->rnti, curr_pucch->frame, curr_pucch->ul_slot, O_ack, O_sr, O_csi, curr_pucch->O_sl_ack);
+    nr_fill_nfapi_pucch(nrmac, frameP, slotP, curr_pucch, UE);
+    memset(curr_pucch, 0, sizeof(*curr_pucch));
   }
 }
 
@@ -262,6 +341,7 @@ void nr_csi_meas_reporting(int Mod_idP,
       curr_pucch->resource_indicator = res_index;
       curr_pucch->csi_bits += nr_get_csi_bitlen(UE->csi_report_template, csi_report_id);
       curr_pucch->active = true;
+      curr_pucch->O_sl_ack = 0;
 
       int bwp_start = ul_bwp->BWPStart;
 
@@ -1190,6 +1270,7 @@ int nr_acknack_scheduling(gNB_MAC_INST *mac,
       curr_pucch->dai_c++;
       curr_pucch->resource_indicator = 0; // each UE has dedicated PUCCH resources
       curr_pucch->r_pucch=r_pucch;
+      curr_pucch->O_sl_ack = 0;
 
       LOG_D(NR_MAC, "DL %4d.%2d, UL_ACK %4d.%2d Scheduling ACK/NACK in PUCCH %d with timing indicator %d DAI %d\n",
             frame, slot, curr_pucch->frame, curr_pucch->ul_slot, pucch_index, f, curr_pucch->dai_c);
@@ -1204,6 +1285,111 @@ int nr_acknack_scheduling(gNB_MAC_INST *mac,
   return -1;
 }
 
+int virtual_resource_schedule(gNB_MAC_INST *mac,
+                              NR_UE_info_t *UE,
+                              frame_t frame,
+                              slot_t slot) {
+  const int CC_id = 0;
+  const NR_ServingCellConfigCommon_t *scc = mac->common_channels[CC_id].ServingCellConfigCommon; // scc
+  const NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+
+  const int n_slots_frame = nr_slots_per_frame[ul_bwp->scs];
+  const NR_TDD_UL_DL_Pattern_t *tdd = scc->tdd_UL_DL_ConfigurationCommon ? &scc->tdd_UL_DL_ConfigurationCommon->pattern1 : NULL;
+  AssertFatal(tdd || mac->common_channels[CC_id].frame_type == FDD, "Dynamic TDD not handled yet\n");
+  NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
+  int pucch_index = get_pucch_index(frame, slot, n_slots_frame, tdd, sched_ctrl->sched_pucch_size);
+  NR_sched_pucch_t *sched_pucch = &sched_ctrl->sched_pucch[pucch_index];
+  const int bwp_start = ul_bwp->BWPStart;
+  // checking if in ul_slot the resources potentially to be assigned to this PUCCH are available
+  const int index = ul_buffer_index(frame, slot, ul_bwp->scs, mac->vrb_map_UL_size);
+  uint16_t *vrb_map_UL = &mac->common_channels[CC_id].vrb_map_UL[index * MAX_BWP_SIZE];
+  NR_PUCCH_Config_t *pucch_Config = ul_bwp->sl_pucch_Config;
+  if (pucch_Config) {
+    // going through the list of PUCCH resources to find the one indexed by resource_id
+    const int m = pucch_Config->resourceToAddModList->list.count;
+    for (int j = 0; j < m; j++) {
+      NR_PUCCH_Resource_t *pucchres = pucch_Config->resourceToAddModList->list.array[j];
+      int start = pucchres->startingPRB;
+      int len = 1;
+      uint64_t mask = 0;
+      switch(pucchres->format.present) {
+        case NR_PUCCH_Resource__format_PR_format2:
+          len = pucchres->format.choice.format2->nrofPRBs;
+          mask = SL_to_bitmap(pucchres->format.choice.format2->startingSymbolIndex, pucchres->format.choice.format2->nrofSymbols);
+          sched_pucch->simultaneous_harqcsi = (bool)*pucch_Config->format2->choice.setup->simultaneousHARQ_ACK_CSI;
+        break;
+        default:
+          AssertFatal(0, "Invalid PUCCH format type\n");
+      }
+      // verify resources are free
+      for (int i = start; i < start + len; ++i) {
+        if((vrb_map_UL[i + bwp_start] & mask) != 0) {
+          LOG_E(NR_MAC, "%4u.%2u VRB MAP %d in not free. Can not schedule SL-PUCCH Reception.\n", frame, slot, i);
+          memset(sched_pucch, 0, sizeof(*sched_pucch));
+        } else {
+          vrb_map_UL[i + bwp_start] |= mask;
+          LOG_D(NR_MAC, "%4u.%2u, Resource %d is not occupied.\n", frame, slot, i);
+        }
+      }
+    }
+    // allocating a new PUCCH structure for this occasion
+    sched_pucch->sl_pucch_active = true;
+    sched_pucch->frame = frame;
+    sched_pucch->ul_slot = slot;
+    sched_pucch->resource_indicator = 0; // each UE has dedicated PUCCH resources
+    sched_pucch->r_pucch = -1;
+
+    LOG_D(NR_MAC, "%4u.%2u FB %4d.%2d Scheduling SL HARQ Summary in PUCCH %d with DAI %u\n",
+          frame, slot, sched_pucch->frame, sched_pucch->ul_slot, pucch_index, sched_pucch->dai_c);
+    return pucch_index; // index of current PUCCH structure
+  }
+  return pucch_index;
+}
+
+// this function returns an index to NR_sched_pucch structure
+// if the function returns -1 it was not possible to schedule acknack
+void nr_sl_harq_fb_report_frame_slot(gNB_MAC_INST *mac,
+                                     NR_UE_info_t *UE,
+                                     frame_t frame,
+                                     slot_t slot)
+{
+  /* we assume that this function is mutex-protected from outside. Since it is
+   * called often, don't try to lock every time */
+  const NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+  const int n_slots_frame = nr_slots_per_frame[ul_bwp->scs];
+
+  // Following are the slots where relay UE will transmit
+  uint8_t cur_slot;
+  uint8_t t1_slot, t2_slot;
+  get_scheduled_slots_for_sl_ue(UE, &cur_slot, &t1_slot, &t2_slot);
+
+  uint8_t sl_PeriodCG1_index = UE->sl_CG_Config[UE->active_cg_id]->sl_PeriodCG_r16->choice.sl_PeriodCG1_r16;
+  uint16_t sl_PeriodCG1_list[10] = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000}; // ms
+  uint16_t sl_periodcg_ms = sl_PeriodCG1_list[sl_PeriodCG1_index];
+
+  uint8_t mu = UE->NR_SL_MAC_PARAMS->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+  uint8_t nr_slots_per_subframe = pow(2, mu);
+  float slot_duration_ms = (1.0 / nr_slots_per_subframe);
+  uint32_t num_slots_per_cg_period = (int)round(sl_periodcg_ms / slot_duration_ms);
+  uint8_t relay_ue_tx_slot = (t2_slot > t1_slot) ? ((t2_slot > cur_slot) ? t2_slot : cur_slot) : ((t1_slot > cur_slot) ? t1_slot : cur_slot);
+  uint16_t relay_ue_tx_frame = (frame + (num_slots_per_cg_period / n_slots_frame)) % 1024;
+
+  uint8_t remote_tx_slot = (relay_ue_tx_slot + DURATION_RX_TO_TX) % n_slots_frame; // relay_ue_tx_slot is rx slot of remote UE
+  uint16_t remote_tx_frame = (relay_ue_tx_frame + (relay_ue_tx_slot + DURATION_RX_TO_TX) / n_slots_frame) % 1024; // relay_ue_tx_frame is rx frame of remote UE
+  long sl_psfch_period = *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+
+  uint8_t sl_PSFCH_ToPUCCH = *UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16->sl_PSFCH_ToPUCCH_CG_Type1_r16;
+
+  uint8_t remote_ue_psfch_slot = get_feedback_slot(sl_psfch_period, remote_tx_slot);
+  uint16_t remote_ue_psfch_frame = remote_ue_psfch_slot < remote_tx_slot ? remote_tx_frame + 1 : remote_tx_frame;
+
+  const int sl_fb_pucch_slot = (remote_ue_psfch_slot + sl_PSFCH_ToPUCCH) % n_slots_frame;
+
+  const int sl_fb_pucch_frame = (remote_ue_psfch_frame + ((remote_ue_psfch_slot + sl_PSFCH_ToPUCCH) / n_slots_frame)) & 1023;
+
+  // we store PUCCH resources according to slot, TDD configuration and size of the vector containing PUCCH structures
+  cg_period_check_and_compute(UE, frame, slot, num_slots_per_cg_period, sl_fb_pucch_frame, sl_fb_pucch_slot);
+}
 
 void nr_sr_reporting(gNB_MAC_INST *nrmac, frame_t SFN, sub_frame_t slot)
 {
@@ -1285,6 +1471,7 @@ void nr_sr_reporting(gNB_MAC_INST *nrmac, frame_t SFN, sub_frame_t slot)
         curr_pucch->resource_indicator = idx;
         curr_pucch->r_pucch = -1;
         curr_pucch->active = true;
+        curr_pucch->O_sl_ack = 0;
         set_pucch0_vrb_occupation(curr_pucch, vrb_map_UL, bwp_start);
       }
     }

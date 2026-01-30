@@ -692,7 +692,7 @@ int8_t sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
   uint32_t frame = scheduled_response->frame;
   const char *sl_rx_action[] = {"NONE", "RX_PSBCH", "RX_PSCCH", "RX_SCI2_ON_PSSCH", "RX_SLSCH_ON_PSSCH", "RX_PSFCH", "RX_SLSCH_ON_PSSCH_CSI_RS"};
   const char *sl_tx_action[] = {"TX_PSBCH", "TX_PSCCH_PSSCH", "TX_PSCCH_PSSCH_PSFCH", "TX_PSCCH_PSSCH_CSI_RS"};
-  NR_UE_CSI_RS *csirs_vars = PHY_vars_UE_g[module_id][cc_id]->csirs_vars[0];
+  NR_UE_CSI_RS *csirs_vars = PHY_vars_UE_g[module_id][cc_id]->sl_csirs_vars[module_id];
   if(scheduled_response->sl_rx_config != NULL) {
 
     sl_nr_rx_config_request_t *sl_rx_config = scheduled_response->sl_rx_config;

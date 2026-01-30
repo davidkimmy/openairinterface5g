@@ -685,7 +685,8 @@ static void rrc_gNB_generate_defaultRRCReconfiguration(const protocol_ctxt_t *co
 }
 
 //-----------------------------------------------------------------------------
-NR_RRCReconfiguration_v1610_IEs_t* prepare_rrc_reconfig_v1610(rnti_t sl_rnti,
+NR_RRCReconfiguration_v1610_IEs_t* prepare_rrc_reconfig_v1610(module_id_t module_id,
+                                                              rnti_t sl_rnti,
                                                               NR_SL_TxResourceReqList_r16_t *sl_TxRscReqList_r16,
                                                               const NR_SL_UE_AssistanceInformationNR_r16_t *trafficPatternList) {
 //-----------------------------------------------------------------------------
@@ -695,7 +696,7 @@ NR_RRCReconfiguration_v1610_IEs_t* prepare_rrc_reconfig_v1610(rnti_t sl_rnti,
     memset(v1610_ies, 0, sizeof(NR_RRCReconfiguration_v1610_IEs_t));
 
     v1610_ies->sl_ConfigDedicatedNR_r16 = CALLOC(1, sizeof(NR_SetupRelease_SL_ConfigDedicatedNR_r16_t));
-    nr_rrc_pre_configure_NR_SetupRelease_SL_ConfigDedicatedNR(v1610_ies->sl_ConfigDedicatedNR_r16, sl_rnti, sl_TxRscReqList_r16, trafficPatternList);
+    nr_rrc_pre_configure_NR_SetupRelease_SL_ConfigDedicatedNR(module_id, v1610_ies->sl_ConfigDedicatedNR_r16, sl_rnti, sl_TxRscReqList_r16, trafficPatternList);
     return v1610_ies;
 }
 
@@ -1500,10 +1501,9 @@ int nr_rrc_reconfiguration_req_sidelink(rrc_gNB_ue_context_t                    
   ue_p->xids[xid] = RRC_REESTABLISH_COMPLETE;
 
   NR_RRCReconfiguration_v1610_IEs_t* rrc_ext_v1610 = NULL;
-
-  rnti_t assigned_sl_rnti = 0;
+  rnti_t assigned_sl_rnti = ctxt_pP->rntiMaybeUEid;
   NR_SL_TxResourceReqList_r16_t *sl_TxRscReqList_r16 = (sl_UEInfo_r16 != NULL) ? sl_UEInfo_r16->sl_TxResourceReqList_r16 : NULL;
-  rrc_ext_v1610 = prepare_rrc_reconfig_v1610(assigned_sl_rnti, sl_TxRscReqList_r16, trafficPatternList);
+  rrc_ext_v1610 = prepare_rrc_reconfig_v1610(ctxt_pP->module_id, assigned_sl_rnti, sl_TxRscReqList_r16, trafficPatternList);
 
 
   uint8_t buffer[RRC_BUF_SIZE];
@@ -2255,7 +2255,7 @@ int rrc_gNB_decode_dcch(const protocol_ctxt_t *const ctxt_pP,
           break;
 
         case NR_UL_DCCH_MessageType__messageClassExtension__c2_PR_sidelinkUEInformationNR_r16:
-          LOG_I(NR_RRC, "Received sidelinkUEInformationNR on UL-DCCH-Message\n");
+          LOG_I(NR_RRC, "Received sidelinkUEInformationNR on UL-DCCH-Message from %4lx\n", ctxt_pP->rntiMaybeUEid);
           xer_fprint(stdout, &asn_DEF_NR_UL_DCCH_Message, (void *)ul_dcch_msg);
           if (handle_sidelinkUEInformationNR(ctxt_pP, ue_context_p, ul_dcch_msg->message.choice.messageClassExtension->choice.c2->choice.sidelinkUEInformationNR_r16) == -1)
             return -1;

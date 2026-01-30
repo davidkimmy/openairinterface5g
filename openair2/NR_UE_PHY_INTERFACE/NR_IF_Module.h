@@ -203,18 +203,6 @@ typedef struct {
     uint8_t Mod_id;
     /// component carrier id
     uint8_t CC_id;
-
-    /// NR UE FAPI-like P5 message
-    /// physical layer configuration request structure
-    sl_nr_phy_config_request_t sl_config_req;
-
-} nr_sl_phy_config_t;
-
-typedef struct {
-    /// module id
-    uint8_t Mod_id;
-    /// component carrier id
-    uint8_t CC_id;
     /// Flag signaling that synch_request was received
     uint8_t received_synch_request;
     /// NR UE FAPI message

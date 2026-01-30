@@ -194,7 +194,7 @@ void init_nr_prs_ue_vars(PHY_VARS_NR_UE *ue)
   init_nr_gold_prs(ue);
 }
 
-int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
+int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB, bool is_sl)
 {
   // create shortcuts
   NR_DL_FRAME_PARMS *const fp            = &ue->frame_parms;
@@ -202,6 +202,7 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
   NR_UE_PRACH **const prach_vars         = ue->prach_vars;
   NR_UE_CSI_IM **const csiim_vars        = ue->csiim_vars;
   NR_UE_CSI_RS **const csirs_vars        = ue->csirs_vars;
+  NR_UE_CSI_RS **const sl_csirs_vars     = ue->sl_csirs_vars;
   NR_UE_SRS **const srs_vars             = ue->srs_vars;
 
   int i, slot, symb, gNB_id;
@@ -349,6 +350,11 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
       }
     }
   }
+  // SLSCH
+  if (is_sl) {
+    sl_csirs_vars[0] = malloc16_clear(sizeof(NR_UE_CSI_RS));
+    sl_csirs_vars[0]->active = false;
+  }
 
   // DLSCH
   for (gNB_id = 0; gNB_id < ue->n_connected_gNB; gNB_id++) {
@@ -404,7 +410,7 @@ static void sl_ue_free(PHY_VARS_NR_UE *UE) {
   }
 }
 
-void term_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
+void term_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB, bool is_sl)
 {
   const NR_DL_FRAME_PARMS* fp = &ue->frame_parms;
   phy_term_nr_top();
@@ -457,6 +463,9 @@ void term_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
 
     // PDSCH
   }
+
+  if (is_sl)
+    free_and_zero(ue->sl_csirs_vars[0]);
 
   for (int gNB_id = 0; gNB_id < ue->n_connected_gNB; gNB_id++) {
 

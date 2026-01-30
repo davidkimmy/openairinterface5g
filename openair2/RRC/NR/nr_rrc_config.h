@@ -82,11 +82,16 @@ NR_CellGroupConfig_t *get_default_secondaryCellGroup(const NR_ServingCellConfigC
                                                      const gNB_RrcConfigurationReq *configuration,
                                                      int uid);
 
-double compute_SL_PSFCH_ToPUCCH_CG_Type1(int mu);
+double compute_Tprep(int mu);
 
-void prepare_nr_sl_sched_config(NR_SetupRelease_SL_ScheduledConfig_r16_t *sched_config, rnti_t sl_rnti, uint8_t mu);
+void prepare_nr_sl_sched_config(module_id_t module_id,
+                                NR_SetupRelease_SL_ScheduledConfig_r16_t *sched_config,
+                                NR_SL_ConfiguredGrantConfig_r16_t *sl_CG_Config,
+                                rnti_t sl_rnti,
+                                uint8_t mu);
 
-void nr_rrc_pre_configure_NR_SetupRelease_SL_ConfigDedicatedNR(NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_ConfigDedicatedNR,
+void nr_rrc_pre_configure_NR_SetupRelease_SL_ConfigDedicatedNR(module_id_t module_id,
+                                                               NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_ConfigDedicatedNR,
                                                                rnti_t sl_rnti,
                                                                NR_SL_TxResourceReqList_r16_t *sl_TxRscReqList_r16,
                                                                const NR_SL_UE_AssistanceInformationNR_r16_t *trafficPatternList);

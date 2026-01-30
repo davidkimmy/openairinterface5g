@@ -145,7 +145,7 @@ static void configure_NR_UE(PHY_VARS_NR_UE *UE, int mu, int N_RB) {
   fp->ofdm_offset_divisor = 8;
   nr_dump_frame_parms(fp);
 
-  if (init_nr_ue_signal(UE, 1) != 0) {
+  if (init_nr_ue_signal(UE, 1, false) != 0) {
     printf("Error at UE NR initialisation\n");
     exit(-1);
   }
@@ -643,8 +643,8 @@ int main(int argc, char **argv) {
   free(r_re);
   free(r_im);
 
-  term_nr_ue_signal(UE_TX, 1);
-  term_nr_ue_signal(UE_RX, 1);
+  term_nr_ue_signal(UE_TX, 1, true);
+  term_nr_ue_signal(UE_RX, 1, true);
 
   free(UE_TX);
   free(UE_RX);
