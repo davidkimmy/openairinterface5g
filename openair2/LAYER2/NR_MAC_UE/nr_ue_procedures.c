@@ -161,7 +161,7 @@ static uint8_t nr_extract_dci_info(NR_UE_MAC_INST_t *mac,
                                    int slot);
 
 void nr_mac_init_sl_config_grant(NR_UE_MAC_INST_t *mac) {
-  for (int i = 0; i < MAX_CONFIGURED_GRANTS; i++) {
+  for (int i = 0; i < MAX_GRANTS; i++) {
     mac->sl_cg_per_bwp.sl_cg[i] = CALLOC(1, sizeof(sl_config_grant_t));
   }
 }
@@ -2225,7 +2225,7 @@ bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sche
                 current_harq->active = false;
                 current_harq->ack_received = false;
               } else {
-                LOG_W(NR_MAC, "DLSCH ACK/NACK reporting initiated for harq pid %d before DLSCH decoding completed\n", dl_harq_pid);
+                LOG_W(NR_MAC, "%4d.%2d DLSCH ACK/NACK reporting initiated for harq pid %d before DLSCH decoding completed\n", frame, slot, dl_harq_pid);
                 ack_data[code_word][dai_current - 1] = 0;
               }
               dai[code_word][dai_current - 1] = dai_current;

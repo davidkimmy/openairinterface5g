@@ -273,9 +273,8 @@ uint32_t calc_power_csirs(const uint16_t *x, const fapi_nr_dl_config_csirs_pdu_r
   uint64_t sum_x2 = 0;
   uint16_t size = 0;
   for (int rb = 0; rb < csirs_config_pdu->nr_of_rbs; rb++) {
-    if (csirs_config_pdu->freq_density <= 1 && intf_type == PC5 ? 0 : csirs_config_pdu->freq_density != ((rb + csirs_config_pdu->start_rb) % 2)) {
+    if (csirs_config_pdu->freq_density <= 1 && (intf_type == PC5 ? 0 : csirs_config_pdu->freq_density != ((rb + csirs_config_pdu->start_rb) % 2)))
       continue;
-    }
     sum_x = sum_x + x[rb];
     sum_x2 = sum_x2 + x[rb] * x[rb];
     size++;
@@ -930,11 +929,12 @@ void nr_ue_csi_rs_procedures(PHY_VARS_NR_UE *ue, NR_DL_FRAME_PARMS *frame_parms,
 {
   // TODO: check the id whether it is working for multiple UEs
   int id = intf_type == PC5 ? ue->Mod_id : proc->gNB_id;
-  if (!ue->csirs_vars[id]->active) {
+  NR_UE_CSI_RS *csirs_vars = intf_type == PC5 ? ue->sl_csirs_vars[id] : ue->csirs_vars[id];
+  if (!csirs_vars->active) {
     return;
   }
 
-  fapi_nr_dl_config_csirs_pdu_rel15_t *csirs_config_pdu = (fapi_nr_dl_config_csirs_pdu_rel15_t*)&ue->csirs_vars[id]->csirs_config_pdu;
+  fapi_nr_dl_config_csirs_pdu_rel15_t *csirs_config_pdu = (fapi_nr_dl_config_csirs_pdu_rel15_t*)&csirs_vars->csirs_config_pdu;
 
 #ifdef NR_CSIRS_DEBUG
   LOG_I(NR_PHY, "csirs_config_pdu->subcarrier_spacing = %i\n", csirs_config_pdu->subcarrier_spacing);

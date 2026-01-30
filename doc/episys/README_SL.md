@@ -185,7 +185,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
- -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001
+ -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
 --sa --sl-mode 1 --sync-ref --rfsim \
 --rfsimulator.serveraddr <MACHINE 1 IP Address> --rfsimulator.serverport 4048 \
 --rfsimulator.serveraddrsl <MACHINE 1 IP Address> --rfsimulator.serverportsl 4148 \

@@ -3669,7 +3669,6 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
               break;
             }
           }
-
 #if 0
           if (buflen_remain > 0) {
             NR_UE_MAC_CE_INFO *mac_ce_p = (NR_UE_MAC_CE_INFO *) pdu;
@@ -3868,47 +3867,13 @@ uint8_t nr_ue_sl_psbch_scheduler(nr_sidelink_indication_t *sl_ind,
   return ret_status;
 }
 
-/* Compute sidelink Configured Grant Type 1's current logical slot
- sl_ReferenceSlotCG_Type1 - reference logical slot defined by sl-TimeReferenceSFN-Type1.
- sl_TimeOffsetCG_Type1 - slot offset with respect to logical slot defined by sl_ReferenceSlotCG_Type1
- sl_PeriodCG_ms - Configured Grant period in ms (e.g. 100.0)
- T_prime_max - T'max: number of slots in the resource pool
- S - Sidelink grant index
-*/
-uint32_t calc_current_slot(uint32_t sl_ReferenceSlotCG_Type1,
-                           uint32_t sl_TimeOffsetCG_Type1,
-                           double sl_PeriodCG_ms,
-                           uint32_t T_prime_max,
-                           uint8_t S)
-{
-  // Compute periodicity_sl (in slots)
-  uint32_t periodicity_sl = (T_prime_max * sl_PeriodCG_ms + 10239) / 10240;
-
-  // Compute current logical slot
-  uint32_t current_slot = (sl_ReferenceSlotCG_Type1 +
-                           sl_TimeOffsetCG_Type1 +
-                           S * periodicity_sl) % T_prime_max;
-
-  LOG_D(NR_MAC, "periodicity_sl %d, *S %d, T_prime_max %d, sl_PeriodCG_ms %lf, sl_ReferenceSlotCG_Type1 %d, sl_TimeOffsetCG_Type1 %d, current_slot %d\n",
-        periodicity_sl,
-        S,
-        T_prime_max,
-        sl_PeriodCG_ms,
-        sl_ReferenceSlotCG_Type1,
-        sl_TimeOffsetCG_Type1,
-        current_slot);
-
-  return current_slot;
-}
-
-void get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
-                                     sl_resource_info_t *resource,
-                                     uint16_t slots_per_frame,
-                                     frame_t frame,
-                                     slot_t slot,
-                                     long psfch_period,
-                                     int index,
-                                     double sl_periodcg_ms)
+sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
+                                                    uint16_t slots_per_frame,
+                                                    frame_t frame,
+                                                    slot_t slot,
+                                                    long psfch_period,
+                                                    int index,
+                                                    uint16_t sl_periodcg_ms)
 {
   int S = 0;
   BIT_STRING_t *sl_time_rsrc = mac->sl_tx_res_pool->ext1->sl_TimeResource_r16;
@@ -3939,10 +3904,7 @@ void get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
 
   LOG_D(NR_MAC, "t1 %d, t2 %d slot %d, cur_slot %d, t1_slot %d, t2_slot %d\n", t1, t2, slot, cur_slot, t1_slot, t2_slot);
   if ((cur_slot == slot) || (t1_slot == slot) || (t2_slot == slot)) {
-    // Fill resource accordingly
-    if (resource)
-      free_and_zero(resource);
-    resource = CALLOC(1, sizeof(sl_resource_info_t));
+    sl_resource_info_t *resource = CALLOC(1, sizeof(sl_resource_info_t));
     resource->sfn.frame = frame;
     resource->sfn.slot = slot;
     resource->sl_timeresource_cg_type1 = sl_timeresource_cg_type1;
@@ -3971,33 +3933,36 @@ void get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
     uint16_t sl_pssch_sym_len = 7 + *mac->sl_bwp_dedicated->sl_BWP_Generic_r16->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
     resource->sl_pssch_sym_len = sl_pssch_sym_len;
     resource->sl_subchan_size = sl_get_subchannel_size(sl_tx_rsrc_pool->respool);
+    return resource;
   }
+  return NULL;
 }
 
-void get_resource_config_grant(NR_UE_MAC_INST_t *mac,
-                               sl_resource_info_t *resource,
-                               uint16_t slots_per_frame,
-                               frame_t frame,
-                               slot_t slot,
-                               long psfch_period) {
-  for (int index = 0; index < MAX_CONFIGURED_GRANTS; index++) { // resource is being overwritten
+sl_resource_info_t* get_resource_config_grant(NR_UE_MAC_INST_t *mac,
+                                              uint16_t slots_per_frame,
+                                              frame_t frame,
+                                              slot_t slot,
+                                              long psfch_period) {
+  for (int index = 0; index < MAX_GRANTS; index++) { // resource is being overwritten
     if (mac->sl_cg_per_bwp.sl_cg[index]->active) {
-      double sl_periodcg_ms = mac->sl_cg_per_bwp.sl_cg[index]->sl_period_cg;
+      uint16_t sl_periodcg_ms = mac->sl_cg_per_bwp.sl_cg[index]->sl_period_cg;
       if (sl_periodcg_ms > 0) {
         if (mac->sl_cg_per_bwp.sl_cg[index]->type == CG_TYPE_1) {
-          get_resource_config_grant_type1(mac, resource, slots_per_frame, frame, slot, psfch_period, index, sl_periodcg_ms);
-          LOG_D(NR_MAC, "%4d.2%d, sl_timeresource_cg_type1 %d, sl_freqresource_cg_type1 %d, cg_type %d, sl_subchan_len %d, sl_pssch_sym_start %d,\
-              sl_pscch_sym_len %d, num_sl_pscch_rbs %d, sl_pssch_sym_len %d\n", resource->sfn.frame,
-                resource->sfn.slot,
-                resource->sl_timeresource_cg_type1,
-                resource->sl_freqresource_cg_type1,
-                resource->cg_type,
-                resource->sl_subchan_len,
-                resource->sl_pssch_sym_start,
-                resource->sl_pscch_sym_len,
-                resource->num_sl_pscch_rbs,
-                resource->sl_pssch_sym_len
-                );
+          sl_resource_info_t *resource = get_resource_config_grant_type1(mac, slots_per_frame, frame, slot, psfch_period, index, sl_periodcg_ms);
+          if (resource)
+            LOG_D(NR_MAC, "%4d.%2d, sl_timeresource_cg_type1 %d, sl_freqresource_cg_type1 %d, cg_type %d, sl_subchan_len %d, sl_pssch_sym_start %d,\
+                sl_pscch_sym_len %d, num_sl_pscch_rbs %d, sl_pssch_sym_len %d\n", resource->sfn.frame,
+                  resource->sfn.slot,
+                  resource->sl_timeresource_cg_type1,
+                  resource->sl_freqresource_cg_type1,
+                  resource->cg_type,
+                  resource->sl_subchan_len,
+                  resource->sl_pssch_sym_start,
+                  resource->sl_pscch_sym_len,
+                  resource->num_sl_pscch_rbs,
+                  resource->sl_pssch_sym_len
+                  );
+          return resource;
         } else if (mac->sl_cg_per_bwp.sl_cg[index]->type == CG_TYPE_2) {
           // TODO: Wait for activation command before transmitting
           AssertFatal(1 == 0, "CG Type 2 is not supported yet!!!\n");
@@ -4005,6 +3970,7 @@ void get_resource_config_grant(NR_UE_MAC_INST_t *mac,
       }
     }
   }
+  return NULL;
 }
 
 /*
@@ -4141,7 +4107,7 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind) {
       }
     }
   } else if (mac->is_synced_sl && get_softmodem_params()->sl_mode == 1) {
-    get_resource_config_grant(mac, resource, slots_per_frame, frame, slot, psfch_period);
+    resource = get_resource_config_grant(mac, slots_per_frame, frame, slot, psfch_period);
     resource_available = true;
   } else {
     resource_available = true;
@@ -4224,6 +4190,8 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind) {
     }
     if ((mac->if_module != NULL) && (mac->if_module->scheduled_response != NULL))
       mac->if_module->scheduled_response(&scheduled_response);
+    if (resource)
+      free_and_zero(resource);
   }
   NR_UE_SL_SCHED_UNLOCK(&mac->sl_sched_lock);
 }

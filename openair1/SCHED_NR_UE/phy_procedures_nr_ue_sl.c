@@ -56,8 +56,8 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, int frame_rx, int slot_rx, int SLSCH
   uint8_t  freq_density = 0;
   uint8_t  nr_of_rbs = 0;
   if (is_csi_rs_slot) {
-    freq_density = ue->csirs_vars[0]->csirs_config_pdu.freq_density;
-    nr_of_rbs = ue->csirs_vars[0]->csirs_config_pdu.nr_of_rbs;
+    freq_density = ue->sl_csirs_vars[0]->csirs_config_pdu.freq_density;
+    nr_of_rbs = ue->sl_csirs_vars[0]->csirs_config_pdu.nr_of_rbs;
     AssertFatal((freq_density == 1) || (nr_of_rbs > 0), "CSI-RS parameters are not properly configured\n");
   }
   int harq_pid = slsch_pdu->harq_pid;

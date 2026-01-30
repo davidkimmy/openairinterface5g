@@ -39,6 +39,7 @@
 #include "nfapi_nr_interface_scf.h"
 #include "common/platform_constants.h"
 #include "platform_types.h"
+#include "sidelink_nr_ue_interface.h"
 
 #define MAX_NUM_DL_PDU 100
 #define MAX_NUM_UL_PDU 100
@@ -120,6 +121,18 @@ typedef struct NR_IF_Module_s {
   pthread_mutex_t if_mutex;
   int sl_ahead;
 } NR_IF_Module_t;
+
+typedef struct {
+    /// module id
+    uint8_t Mod_id;
+    /// component carrier id
+    uint8_t CC_id;
+
+    /// NR UE FAPI-like P5 message
+    /// physical layer configuration request structure
+    sl_nr_phy_config_request_t sl_config_req;
+
+} nr_sl_phy_config_t;
 
 /*Initial */
 NR_IF_Module_t *NR_IF_Module_init(int Mod_id);

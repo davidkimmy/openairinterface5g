@@ -158,7 +158,8 @@ static void *nrL1_UE_stats_thread(void *param)
 
 void init_nr_ue_vars(PHY_VARS_NR_UE *ue,
                      uint8_t UE_id,
-                     uint8_t abstraction_flag)
+                     uint8_t abstraction_flag,
+                     uint8_t sl_mode)
 {
 
   int nb_connected_gNB = 1;
@@ -167,9 +168,9 @@ void init_nr_ue_vars(PHY_VARS_NR_UE *ue,
   ue->if_inst     = nr_ue_if_module_init(0);
   ue->dci_thres   = 0;
   ue->target_Nid_cell = -1;
-
+  bool is_sl = sl_mode > 0 ? true : false;
   // initialize all signal buffers
-  init_nr_ue_signal(ue, nb_connected_gNB);
+  init_nr_ue_signal(ue, nb_connected_gNB, is_sl);
 
   if (ue->sl_mode)
     sl_ue_phy_init(ue);

@@ -34,6 +34,7 @@
 #include "common/utils/nr/nr_common.h"
 #include <limits.h>
 #include <executables/softmodem-common.h>
+#include "openair2/RRC/NR/nr_rrc_common.h"
 
 #define reserved 0xffff
 
@@ -5486,6 +5487,79 @@ void create_nr_list(NR_list_t *list, int len)
   list->len = len;
 }
 
+int16_t get_feedback_slot(long psfch_period, uint16_t slot) {
+  int16_t feedback_slot = -1;
+  if (psfch_period == 1) {
+    switch(slot) {
+      case 0:
+        feedback_slot = 6;
+      break;
+      case 1:
+        feedback_slot = 7;
+      break;
+      case 2:
+        feedback_slot = 8;
+      break;
+      case 3:
+        feedback_slot = 9;
+      break;
+      case 10:
+        feedback_slot = 16;
+      break;
+      case 11:
+        feedback_slot = 17;
+      break;
+      case 12:
+        feedback_slot = 18;
+      break;
+      case 13:
+        feedback_slot = 19;
+      break;
+      default:
+        AssertFatal(1 == 0, "Invalid slot %d\n", slot);
+    }
+  } else if (psfch_period == 2) {
+    switch(slot) {
+      case 0:
+      case 1:
+        feedback_slot = 7;
+      break;
+      case 2:
+      case 3:
+        feedback_slot = 9;
+      break;
+      case 10:
+      case 11:
+        feedback_slot = 17;
+      break;
+      case 12:
+      case 13:
+        feedback_slot = 19;
+      break;
+      default:
+        AssertFatal(1 == 0, "Invalid slot %d\n", slot);
+    }
+  } else if (psfch_period == 4) {
+    switch(slot) {
+      case 0:
+      case 1:
+      case 2:
+      case 3:
+        feedback_slot = 9;
+      break;
+      case 10:
+      case 11:
+      case 12:
+      case 13:
+        feedback_slot = 19;
+      break;
+      default:
+        AssertFatal(1 == 0, "Invalid slot %d\n", slot);
+    }
+  }
+  return feedback_slot;
+}
+
 /*
  * Resize an NR_list
  */
@@ -5596,4 +5670,163 @@ void remove_front_nr_list(NR_list_t *listP)
   listP->next[ohead] = -1;
   if (listP->head < 0)
     listP->tail = -1;
+}
+
+
+void get_scheduled_slots_for_sl_ue(NR_UE_info_t *UE, uint8_t *cur_slot, uint8_t *t1_slot, uint8_t *t2_slot) {
+  int S = 0;
+  BIT_STRING_t *sl_time_rsrc = UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16;
+  uint8_t bits_unused = sl_time_rsrc->bits_unused;
+  int slots_sl_pool = (sl_time_rsrc->size * 8) - bits_unused;
+  uint8_t mu = UE->NR_SL_MAC_PARAMS->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+  uint32_t T_prime_max = slots_sl_pool;
+
+  uint16_t sl_timereferencesfn_type1 = 0;
+  LOG_D(NR_MAC, "UE %p UE->active_cg_id %d\n", UE, UE->active_cg_id);
+  LOG_D(NR_MAC, "rrc_ConfiguredSidelinkGrant_r16 %p\n", UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16);
+  LOG_D(NR_MAC, "sl_TimeReferenceSFN_Type1_r16 %p\n", UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16->sl_TimeReferenceSFN_Type1_r16);
+  long sl_TimeRefSFN_Type1 = *UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16->sl_TimeReferenceSFN_Type1_r16;
+  if (sl_TimeRefSFN_Type1 == NR_SL_ConfiguredGrantConfig_r16__rrc_ConfiguredSidelinkGrant_r16__sl_TimeReferenceSFN_Type1_r16_sfn512)
+    sl_timereferencesfn_type1 = 512; // 38.331
+  const int slots_per_frame = nr_slots_per_frame[mu];
+  long sl_referenceslotcg_type1 = sl_timereferencesfn_type1 * slots_per_frame;
+  long sl_timeoffsetcg_type1 = *UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16->sl_TimeOffsetCG_Type1_r16;
+  long sl_timeresource_cg_type1 = *UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16->sl_TimeResourceCG_Type1_r16;
+
+  uint8_t sl_PeriodCG1_index = UE->sl_CG_Config[UE->active_cg_id]->sl_PeriodCG_r16->choice.sl_PeriodCG1_r16;
+  uint16_t sl_PeriodCG1_list[10] = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000};
+  uint16_t sl_periodcg_ms = sl_PeriodCG1_list[sl_PeriodCG1_index];
+  // Trigger transmission every periodicity slots
+  uint32_t current_slot = calc_current_slot(sl_referenceslotcg_type1,
+                                            sl_timeoffsetcg_type1,
+                                            sl_periodcg_ms,
+                                            T_prime_max,
+                                            S);
+  uint8_t N = 2;
+  uint8_t t1, t2;
+  *cur_slot = current_slot % slots_per_frame;
+  inverse_TRIV(N, sl_timeresource_cg_type1, &t1, &t2);
+  *t1_slot = (current_slot + t1) % slots_per_frame;
+  *t2_slot = (current_slot + t2) % slots_per_frame;
+}
+
+int get_nr_sl_psfch_to_pucch_offset(module_id_t module_id, rnti_t sl_rnti)
+{
+  /* we assume that this function is mutex-protected from outside. Since it is
+   * called often, don't try to lock every time */
+  gNB_MAC_INST *mac = RC.nrmac[module_id];
+
+  UE_iterator(mac->UE_info.list, UE) {
+    if (UE->rnti == sl_rnti) {
+      const int CC_id = 0;
+      const int minfbtime = mac->minRXTXTIMEpdsch;
+
+      LOG_D(NR_MAC, "%s------- UE->rnti %4x minfbtime %d\n", __func__, UE->rnti, minfbtime);
+
+      const NR_ServingCellConfigCommon_t *scc = mac->common_channels[CC_id].ServingCellConfigCommon; // scc
+      const NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+      const int n_slots_frame = nr_slots_per_frame[ul_bwp->scs];
+
+      const NR_TDD_UL_DL_Pattern_t *tdd = scc->tdd_UL_DL_ConfigurationCommon ? &scc->tdd_UL_DL_ConfigurationCommon->pattern1 : NULL;
+      AssertFatal(tdd || mac->common_channels[CC_id].frame_type == FDD, "Dynamic TDD not handled yet\n");
+      const int nr_slots_period = tdd ? n_slots_frame / get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity) : n_slots_frame;
+      const int first_ul_slot_period = tdd ? get_first_ul_slot(tdd->nrofDownlinkSlots, tdd->nrofDownlinkSymbols, tdd->nrofUplinkSymbols) : 0;
+
+      // Following are the slots where relay UE will transmit
+      uint8_t cur_slot, t1_slot, t2_slot;
+      get_scheduled_slots_for_sl_ue(UE, &cur_slot, &t1_slot, &t2_slot);
+
+      uint8_t relay_ue_tx_slot = (t2_slot > t1_slot) ? ((t2_slot > cur_slot) ? t2_slot : cur_slot) : ((t1_slot > cur_slot) ? t1_slot : cur_slot);
+
+      uint8_t remote_tx_slot = (relay_ue_tx_slot + DURATION_RX_TO_TX) % n_slots_frame; // relay_ue_tx_slot is rx slot of remote UE
+
+      long sl_psfch_period = *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+
+      uint8_t remote_ue_psfch_slot = get_feedback_slot(sl_psfch_period, remote_tx_slot);
+
+      static const uint8_t psfch_to_pucch_offset[MAX_PSFCH_TO_PUCCH_OFFSET] = {0, 1, 2, 3, 4, 5, 6, 7, 8,
+                                                                               9, 10, 11, 12, 13, 14, 15};
+
+      for (int f = 0; f < MAX_PSFCH_TO_PUCCH_OFFSET; f++) {
+        // can't schedule sl HARQ summary before minimum feedback time
+        if(psfch_to_pucch_offset[f] < minfbtime)
+          continue;
+
+        const int sl_fb_pucch_slot = (remote_ue_psfch_slot + psfch_to_pucch_offset[f]) % n_slots_frame;
+        // check if the slot is UL
+        if(sl_fb_pucch_slot % nr_slots_period < first_ul_slot_period)
+          continue;
+
+        return psfch_to_pucch_offset[f];
+      }
+    }
+  }
+  return -1;
+}
+
+void nr_rrc_mac_config_req_sl_config(module_id_t module_id,
+                                    NR_SL_ConfiguredGrantConfig_r16_t *nr_sl_cg_config,
+                                    NR_SL_BWP_Config_r16_t *sl_BWP_ToAddMod,
+                                    uint8_t mu,
+                                    rnti_t sl_rnti) {
+
+  gNB_MAC_INST *gNB = RC.nrmac[module_id];
+  UE_iterator(gNB->UE_info.list, UE) {
+    if (UE->rnti == sl_rnti) {
+      UE->sl_CG_Config[nr_sl_cg_config->sl_ConfigIndexCG_r16] = nr_sl_cg_config;
+      LOG_D(NR_MAC, "sl_ConfigIndexCG_r16 %ld, sl_PeriodCG_r16 index %ld sl_PSFCH_ToPUCCH_CG_Type1_r16 %ld\n",
+            UE->sl_CG_Config[nr_sl_cg_config->sl_ConfigIndexCG_r16]->sl_ConfigIndexCG_r16,
+            UE->sl_CG_Config[nr_sl_cg_config->sl_ConfigIndexCG_r16]->sl_PeriodCG_r16->choice.sl_PeriodCG1_r16,
+            *UE->sl_CG_Config[nr_sl_cg_config->sl_ConfigIndexCG_r16]->rrc_ConfiguredSidelinkGrant_r16->sl_PSFCH_ToPUCCH_CG_Type1_r16
+            );
+      UE->is_cg_sent[nr_sl_cg_config->sl_ConfigIndexCG_r16] = true;
+      LOG_D(NR_MAC, "Setting UE->is_cg_sent to true rnti %d is_cg_sent[%ld] %d\n", UE->rnti, nr_sl_cg_config->sl_ConfigIndexCG_r16, UE->is_cg_sent[nr_sl_cg_config->sl_ConfigIndexCG_r16]);
+      UE->NR_SL_MAC_PARAMS->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs = mu;
+      UE->NR_SL_MAC_PARAMS->scheduling_rrc_reconfig = true;
+      NR_SL_ResourcePool_r16_t *sl_Tx_ResourcePool = sl_BWP_ToAddMod->sl_BWP_PoolConfig_r16->sl_TxPoolScheduling_r16->sl_PoolToAddModList_r16->list.array[0]->sl_ResourcePool_r16;
+      BIT_STRING_t *sl_TimeResource_r16 = sl_Tx_ResourcePool->ext1->sl_TimeResource_r16;
+      UE->active_cg_id = nr_sl_cg_config->sl_ConfigIndexCG_r16;
+      UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16->buf = CALLOC(1, sl_TimeResource_r16->size);
+      UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16->bits_unused = sl_TimeResource_r16->bits_unused;
+      UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16->size = sl_TimeResource_r16->size;
+      memcpy(UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16->buf, sl_TimeResource_r16->buf, sl_TimeResource_r16->size);
+      UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16 = CALLOC(1, sizeof(struct NR_SetupRelease_SL_PSFCH_Config_r16));
+      UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup = CALLOC(1, sizeof(struct NR_SL_PSFCH_Config_r16));
+      UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = CALLOC(1, sizeof(long));
+      *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = *sl_Tx_ResourcePool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+    }
+  }
+}
+
+/* Compute sidelink Configured Grant Type 1's current logical slot
+ sl_ReferenceSlotCG_Type1 - reference logical slot defined by sl-TimeReferenceSFN-Type1.
+ sl_TimeOffsetCG_Type1 - slot offset with respect to logical slot defined by sl_ReferenceSlotCG_Type1
+ sl_PeriodCG_ms - Configured Grant period in ms (e.g. 100.0)
+ T_prime_max - T'max: number of slots in the resource pool
+ S - Sidelink grant index
+*/
+uint32_t calc_current_slot(uint32_t sl_ReferenceSlotCG_Type1,
+                           uint32_t sl_TimeOffsetCG_Type1,
+                           uint16_t sl_PeriodCG_ms,
+                           uint32_t T_prime_max,
+                           uint8_t S)
+{
+  // Compute periodicity_sl (in slots)
+  uint32_t periodicity_sl = (T_prime_max * sl_PeriodCG_ms + 10239) / 10240; // 10239 is for integer ceiling
+
+  // Compute current logical slot
+  uint32_t current_slot = (sl_ReferenceSlotCG_Type1 +
+                           sl_TimeOffsetCG_Type1 +
+                           S * periodicity_sl) % T_prime_max;
+
+  LOG_D(NR_MAC, "periodicity_sl %u, *S %u, T_prime_max %u, sl_PeriodCG_ms %u, sl_ReferenceSlotCG_Type1 %u, sl_TimeOffsetCG_Type1 %u, current_slot %u\n",
+        periodicity_sl,
+        S,
+        T_prime_max,
+        sl_PeriodCG_ms,
+        sl_ReferenceSlotCG_Type1,
+        sl_TimeOffsetCG_Type1,
+        current_slot);
+
+  return current_slot;
 }

@@ -74,7 +74,6 @@
 #define NB_NR_UE_MAC_INST 1
 #define MAX_NUM_BWP_UE       4
 #define NUM_SLOT_FRAME    10
-#define MAX_CONFIGURED_GRANTS 8
 
 /*!\brief value for indicating BSR Timer is not running */
 #define NR_MAC_UE_BSR_TIMER_NOT_RUNNING   (0xFFFF)
@@ -558,11 +557,6 @@ typedef struct {
 } NR_SL_UEs_t;
 
 typedef struct {
-  int16_t frame;
-  int16_t slot;
-} frameslot_t;
-
-typedef struct {
   frameslot_t frame_slot;
   uint16_t rsvp; // The resource reservation period in ms
   uint8_t subch_len; // The total number of the sub-channel allocated
@@ -649,7 +643,7 @@ typedef struct {
 
 typedef struct {
   uint8_t bwp_id;
-  sl_config_grant_t *sl_cg[MAX_CONFIGURED_GRANTS];
+  sl_config_grant_t *sl_cg[MAX_GRANTS];
 } sl_config_grant_bwp_t;
 
 /*!\brief Top level UE MAC structure */

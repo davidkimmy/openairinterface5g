@@ -1414,8 +1414,8 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
 #endif
     }
   } //symb
-  int nb_bit = pucch_pdu->bit_len_harq+pucch_pdu->sr_flag+pucch_pdu->bit_len_csi_part1+pucch_pdu->bit_len_csi_part2;
-  AssertFatal(nb_bit > 2  && nb_bit< 65,"illegal length (%d : %d,%d,%d,%d)\n",nb_bit,pucch_pdu->bit_len_harq,pucch_pdu->sr_flag,pucch_pdu->bit_len_csi_part1,pucch_pdu->bit_len_csi_part2);
+  int nb_bit = pucch_pdu->bit_len_harq + pucch_pdu->sr_flag + pucch_pdu->bit_len_csi_part1 + pucch_pdu->bit_len_csi_part2 + pucch_pdu->bit_len_sl_harq_summary;
+  AssertFatal(nb_bit > 2  && nb_bit < (65 + pucch_pdu->bit_len_sl_harq_summary), "illegal length (%d : %u, %u, %u, %u, %u)\n", nb_bit, pucch_pdu->bit_len_harq, pucch_pdu->sr_flag, pucch_pdu->bit_len_csi_part1, pucch_pdu->bit_len_csi_part2, pucch_pdu->bit_len_sl_harq_summary);
 
   uint64_t decodedPayload[2];
   uint8_t corr_dB;

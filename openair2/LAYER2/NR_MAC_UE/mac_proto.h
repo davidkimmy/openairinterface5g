@@ -518,27 +518,19 @@ uint16_t sl_get_subchannel_size(NR_SL_ResourcePool_r16_t *rpool);
 
 int nr_ue_process_sci1_indication_pdu(NR_UE_MAC_INST_t *mac,module_id_t mod_id,frame_t frame, int slot, sl_nr_sci_indication_pdu_t *sci,void *phy_data);
 
-void get_resource_config_grant(NR_UE_MAC_INST_t *mac,
-                               sl_resource_info_t *resource,
-                               uint16_t slots_per_frame,
-                               frame_t frame,
-                               slot_t slot,
-                               long psfch_period);
+sl_resource_info_t* get_resource_config_grant(NR_UE_MAC_INST_t *mac,
+                                              uint16_t slots_per_frame,
+                                              frame_t frame,
+                                              slot_t slot,
+                                              long psfch_period);
 
-void get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
-                                     sl_resource_info_t *resource,
-                                     uint16_t slots_per_frame,
-                                     frame_t frame,
-                                     slot_t slot,
-                                     long psfch_period,
-                                     int index,
-                                     double sl_periodcg_ms);
-
-uint32_t calc_current_slot(uint32_t sl_ReferenceSlotCG_Type1,
-                           uint32_t sl_TimeOffsetCG_Type1,
-                           double sl_PeriodCG_ms,
-                           uint32_t T_prime_max,
-                           uint8_t S);
+sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
+                                                    uint16_t slots_per_frame,
+                                                    frame_t frame,
+                                                    slot_t slot,
+                                                    long psfch_period,
+                                                    int index,
+                                                    uint16_t sl_periodcg_ms);
 
 void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind);
 
@@ -693,8 +685,6 @@ int get_feedback_frame_slot(NR_UE_MAC_INST_t *mac, NR_TDD_UL_DL_Pattern_t *tdd,
                             uint8_t feedback_offset, uint8_t psfch_min_time_gap,
                             const int nr_slots_frame, uint16_t frame, uint16_t slot,
                             long psfch_period, int *psfch_frame, int *psfch_slot);
-
-int16_t get_feedback_slot(long psfch_period, uint16_t slot);
 
 int get_pssch_to_harq_feedback(uint8_t *pssch_to_harq_feedback,
                                uint8_t psfch_min_time_gap,

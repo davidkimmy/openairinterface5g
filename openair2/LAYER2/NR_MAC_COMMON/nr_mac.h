@@ -646,6 +646,7 @@ typedef struct NR_UE_UL_BWP {
   NR_ConfiguredGrantConfig_t *configuredGrantConfig;
   NR_PUSCH_Config_t *pusch_Config;
   NR_PUCCH_Config_t *pucch_Config;
+  NR_PUCCH_Config_t *sl_pucch_Config;
   NR_PUCCH_ConfigCommon_t *pucch_ConfigCommon;
   long *harq_ACK_SpatialBundlingPUCCH;
   NR_CSI_MeasConfig_t *csi_MeasConfig;

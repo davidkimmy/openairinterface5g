@@ -109,6 +109,7 @@
 #define SL_CONFIG_STRING_SL_CG_MAX_TRANS_NUM                  "sl_CG_MaxTransNum"
 #define SL_CONFIG_STRING_SL_FREQ_RESOURCE_CG_TYPE1            "sl_FreqResourceCG_Type1"
 #define SL_CONFIG_STRING_SL_N1PUCCH_AN                        "sl_N1PUCCH_AN"
+#define SL_CONFIG_STRING_SL_PSFCH_TO_PUCCH_CG_TYPE1           "sl_PSFCH_ToPUCCH_CG_Type1"
 #define SL_CONFIG_STRING_SL_RESOURCE_POOL_ID                  "sl_ResourcePoolID"
 #define SL_CONFIG_STRING_SL_START_SUB_CHANNEL_CG_TYPE1        "sl_StartSubchannelCG_Type1"
 #define SL_CONFIG_STRING_SL_TIME_OFFSET_CG_TYPE1              "sl_TimeOffsetCG_Type1"

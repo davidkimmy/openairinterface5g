@@ -577,7 +577,7 @@ int main( int argc, char **argv ) {
                                   get_nrUE_params()->threequarter_fs,
                                   get_nrUE_params()->ofdm_offset_divisor);
       }
-      init_nr_ue_vars(UE[CC_id], 0, abstraction_flag);
+      init_nr_ue_vars(UE[CC_id], 0, abstraction_flag, UE[CC_id]->sl_mode);
     }
 
     init_openair0();

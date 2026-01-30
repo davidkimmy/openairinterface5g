@@ -328,12 +328,14 @@ typedef struct UE_info {
 
 typedef struct NR_sched_pucch {
   bool active;
+  bool sl_pucch_active;
   int frame;
   int ul_slot;
   bool sr_flag;
   int csi_bits;
   bool simultaneous_harqcsi;
   uint8_t dai_c;
+  uint16_t O_sl_ack;
   uint8_t timing_indicator;
   uint8_t resource_indicator;
   int r_pucch;
@@ -604,6 +606,9 @@ typedef struct {
 
   /// sri, ul_ri and tpmi based on SRS
   nr_srs_feedback_t srs_feedback;
+
+  feedback_event_t fb_events[2];
+
 } NR_UE_sched_ctrl_t;
 
 typedef struct {
@@ -629,6 +634,16 @@ typedef struct nr_mac_rrc_ul_if_s {
   initial_ul_rrc_message_transfer_func_t initial_ul_rrc_message_transfer;
 } nr_mac_rrc_ul_if_t;
 
+typedef struct sl_nr_mac_params {
+  //MAC prepares this and sends it to PHY
+  NR_SL_ResourcePool_r16_t *sl_tx_res_pool;
+  nr_sl_phy_config_t sl_phy_config;
+  bool scheduling_rrc_reconfig;
+  uint16_t decoded_DFN;
+  uint16_t decoded_slot;
+  NR_bler_options_t sl_bler;
+} sl_nr_mac_params_t;
+
 /*! \brief UE list used by gNB to order UEs/CC for scheduling*/
 typedef struct {
   rnti_t rnti;
@@ -648,6 +663,10 @@ typedef struct {
   uint32_t ra_timer;
   float ul_thr_ue;
   float dl_thr_ue;
+  NR_SL_ConfiguredGrantConfig_r16_t *sl_CG_Config[MAX_GRANTS];
+  bool is_cg_sent[MAX_GRANTS];
+  sl_nr_mac_params_t *NR_SL_MAC_PARAMS;
+  uint8_t active_cg_id;
 } NR_UE_info_t;
 
 typedef struct {

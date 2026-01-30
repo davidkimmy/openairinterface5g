@@ -492,7 +492,7 @@ int main(int argc, char **argv)
   memcpy(&UE->frame_parms,frame_parms,sizeof(NR_DL_FRAME_PARMS));
   UE->frame_parms.nb_antennas_rx=1;
 
-  if (init_nr_ue_signal(UE, 1) != 0)
+  if (init_nr_ue_signal(UE, 1, false) != 0)
   {
     printf("Error at UE NR initialisation\n");
     exit(-1);
@@ -754,7 +754,7 @@ int main(int argc, char **argv)
   free(RC.gNB[0]);
   free(RC.gNB);
 
-  term_nr_ue_signal(UE, 1);
+  term_nr_ue_signal(UE, 1, false);
   free(UE);
 
   for (int aatx=0; aatx<n_tx; aatx++) {
