@@ -303,7 +303,9 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
     free(sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_NumMuxCS_Pair_r16);
     free(sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_RB_Set_r16);
     free(sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16);
+    sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = NULL;
     free(sl_res_pool->sl_PSFCH_Config_r16->choice.setup);
+    sl_res_pool->sl_PSFCH_Config_r16->choice.setup = NULL;
     free(sl_res_pool->sl_PSFCH_Config_r16);
     sl_res_pool->sl_PSFCH_Config_r16 = NULL;
   }

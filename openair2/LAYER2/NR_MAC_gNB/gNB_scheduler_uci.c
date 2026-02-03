@@ -46,11 +46,10 @@ static void nr_fill_nfapi_pucch(gNB_MAC_INST *nrmac,
                                 const NR_sched_pucch_t *pucch,
                                 NR_UE_info_t* UE)
 {
-  int pucch_slot = is_fb_time(UE, frame, slot) ?
-                                                  slot : pucch->ul_slot;
+  bool is_feedback = is_fb_time(UE, frame, slot);
+  int pucch_slot = is_feedback ? slot : pucch->ul_slot;
 
-  int pucch_frame = is_fb_time(UE, frame, slot) ?
-                                                  frame : pucch->frame;
+  int pucch_frame = is_feedback ? frame : pucch->frame;
 
   const int index = ul_buffer_index(pucch_frame, pucch_slot, UE->current_UL_BWP.scs, nrmac->UL_tti_req_ahead_size);
 
@@ -189,31 +188,35 @@ NR_UE_info_t* nr_sl_fb_scheduling(gNB_MAC_INST *nrmac,
                                   sub_frame_t slot,
                                   int *pucch_index) {
   UE_iterator(nrmac->UE_info.list, UE) {
-      if (UE->is_cg_sent[UE->active_cg_id]) {
-        const uint16_t rnti = UE->rnti;
-        if (UE->NR_SL_MAC_PARAMS->scheduling_rrc_reconfig) {
-          nr_sl_harq_fb_report_frame_slot(nrmac, UE, frame, slot);
-          if (is_fb_time(UE, frame, slot)) {
-            *pucch_index = virtual_resource_schedule(nrmac, UE, frame, slot);
-            if (*pucch_index < 0) {
-              LOG_W(NR_MAC, "[UE %04x][%4d.%2d] could not find SL_PUCCH_CONFIG for DL DCI\n",
-                    rnti,
-                    frame,
-                    slot);
-            }
+    if (UE->NR_SL_MAC_PARAMS->sl_tx_res_pool == NULL ||
+        UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16 == NULL)
+      return NULL;
+    if (UE->is_cg_sent[UE->active_cg_id]) {
+      const uint16_t rnti = UE->rnti;
+      if (UE->NR_SL_MAC_PARAMS->scheduling_rrc_reconfig) {
+        nr_sl_harq_fb_report_frame_slot(nrmac, UE, frame, slot);
+        if (is_fb_time(UE, frame, slot)) {
+          *pucch_index = virtual_resource_schedule(nrmac, UE, frame, slot);
+          if (*pucch_index < 0) {
+            LOG_W(NR_MAC, "[UE %04x][%4u.%2u] could not find SL_PUCCH_CONFIG for DL DCI\n",
+                  rnti,
+                  frame,
+                  slot);
           }
-          return UE;
         }
-      } else {
-        *pucch_index = -1;
+        return UE;
       }
+    } else {
+      *pucch_index = -1;
     }
+  }
   return NULL;
 }
 
 void nr_schedule_pucch(gNB_MAC_INST *nrmac,
                        frame_t frameP,
-                       sub_frame_t slotP)
+                       sub_frame_t slotP,
+                       bool is_sl_feedback)
 {
   /* already mutex protected: held in gNB_dlsch_ulsch_scheduler() */
   NR_SCHED_ENSURE_LOCKED(&nrmac->sched_lock);
@@ -230,48 +233,22 @@ void nr_schedule_pucch(gNB_MAC_INST *nrmac,
     AssertFatal(tdd || nrmac->common_channels[0].frame_type == FDD, "Dynamic TDD not handled yet\n");
     const int pucch_index = get_pucch_index(frameP, slotP, n_slots_frame, tdd, sched_ctrl->sched_pucch_size);
     NR_sched_pucch_t *curr_pucch = &UE->UE_sched_ctrl.sched_pucch[pucch_index];
-    if (!curr_pucch->active)
-      continue;
-    DevAssert(frameP == curr_pucch->frame && slotP == curr_pucch->ul_slot);
+    if (!is_sl_feedback) {
+      if (!curr_pucch->active)
+        continue;
+      DevAssert(frameP == curr_pucch->frame && slotP == curr_pucch->ul_slot);
+      curr_pucch->O_sl_ack = 0;
+    } else {
+      if (!curr_pucch->sl_pucch_active)
+        continue;
+      curr_pucch->O_sl_ack = 16;
+    }
 
     const uint16_t O_ack = curr_pucch->dai_c;
     const uint16_t O_csi = curr_pucch->csi_bits;
     const uint8_t O_sr = curr_pucch->sr_flag;
-    LOG_D(NR_MAC,"Scheduling PUCCH[%d] RX for UE %04x in %4d.%2d O_ack %d, O_sr %d, O_csi %d\n",
-          pucch_index,UE->rnti,curr_pucch->frame,curr_pucch->ul_slot,O_ack,O_sr,O_csi);
-    nr_fill_nfapi_pucch(nrmac, frameP, slotP, curr_pucch, UE);
-    memset(curr_pucch, 0, sizeof(*curr_pucch));
-  }
-}
-
-void nr_schedule_sl_pucch(gNB_MAC_INST *nrmac,
-                          frame_t frameP,
-                          sub_frame_t slotP)
-{
-  /* already mutex protected: held in gNB_dlsch_ulsch_scheduler() */
-  NR_SCHED_ENSURE_LOCKED(&nrmac->sched_lock);
-  if (!is_xlsch_in_slot(nrmac->ulsch_slot_bitmap[slotP / 64], slotP))
-    return;
-
-  UE_iterator(nrmac->UE_info.list, UE) {
-    NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
-    NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
-    const int n_slots_frame = nr_slots_per_frame[ul_bwp->scs];
-    const NR_ServingCellConfigCommon_t *scc = nrmac->common_channels[0].ServingCellConfigCommon;
-    const NR_TDD_UL_DL_Pattern_t *tdd = scc->tdd_UL_DL_ConfigurationCommon ? &scc->tdd_UL_DL_ConfigurationCommon->pattern1 : NULL;
-    AssertFatal(tdd || nrmac->common_channels[0].frame_type == FDD, "Dynamic TDD not handled yet\n");
-    const int pucch_index = get_pucch_index(frameP, slotP, n_slots_frame, tdd, sched_ctrl->sched_pucch_size);
-    NR_sched_pucch_t *curr_pucch = &UE->UE_sched_ctrl.sched_pucch[pucch_index];
-    if (!curr_pucch->sl_pucch_active)
-      continue;
-    bool is_feedback = is_fb_time(UE, frameP, slotP);
-    curr_pucch->O_sl_ack = is_feedback ? 16 : 0;
-
-    const uint16_t O_ack = curr_pucch->dai_c;
-    const uint16_t O_csi = curr_pucch->csi_bits;
-    const uint8_t O_sr = curr_pucch->sr_flag;
-    LOG_D(NR_MAC, "Scheduling SL PUCCH[%d] RX for UE %04x in %4d.%2d O_ack %d, O_sr %d, O_csi %d O_sl_ack %d\n",
-          pucch_index,UE->rnti, curr_pucch->frame, curr_pucch->ul_slot, O_ack, O_sr, O_csi, curr_pucch->O_sl_ack);
+    LOG_D(NR_MAC,"Scheduling PUCCH[%d] RX for UE %04x in %4d.%2d O_ack %d, O_sr %d, O_csi %d O_sl_ack %d\n",
+          pucch_index, UE->rnti, curr_pucch->frame, curr_pucch->ul_slot, O_ack, O_sr, O_csi, curr_pucch->O_sl_ack);
     nr_fill_nfapi_pucch(nrmac, frameP, slotP, curr_pucch, UE);
     memset(curr_pucch, 0, sizeof(*curr_pucch));
   }

@@ -252,17 +252,13 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, frame_t frame, sub_frame_
   nr_schedule_ue_spec(module_idP, frame, slot, &sched_info->DL_req, &sched_info->TX_req);
   stop_meas(&gNB->schedule_dlsch);
 
-  nr_sr_reporting(gNB, frame, slot);
-
   bool is_feedback = false;
   if (UE_info)
     is_feedback = is_fb_time(UE_info, frame, slot);
 
-  if(!is_feedback)
-    nr_schedule_pucch(gNB, frame, slot);
+  nr_sr_reporting(gNB, frame, slot);
 
-  if(is_feedback)
-    nr_schedule_sl_pucch(gNB, frame, slot);
+  nr_schedule_pucch(gNB, frame, slot, is_feedback);
 
   /* TODO: we copy from gNB->UL_tti_req_ahead[0][current_index], ie. CC_id == 0,
    * is more than 1 CC supported?
@@ -279,8 +275,8 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, frame_t frame, sub_frame_
 int compare_frame_slots(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1, uint16_t frame2, uint8_t slot2)
 {
   NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
-  const int mu = ul_bwp->scs;
-  const int num_slots_frame = nr_slots_per_frame[mu];
+  const uint8_t mu = ul_bwp->scs;
+  const uint8_t num_slots_frame = nr_slots_per_frame[mu];
   uint32_t total_slots = num_slots_frame * 1024;
 
   int t1 = frame1 * num_slots_frame + slot1;
@@ -301,21 +297,7 @@ int compare_frame_slots(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1, uint16
 
 void add_feedback_event(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint16_t fb_frame, uint8_t fb_slot) {
   NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
-  /* Prefer empty slot */
-  for (uint8_t i = 0; i < 2; i++) {
-    if (!sched_ctrl->fb_events[i].valid) {
-      sched_ctrl->fb_events[i] = (feedback_event_t){fb_frame, fb_slot, 1};
-      return;
-    }
-  }
-
-  /* Both slots full: update the earlier one */
-  int first_is_earlier = compare_frame_slots(UE, sched_ctrl->fb_events[0].frame, sched_ctrl->fb_events[0].slot, sched_ctrl->fb_events[1].frame, sched_ctrl->fb_events[1].slot);
-  if (first_is_earlier == 1) {
-    sched_ctrl->fb_events[0] = (feedback_event_t){fb_frame, fb_slot, 1};
-  } else {
-    sched_ctrl->fb_events[1] = (feedback_event_t){fb_frame, fb_slot, 1};
-  }
+  sched_ctrl->fb_event = (feedback_event_t){fb_frame, fb_slot, 1};
 }
 
 bool is_fb_time(NR_UE_info_t *UE, uint16_t current_frame, uint8_t current_slot) {
@@ -324,13 +306,11 @@ bool is_fb_time(NR_UE_info_t *UE, uint16_t current_frame, uint8_t current_slot) 
   NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
   if (sched_ctrl == NULL)
     return false;
-  for (uint8_t i = 0; i < 2; i++) {
-    if (compare_frame_slots(UE, current_frame, current_slot,
-                            sched_ctrl->fb_events[i].frame,
-                            sched_ctrl->fb_events[i].slot) == 0) {
+  if (compare_frame_slots(UE, current_frame, current_slot,
+                          sched_ctrl->fb_event.frame,
+                          sched_ctrl->fb_event.slot) == 0) {
       return true;
     }
-  }
   return false;
 }
 
@@ -343,8 +323,8 @@ uint32_t diff_frame_slot(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1,
                          uint16_t frame2, uint8_t slot2)
 {
   NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
-  const int mu = ul_bwp->scs;
-  const int num_slots_frame = nr_slots_per_frame[mu];
+  const uint8_t mu = ul_bwp->scs;
+  const uint8_t num_slots_frame = nr_slots_per_frame[mu];
   uint32_t total_slots = num_slots_frame * 1024;
 
   int32_t t1 = (frame1 * num_slots_frame) + slot1;
@@ -359,25 +339,37 @@ uint32_t diff_frame_slot(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1,
 }
 
 void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint32_t num_slots_per_cg_period, uint16_t fb_frame, uint8_t fb_slot) {
+
   static uint32_t slot_counter;
-  static bool first_fb_scheduled;
-  static uint16_t prev_frame = 0;
-  static uint8_t prev_slot = 0;
+  static bool first_fb_scheduled, fb_delta_computed;
+  static uint8_t prev_slot, fb_delta_slot, first_fb_slot;
+  static uint16_t prev_frame, fb_delta_frame, first_fb_frame;
 
-  bool sched_cg_event =
-      (slot_counter == 0 && !first_fb_scheduled) ||
-      (slot_counter == num_slots_per_cg_period);
+  NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
+  const uint8_t mu = ul_bwp->scs;
+  const uint8_t num_slots_frame = nr_slots_per_frame[mu];
 
-  if (sched_cg_event) {
+  bool cg_start = (slot_counter == 0 && !first_fb_scheduled) || (slot_counter == num_slots_per_cg_period);
+  if (cg_start) {
     slot_counter = 0;
 
     if (!first_fb_scheduled) {
       first_fb_scheduled = true;
+      first_fb_frame = fb_frame;
+      first_fb_slot = fb_slot;
       prev_frame = frame;
       prev_slot = slot;
+      add_feedback_event(UE, frame, slot, fb_frame, fb_slot);
+    } else {
+      if (!fb_delta_computed) {
+        fb_delta_frame = (first_fb_frame - frame + 1024) % 1024;
+        fb_delta_slot = (first_fb_slot - slot + num_slots_frame) % num_slots_frame;
+        fb_delta_computed = true;
+      }
+      fb_frame = (frame + fb_delta_frame) % 1024;
+      fb_slot = (slot + fb_delta_slot) % num_slots_frame;
+      add_feedback_event(UE, frame, slot, fb_frame, fb_slot);
     }
-
-    add_feedback_event(UE, frame, slot, fb_frame, fb_slot);
     LOG_D(NR_MAC,
           "CG START at %u.%u → FB scheduled at %4u.%2u slot_counter %u\n",
           frame, slot, fb_frame, fb_slot, slot_counter);
@@ -390,4 +382,3 @@ void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot,
     prev_slot = slot;
   }
 }
-

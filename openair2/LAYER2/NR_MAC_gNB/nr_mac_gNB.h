@@ -607,7 +607,7 @@ typedef struct {
   /// sri, ul_ri and tpmi based on SRS
   nr_srs_feedback_t srs_feedback;
 
-  feedback_event_t fb_events[2];
+  feedback_event_t fb_event;
 
 } NR_UE_sched_ctrl_t;
 

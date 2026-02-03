@@ -522,7 +522,8 @@ sl_resource_info_t* get_resource_config_grant(NR_UE_MAC_INST_t *mac,
                                               uint16_t slots_per_frame,
                                               frame_t frame,
                                               slot_t slot,
-                                              long psfch_period);
+                                              long psfch_period,
+                                              uint8_t mu);
 
 sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
                                                     uint16_t slots_per_frame,
@@ -530,7 +531,8 @@ sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
                                                     slot_t slot,
                                                     long psfch_period,
                                                     int index,
-                                                    uint16_t sl_periodcg_ms);
+                                                    double sl_periodcg_ms,
+                                                    uint8_t mu);
 
 void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind);
 

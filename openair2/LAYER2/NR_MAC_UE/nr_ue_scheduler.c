@@ -3873,7 +3873,8 @@ sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
                                                     slot_t slot,
                                                     long psfch_period,
                                                     int index,
-                                                    uint16_t sl_periodcg_ms)
+                                                    double sl_periodcg_ms,
+                                                    uint8_t mu)
 {
   int S = 0;
   BIT_STRING_t *sl_time_rsrc = mac->sl_tx_res_pool->ext1->sl_TimeResource_r16;
@@ -3916,7 +3917,9 @@ sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
     SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[pool_id - 1];
     uint16_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
     LOG_D(NR_MAC, "pool_id %d, phy_sl_bitmap.size %lu, bits_unused %d\n", pool_id, sl_tx_rsrc_pool->phy_sl_bitmap.size, sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused);
-    sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, index, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+    frameslot_t fs = {frame, slot};
+    uint64_t tx_abs_slot = normalize(&fs, mu);
+    sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
     int num_psfch_symbols = 0;
     if (sl_has_psfch && sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16 && sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16
         && *sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 > 0) {
@@ -3942,13 +3945,14 @@ sl_resource_info_t* get_resource_config_grant(NR_UE_MAC_INST_t *mac,
                                               uint16_t slots_per_frame,
                                               frame_t frame,
                                               slot_t slot,
-                                              long psfch_period) {
+                                              long psfch_period,
+                                              uint8_t mu) {
   for (int index = 0; index < MAX_GRANTS; index++) { // resource is being overwritten
     if (mac->sl_cg_per_bwp.sl_cg[index]->active) {
       uint16_t sl_periodcg_ms = mac->sl_cg_per_bwp.sl_cg[index]->sl_period_cg;
       if (sl_periodcg_ms > 0) {
         if (mac->sl_cg_per_bwp.sl_cg[index]->type == CG_TYPE_1) {
-          sl_resource_info_t *resource = get_resource_config_grant_type1(mac, slots_per_frame, frame, slot, psfch_period, index, sl_periodcg_ms);
+          sl_resource_info_t *resource = get_resource_config_grant_type1(mac, slots_per_frame, frame, slot, psfch_period, index, sl_periodcg_ms, mu);
           if (resource)
             LOG_D(NR_MAC, "%4d.%2d, sl_timeresource_cg_type1 %d, sl_freqresource_cg_type1 %d, cg_type %d, sl_subchan_len %d, sl_pssch_sym_start %d,\
                 sl_pscch_sym_len %d, num_sl_pscch_rbs %d, sl_pssch_sym_len %d\n", resource->sfn.frame,
@@ -4107,7 +4111,7 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind) {
       }
     }
   } else if (mac->is_synced_sl && get_softmodem_params()->sl_mode == 1) {
-    resource = get_resource_config_grant(mac, slots_per_frame, frame, slot, psfch_period);
+    resource = get_resource_config_grant(mac, slots_per_frame, frame, slot, psfch_period, mu);
     resource_available = true;
   } else {
     resource_available = true;
