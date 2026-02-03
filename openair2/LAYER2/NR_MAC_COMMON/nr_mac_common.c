@@ -5793,7 +5793,8 @@ void nr_rrc_mac_config_req_sl_config(module_id_t module_id,
       UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16 = CALLOC(1, sizeof(struct NR_SetupRelease_SL_PSFCH_Config_r16));
       UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup = CALLOC(1, sizeof(struct NR_SL_PSFCH_Config_r16));
       UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = CALLOC(1, sizeof(long));
-      *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = *sl_Tx_ResourcePool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+      if (sl_Tx_ResourcePool->sl_PSFCH_Config_r16)
+        *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = *sl_Tx_ResourcePool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
     }
   }
 }

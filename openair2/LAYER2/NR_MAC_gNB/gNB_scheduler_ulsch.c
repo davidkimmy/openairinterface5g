@@ -2000,6 +2000,7 @@ static bool nr_fr1_ulsch_preprocessor(module_id_t module_id, frame_t frame, sub_
 
   sched_ctrl->sched_pusch.slot = sched_slot;
   sched_ctrl->sched_pusch.frame = sched_frame;
+  bool psfch_disabled = false;
   UE_iterator(nr_mac->UE_info.list, UE2) {
     NR_UE_sched_ctrl_t *sched_ctrl = &UE2->UE_sched_ctrl;
     AssertFatal(K2 == get_K2(tdaList, tda, mu),
@@ -2007,6 +2008,7 @@ static bool nr_fr1_ulsch_preprocessor(module_id_t module_id, frame_t frame, sub_
 		K2, 0, get_K2(tdaList, tda, mu), UE2->rnti);
     sched_ctrl->sched_pusch.slot = sched_slot;
     sched_ctrl->sched_pusch.frame = sched_frame;
+    psfch_disabled = (UE2->NR_SL_MAC_PARAMS->sl_tx_res_pool == NULL) || (UE2->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16 == NULL);
   }
 
   /* Change vrb_map_UL to rballoc_mask: check which symbols per RB (in
@@ -2017,8 +2019,8 @@ static bool nr_fr1_ulsch_preprocessor(module_id_t module_id, frame_t frame, sub_
 
   const uint16_t bwpSize = current_BWP->BWPSize;
   const uint16_t bwpStart = current_BWP->BWPStart;
-
-  avoid_sl_pucch_resources(nr_mac, scc, sched_ctrl, current_BWP, vrb_map_UL, bwpStart, sched_frame, sched_slot, mu, CC_id);
+  if ((get_softmodem_params()->sl_mode == 1) && !psfch_disabled)
+    avoid_sl_pucch_resources(nr_mac, scc, sched_ctrl, current_BWP, vrb_map_UL, bwpStart, sched_frame, sched_slot, mu, CC_id);
 
   const int startSymbolAndLength = tdaList->list.array[tda]->startSymbolAndLength;
   int startSymbolIndex, nrOfSymbols;
