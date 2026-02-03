@@ -628,6 +628,9 @@ void configure_current_BWP(NR_UE_MAC_INST_t *mac,
 
       UL_BWP->msg3_DeltaPreamble = bwp_ulcommon->pusch_ConfigCommon->choice.setup->msg3_DeltaPreamble;
 
+      NR_BWP_UplinkDedicated_t *initialUplinkBWP = spCellConfigDedicated->uplinkConfig->initialUplinkBWP;
+      UL_BWP->sl_pucch_Config = initialUplinkBWP->ext1->sl_PUCCH_Config_r16->choice.setup;
+
       NR_BWP_Uplink_t *bwp_uplink = NULL;
       const struct NR_UplinkConfig__uplinkBWP_ToAddModList *ubwpList = spCellConfigDedicated->uplinkConfig->uplinkBWP_ToAddModList;
       if (ubwpList)

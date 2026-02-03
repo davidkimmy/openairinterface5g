@@ -362,9 +362,11 @@ typedef struct {
   uint8_t sr_payload;
   uint32_t csi_part1_payload;
   uint32_t csi_part2_payload;
+  uint32_t sl_harq_payload;   // Sidelink HARQ Summary Report payload (PC5)
   int n_sr;
   int n_csi;
   int n_harq;
+  int n_sl_harq;              // Number of Sidelink HARQ summary bits
   int n_CCE;
   int N_CCE;
   int delta_pucch;
@@ -646,6 +648,26 @@ typedef struct {
   sl_config_grant_t *sl_cg[MAX_GRANTS];
 } sl_config_grant_bwp_t;
 
+typedef struct {
+  uint16_t src_id;
+  uint8_t sl_harq_pid;
+  uint8_t harq_status;   // 1: ACK, 0: NACK
+  bool is_active;
+} SL_HARQ_ENTRY_t;
+
+typedef struct {
+  uint16_t src_id;       // Remote UE Identity
+  bool is_active;        // Slot is occupied by a known UE
+} SL_REMOTE_UE_MAP_t;
+
+typedef struct {
+  SL_HARQ_ENTRY_t sl_harq_table[MAX_SL_HARQ_PROCESSES];
+  SL_REMOTE_UE_MAP_t remote_ue_mapping[MAX_REMOTE_UES];
+  uint8_t active_sl_harq_count;
+  uint32_t sl_pucch_period;
+  uint32_t next_pucch_slot;
+} SL_REPORT_CONFIG_t;
+
 /*!\brief Top level UE MAC structure */
 typedef struct {
   NR_UE_L2_STATE_t state;
@@ -790,6 +812,7 @@ typedef struct {
   List_t *sl_candidate_resources;
   uint16_t reselection_timer;
   sl_config_grant_bwp_t sl_cg_per_bwp;
+  SL_REPORT_CONFIG_t sl_report_config;
 } NR_UE_MAC_INST_t;
 
 /*@}*/
