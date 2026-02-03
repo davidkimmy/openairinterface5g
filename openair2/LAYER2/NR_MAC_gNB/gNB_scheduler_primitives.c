@@ -760,22 +760,22 @@ void nr_configure_pucch(nfapi_nr_pucch_pdu_t* pucch_pdu,
 	// procedure to select pucch resource id from resource sets according to
 	// number of uci bits and pucch resource indicator pucch_resource
 	// ( see table 9.2.3.2 in 38.213)
-      for (int i=0; i<n_set; i++) {
-	pucchresset = pucch_Config->resourceSetToAddModList->list.array[i];
-	n_list = pucchresset->resourceList.list.count;
-	if (pucchresset->pucch_ResourceSetId == 0 && O_uci<3) {
-	  if (pucch_resource < n_list)
-            resource_id = pucchresset->resourceList.list.array[pucch_resource];
-          else
-            AssertFatal(1==0,"Couldn't fine pucch resource indicator %d in PUCCH resource set %d for %d UCI bits",pucch_resource,i,O_uci);
-        }
-        if (pucchresset->pucch_ResourceSetId == 1 && O_uci>2) {
-        N3 = pucchresset->maxPayloadSize!= NULL ?  *pucchresset->maxPayloadSize : 1706;
-        if (N2<O_uci && N3>O_uci) {
+    for (int i = 0; i < n_set; i++) {
+      pucchresset = pucch_Config->resourceSetToAddModList->list.array[i];
+      n_list = pucchresset->resourceList.list.count;
+      if (pucchresset->pucch_ResourceSetId == 0 && O_uci<3) {
+        if (pucch_resource < n_list)
+          resource_id = pucchresset->resourceList.list.array[pucch_resource];
+        else
+          AssertFatal(1 == 0, "Couldn't fine pucch resource indicator %d in PUCCH resource set %d for %d UCI bits", pucch_resource, i, O_uci);
+      }
+      if (pucchresset->pucch_ResourceSetId == 1 && O_uci>2) {
+        N3 = pucchresset->maxPayloadSize != NULL ? *pucchresset->maxPayloadSize : 1706;
+        if (N2 < O_uci && N3 > O_uci) {
           if (pucch_resource < n_list)
             resource_id = pucchresset->resourceList.list.array[pucch_resource];
           else
-            AssertFatal(1==0,"Couldn't fine pucch resource indicator %d in PUCCH resource set %d for %d UCI bits",pucch_resource,i,O_uci);
+            AssertFatal(1 == 0, "Couldn't fine pucch resource indicator %d in PUCCH resource set %d for %d UCI bits", pucch_resource, i, O_uci);
         }
         else N2 = N3;
       }

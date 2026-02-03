@@ -36,6 +36,9 @@
 #include "nr_mac.h"
 #include "common/utils/nr/nr_common.h"
 
+#define MAX_REMOTE_UES        1
+#define HARQ_BITS_PER_UE      (NR_MAX_HARQ_PROCESSES / MAX_REMOTE_UES)
+#define MAX_SL_HARQ_PROCESSES (NR_MAX_HARQ_PROCESSES)
 #define NB_SRS_PERIOD         (18)
 #define MAX_GRANTS 8
 #define MAX_PSFCH_TO_PUCCH_OFFSET 16

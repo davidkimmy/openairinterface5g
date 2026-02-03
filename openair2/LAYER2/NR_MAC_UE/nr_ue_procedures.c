@@ -1352,13 +1352,20 @@ void nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
     pucch_pdu->prb_size = 1; // format 0 or 1
 
     int n_uci = pucch->n_sr + pucch->n_harq + pucch->n_csi;
+    if (get_softmodem_params()->sl_mode == 1) {
+      n_uci += pucch->n_sl_harq;
+    }
     if (n_uci > (sizeof(uint64_t) * 8)) {
       LOG_E(MAC,"PUCCH number of UCI bits exceeds payload size\n");
       return;
     }
-    if (pucchres->format.present != NR_PUCCH_Resource__format_PR_format0)
+    if (pucchres->format.present != NR_PUCCH_Resource__format_PR_format0) {
       pucch_pdu->payload =
           (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
+      if (get_softmodem_params()->sl_mode == 1) {
+        pucch_pdu->payload |= pucch->sl_harq_payload << (pucch->n_harq + pucch->n_sr + pucch->n_csi);
+      }
+    }
 
     switch(pucchres->format.present) {
       case NR_PUCCH_Resource__format_PR_format0 :
@@ -1389,6 +1396,18 @@ void nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
                                                      2,
                                                      pucchres->format.choice.format2->nrofSymbols,
                                                      8);
+        if (pucch->n_sl_harq > 0) {
+          LOG_I(NR_MAC,"(6) pucchres->format.present %d  (fmt0: 1, fmt2: 3)\n", pucchres->format.present);
+          LOG_I(NR_MAC,"(6) n_sr %d  n_harq %d  n_sl_harq %d  n_csi %d ==> n_uci %d #PRBs %ld  PRB_size %u  #Syms %u\n",
+                        pucch->n_sr, pucch->n_harq, pucch->n_sl_harq, pucch->n_csi, n_uci,
+                        pucchres->format.choice.format2->nrofPRBs,
+                        pucch_pdu->prb_size,
+                        pucch_pdu->nr_of_symbols);
+        }
+        else {
+          LOG_D(NR_MAC,"\tn_sl_harq == 0  pucchres->format.present %d  (fmt0: 1, fmt2: 3) in slot_tx %d\n", pucchres->format.present, slot);
+          LOG_D(NR_MAC,"\tn_sl_harq == 0  pucchres->format.present %d  (fmt0: 1, fmt2: 3) in slot_tx %d\n", pucchres->format.present, slot);
+        }
         break;
       case NR_PUCCH_Resource__format_PR_format3 :
         pucch_pdu->format_type = 3;
