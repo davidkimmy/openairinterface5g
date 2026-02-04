@@ -76,7 +76,7 @@ static void nr_fill_nfapi_pucch(gNB_MAC_INST *nrmac,
   future_ul_tti_req->n_pdus += 1;
 
   LOG_D(NR_MAC,
-        "%s %4d.%2d Scheduling pucch reception in %4d.%2d: bits SR %d, DAI %d, CSI %d on res %d\n",
+        "%s %4d.%2d Scheduling pucch reception in %4d.%2d: bits SR %d, DAI %d, CSI %d on res %d O_sl_ack %d\n",
         pucch->dai_c>0 ? "pucch_acknack" : "",
         frame,
         slot,
@@ -85,7 +85,8 @@ static void nr_fill_nfapi_pucch(gNB_MAC_INST *nrmac,
         pucch->sr_flag,
         pucch->dai_c,
         pucch->csi_bits,
-        pucch->resource_indicator);
+        pucch->resource_indicator,
+        pucch->O_sl_ack);
   NR_COMMON_channels_t * common_ch=nrmac->common_channels;
   NR_ServingCellConfigCommon_t *scc = common_ch->ServingCellConfigCommon;
 
@@ -1093,6 +1094,16 @@ void handle_nr_uci_pucch_2_3_4(module_id_t mod_id,
   if ((uci_234->pduBitmap >> 3) & 0x01) {
     //@TODO:Handle CSI Report 2
     // nothing to free (yet)
+  }
+  if ((uci_234->pduBitmap >> 4) & 0x01) {
+    // iterate over received SL harq summary bits
+    for (int harq_bit = 0; harq_bit < uci_234->sl_harq.harq_bit_len; harq_bit++) {
+      int byte = harq_bit >> 3;        // harq_bit / 8
+      int bit  = harq_bit & 0x07;      // harq_bit % 8
+      const int acknack = (uci_234->sl_harq.harq_payload[byte] >> bit) & 0x01;
+    }
+    LOG_W(NR_MAC, "%4u.%2u %0x %0x : <== sl_harq_payload\n", frame, slot, uci_234->sl_harq.harq_payload[1], uci_234->sl_harq.harq_payload[0]);
+    free(uci_234->sl_harq.harq_payload);
   }
   NR_SCHED_UNLOCK(&nrmac->sched_lock);
 }

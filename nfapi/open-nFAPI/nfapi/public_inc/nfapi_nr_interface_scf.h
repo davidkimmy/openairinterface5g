@@ -1650,8 +1650,9 @@ typedef struct
   nfapi_nr_harq_pdu_2_3_4_t harq;//70
   nfapi_nr_csi_part1_pdu_t csi_part1;//71
   nfapi_nr_csi_part2_pdu_t csi_part2;//72
+  nfapi_nr_harq_pdu_2_3_4_t sl_harq;//73
 
-}nfapi_nr_uci_pucch_pdu_format_2_3_4_t;
+} nfapi_nr_uci_pucch_pdu_format_2_3_4_t;
 
 typedef enum {
   NFAPI_NR_UCI_PUSCH_PDU_TYPE  = 0,

@@ -54,6 +54,7 @@
 #include "T.h"
 
 //#define DEBUG_NR_PUCCH_RX 1
+#define UCI_SL_HARQ_SUMMARY_PRESENT 0x10
 
 void nr_fill_pucch(PHY_VARS_gNB *gNB,
                    int frame,
@@ -73,12 +74,13 @@ void nr_fill_pucch(PHY_VARS_gNB *gNB,
       pucch->active = 1;
       memcpy((void *)&pucch->pucch_pdu, (void *)pucch_pdu, sizeof(nfapi_nr_pucch_pdu_t));
       LOG_D(PHY,
-            "Programming PUCCH[%d] for %d.%d, format %d, nb_harq %d, nb_sr %d, nb_csi %d\n",
+            "Programming PUCCH[%d] for %d.%d, format %d, nb_harq %d, nb_sl_harq %d, nb_sr %d, nb_csi %d\n",
             i,
             pucch->frame,
             pucch->slot,
             pucch->pucch_pdu.format_type,
             pucch->pucch_pdu.bit_len_harq,
+            pucch_pdu->bit_len_sl_harq_summary,
             pucch->pucch_pdu.sr_flag,
             pucch->pucch_pdu.bit_len_csi_part1);
       found = true;
@@ -1155,12 +1157,13 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
     }
   }
   LOG_D(PHY,
-        "%d.%d Decoding pucch2 for %d symbols, %d PRB, nb_harq %d, nb_sr %d, nb_csi %d/%d\n",
+        "%d.%d Decoding pucch2 for %d symbols, %d PRB, nb_harq %d, nb_sl_harq %d, nb_sr %d, nb_csi %d/%d\n",
         frame,
         slot,
         pucch_pdu->nr_of_symbols,
         pucch_pdu->prb_size,
         pucch_pdu->bit_len_harq,
+        pucch_pdu->bit_len_sl_harq_summary,
         pucch_pdu->sr_flag,
         pucch_pdu->bit_len_csi_part1,
         pucch_pdu->bit_len_csi_part2);
@@ -1682,6 +1685,7 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
   else cqi=(640+SNRtimes10)/5;
 
   uci_pdu->harq.harq_bit_len = pucch_pdu->bit_len_harq;
+  uci_pdu->sl_harq.harq_bit_len = pucch_pdu->bit_len_sl_harq_summary;
   uci_pdu->pduBitmap=0;
   uci_pdu->rnti=pucch_pdu->rnti;
   uci_pdu->handle=pucch_pdu->handle;
@@ -1738,6 +1742,37 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
   
   if (pucch_pdu->bit_len_csi_part2>0) {
     uci_pdu->pduBitmap|=8;
+  }
+
+  if (pucch_pdu->bit_len_sl_harq_summary > 0) {
+    uci_pdu->pduBitmap |= UCI_SL_HARQ_SUMMARY_PRESENT;
+
+    int harq_bytes=pucch_pdu->bit_len_sl_harq_summary >> 3;
+    if ((pucch_pdu->bit_len_sl_harq_summary & 7) > 0) harq_bytes++;
+    uci_pdu->sl_harq.harq_payload = (uint8_t*)malloc(harq_bytes);
+    uci_pdu->sl_harq.harq_crc = decoderState;
+    LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL HARQ bytes (%d) Decoder state %d\n",
+          frame, slot, harq_bytes, decoderState);
+
+    uint8_t i = 0;
+    for (; i < harq_bytes - 1; i++) {
+      uci_pdu->sl_harq.harq_payload[i] = decodedPayload[0] & 255;
+      LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d HARQ paylod (%d) = %d\n",
+            frame, slot, i, uci_pdu->sl_harq.harq_payload[i]);
+      decodedPayload[0] >>= 8;
+    }
+
+    bit_left = pucch_pdu->bit_len_sl_harq_summary - ((harq_bytes-1) << 3);
+    uci_pdu->sl_harq.harq_payload[i] = decodedPayload[0] & ((1 << bit_left) - 1);
+    LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL ARQ paylod (%d) = %d\n",
+          frame, slot, i, uci_pdu->sl_harq.harq_payload[i]);
+    decodedPayload[0] = pucch_pdu->bit_len_sl_harq_summary < 64 ? decodedPayload[0] >> pucch_pdu->bit_len_sl_harq_summary : 0;
+
+    LOG_I(PHY,
+          "[PUCCH][SL-HARQ] %d.%d SL HARQ summary = 0x%02x%02x\n",
+          frame, slot,
+          uci_pdu->sl_harq.harq_payload[1],
+          uci_pdu->sl_harq.harq_payload[0]);
   }
 }
 
