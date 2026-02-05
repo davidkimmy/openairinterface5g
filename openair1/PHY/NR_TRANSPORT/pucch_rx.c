@@ -1764,13 +1764,15 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
 
     bit_left = pucch_pdu->bit_len_sl_harq_summary - ((harq_bytes-1) << 3);
     uci_pdu->sl_harq.harq_payload[i] = decodedPayload[0] & ((1 << bit_left) - 1);
-    LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL ARQ paylod (%d) = %d\n",
+    LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL HARQ paylod (%d) = %d\n",
           frame, slot, i, uci_pdu->sl_harq.harq_payload[i]);
     decodedPayload[0] = pucch_pdu->bit_len_sl_harq_summary < 64 ? decodedPayload[0] >> pucch_pdu->bit_len_sl_harq_summary : 0;
 
     LOG_I(PHY,
-          "[PUCCH][SL-HARQ] %d.%d SL HARQ summary = 0x%02x%02x\n",
+          "[PUCCH][SL-HARQ] %d.%d SL HARQ summary = 0x%02x%02x%02x%02x\n",
           frame, slot,
+          uci_pdu->sl_harq.harq_payload[3],
+          uci_pdu->sl_harq.harq_payload[2],
           uci_pdu->sl_harq.harq_payload[1],
           uci_pdu->sl_harq.harq_payload[0]);
   }

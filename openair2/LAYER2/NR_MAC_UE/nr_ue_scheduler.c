@@ -2177,14 +2177,17 @@ uint64_t nr_mac_aggregate_sl_harq_summary(NR_UE_MAC_INST_t *mac) {
                       : MAX_SL_HARQ_PROCESSES;
 
   for (int i = 0; i < max_processes; i++) {
-    if (sl_report_config->sl_harq_table[i].is_active && sl_report_config->sl_harq_table[i].harq_status == 1) {
-      LOG_D(NR_MAC, "sl_report_config->sl_harq_table[%d].harq_status %u\n", i, sl_report_config->sl_harq_table[i].harq_status);
-      sl_harq_summary |= (1ULL << i);
+    if (sl_report_config->sl_harq_table[i].is_active) {
+      sl_harq_summary |= (1ULL << (i + MAX_SL_HARQ_PROCESSES));
+      if (sl_report_config->sl_harq_table[i].harq_status == 1) {
+        LOG_D(NR_MAC, "sl_report_config->sl_harq_table[%d].harq_status %u\n", i, sl_report_config->sl_harq_table[i].harq_status);
+        sl_harq_summary |= (1ULL << i);
+      }
     }
   }
 
-  LOG_W(NR_MAC, "\tAggregated Sidelink HARQ Summary: 0x%llX (0x%0X 0x%0X: %d bits).\n",
-        (long long)sl_harq_summary, ((uint32_t) sl_harq_summary >> 8) & 0xFF, (uint32_t) sl_harq_summary & 0xFF, max_processes);
+  LOG_W(NR_MAC, "\tAggregated SL HARQ Summary (Active PIDs, Status): 0x%04X 0x%04X\n",
+        ((uint32_t) sl_harq_summary >> 16) & 0xFFFF, (uint32_t) sl_harq_summary & 0xFFFF);
   return sl_harq_summary;
 }
 
@@ -2239,7 +2242,7 @@ int nr_mac_schedule_sl_harq_report(NR_UE_MAC_INST_t *mac,
   AssertFatal(sl_report_config != NULL, "Sidelink Report Configuration (sl_report_config) is NULL!\n");
 
   pucch->sl_harq_payload = nr_mac_aggregate_sl_harq_summary(mac);
-  pucch->n_sl_harq = sl_report_config->active_sl_harq_count;
+  pucch->n_sl_harq = sl_report_config->active_sl_harq_count << 1; // sl harq pids: higher 16 bits, sl harq status: lower 16 bits
 
   if (pucch->n_sl_harq == 0) {
       return 0;
@@ -2337,10 +2340,6 @@ bool is_cg_period(NR_UE_MAC_INST_t *mac,
 
 bool get_sl_harq_fb_report(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sched_t *pucch)
 {
-  int any_sl_harq_summary;
-  NR_UE_UL_BWP_t *current_UL_BWP = &mac->current_UL_BWP;
-  const int n_slots_frame = nr_slots_per_frame[current_UL_BWP->scs];
-
   if (get_softmodem_params()->sl_mode == 1 && mac->state == UE_CONNECTED) {
     for (int i = 0; i < MAX_GRANTS; i++) {
       sl_config_grant_bwp_t *sl_cg_bwp = &mac->sl_cg_per_bwp;
@@ -2348,10 +2347,8 @@ bool get_sl_harq_fb_report(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH
       if (cg != NULL && cg->active && cg->harq_feedback_enabled == 0) { // 0 means harq_feedback_enabled is enabled !!!!
         bool is_fb_slot = is_cg_period(mac, cg, frame, slot);
         if (is_fb_slot) {
-          uint32_t current_abs_slot = frame * n_slots_frame + slot;
-          LOG_D(NR_MAC, "current_slot [%d vs %u] scheduled cg->pucch_slot\n", current_abs_slot, cg->pucch_slot);
-          LOG_I(NR_MAC, "(3) current_frame.slot %4u.%2d (abs_slot %d)\n", frame, slot, current_abs_slot);
-          any_sl_harq_summary = nr_mac_schedule_sl_harq_report(mac, pucch, cg);
+          LOG_I(NR_MAC, "(3) current_frame.slot %4u.%2d\n", frame, slot);
+          int any_sl_harq_summary = nr_mac_schedule_sl_harq_report(mac, pucch, cg);
           if (any_sl_harq_summary)
             return true;
         }

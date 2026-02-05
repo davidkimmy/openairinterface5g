@@ -842,8 +842,8 @@ static void config_pucch_resset1(NR_PUCCH_Config_t *pucch_Config, int uid, const
   pucchres2->format.present = NR_PUCCH_Resource__format_PR_format2;
   pucchres2->format.choice.format2 = calloc(1,sizeof(*pucchres2->format.choice.format2));
   pucchres2->format.choice.format2->nrofPRBs = 16;
-  pucchres2->format.choice.format2->nrofSymbols = 1;
-  pucchres2->format.choice.format2->startingSymbolIndex = 13;
+  pucchres2->format.choice.format2->nrofSymbols = 2;
+  pucchres2->format.choice.format2->startingSymbolIndex = 12;
   asn1cSeqAdd(&pucch_Config->resourceToAddModList->list,pucchres2);
 
   asn1cSeqAdd(&pucch_Config->resourceSetToAddModList->list,pucchresset);
