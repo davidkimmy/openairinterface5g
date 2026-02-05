@@ -242,7 +242,7 @@ void nr_schedule_pucch(gNB_MAC_INST *nrmac,
     } else {
       if (!curr_pucch->sl_pucch_active)
         continue;
-      curr_pucch->O_sl_ack = 16;
+      curr_pucch->O_sl_ack = 32;
     }
 
     const uint16_t O_ack = curr_pucch->dai_c;
@@ -1102,7 +1102,10 @@ void handle_nr_uci_pucch_2_3_4(module_id_t mod_id,
       int bit  = harq_bit & 0x07;      // harq_bit % 8
       const int acknack = (uci_234->sl_harq.harq_payload[byte] >> bit) & 0x01;
     }
-    LOG_W(NR_MAC, "%4u.%2u %0x %0x : <== sl_harq_payload\n", frame, slot, uci_234->sl_harq.harq_payload[1], uci_234->sl_harq.harq_payload[0]);
+    LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
+          ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
+          ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
+
     free(uci_234->sl_harq.harq_payload);
   }
   NR_SCHED_UNLOCK(&nrmac->sched_lock);

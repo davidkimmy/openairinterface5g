@@ -1397,7 +1397,6 @@ void nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
                                                      pucchres->format.choice.format2->nrofSymbols,
                                                      8);
         if (pucch->n_sl_harq > 0) {
-          LOG_I(NR_MAC,"(6) pucchres->format.present %d  (fmt0: 1, fmt2: 3)\n", pucchres->format.present);
           LOG_I(NR_MAC,"(6) n_sr %d  n_harq %d  n_sl_harq %d  n_csi %d ==> n_uci %d #PRBs %ld  PRB_size %u  #Syms %u\n",
                         pucch->n_sr, pucch->n_harq, pucch->n_sl_harq, pucch->n_csi, n_uci,
                         pucchres->format.choice.format2->nrofPRBs,
@@ -1405,7 +1404,6 @@ void nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
                         pucch_pdu->nr_of_symbols);
         }
         else {
-          LOG_D(NR_MAC,"\tn_sl_harq == 0  pucchres->format.present %d  (fmt0: 1, fmt2: 3) in slot_tx %d\n", pucchres->format.present, slot);
           LOG_D(NR_MAC,"\tn_sl_harq == 0  pucchres->format.present %d  (fmt0: 1, fmt2: 3) in slot_tx %d\n", pucchres->format.present, slot);
         }
         break;
