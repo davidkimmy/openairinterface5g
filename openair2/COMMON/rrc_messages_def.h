@@ -90,3 +90,4 @@ MESSAGE_DEF(NRRRC_SLOT_PROCESS,         MESSAGE_PRIORITY_MED,       NRRrcSlotPro
 // eNB: RLC -> RRC messages
 MESSAGE_DEF(RLC_SDU_INDICATION,         MESSAGE_PRIORITY_MED,       RlcSduIndication,           rlc_sdu_indication)
 MESSAGE_DEF(RLC_TRAFFIC_PTN_CHG_IND,    MESSAGE_PRIORITY_MED,       RlcTrafficPtnChgIndication, rlc_traffic_ptn_chg_indication)
+MESSAGE_DEF(NR_RRC_SL_HARQ_REPORT_IND,  MESSAGE_PRIORITY_MED,       NRRrcSL_HARQ_Report_ind,    nr_rrc_sl_harq_report_ind)

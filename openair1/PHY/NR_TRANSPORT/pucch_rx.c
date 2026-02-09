@@ -1764,7 +1764,7 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
 
     bit_left = pucch_pdu->bit_len_sl_harq_summary - ((harq_bytes-1) << 3);
     uci_pdu->sl_harq.harq_payload[i] = decodedPayload[0] & ((1 << bit_left) - 1);
-    LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL HARQ paylod (%d) = %d\n",
+    LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL HARQ payload (%d) = %d\n",
           frame, slot, i, uci_pdu->sl_harq.harq_payload[i]);
     decodedPayload[0] = pucch_pdu->bit_len_sl_harq_summary < 64 ? decodedPayload[0] >> pucch_pdu->bit_len_sl_harq_summary : 0;
 
