@@ -2819,7 +2819,8 @@ static void write_rrc_stats(const gNB_RRC_INST *rrc)
 
 void nr_gNB_process_sl_harq_report_ind(const protocol_ctxt_t *const ctxt_pP, MessageDef *msg_p, instance_t instance)
 {
-  gNB_RRC_INST *gnb_rrc_inst = RC.nrrrc[ctxt_pP->module_id];
+  // TODO: Following two statements will be used for sending updated RRCReconfiguration message
+  // gNB_RRC_INST *gnb_rrc_inst = RC.nrrrc[ctxt_pP->module_id];
   // rrc_gNB_ue_context_t *ue_context_p = rrc_gNB_get_ue_context_by_rnti(gnb_rrc_inst, ctxt_pP->rntiMaybeUEid);
 
   frame_t frame = NR_RRC_SL_HARQ_REPORT_IND(msg_p).frame;
