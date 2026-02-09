@@ -35,6 +35,7 @@
 #include "common/utils/nr/nr_common.h"
 #include "nfapi/oai_integration/vendor_ext.h"
 #include "RRC/NR/nr_rrc_common.h"
+#include "common/utils/ocp_itti/intertask_interface.h"
 
 extern RAN_CONTEXT_t RC;
 
@@ -1095,18 +1096,21 @@ void handle_nr_uci_pucch_2_3_4(module_id_t mod_id,
     //@TODO:Handle CSI Report 2
     // nothing to free (yet)
   }
-  if ((uci_234->pduBitmap >> 4) & 0x01) {
-    // iterate over received SL harq summary bits
-    for (int harq_bit = 0; harq_bit < uci_234->sl_harq.harq_bit_len; harq_bit++) {
-      int byte = harq_bit >> 3;        // harq_bit / 8
-      int bit  = harq_bit & 0x07;      // harq_bit % 8
-      const int acknack = (uci_234->sl_harq.harq_payload[byte] >> bit) & 0x01;
+  if (get_softmodem_params()->sl_mode == 1) {
+    if ((uci_234->pduBitmap >> 4) & 0x01) {
+      LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
+            ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
+            ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
+      MessageDef *message_p = itti_alloc_new_message(TASK_RRC_GNB, 0, NR_RRC_SL_HARQ_REPORT_IND);
+      instance_t instance = 0;
+      NR_RRC_SL_HARQ_REPORT_IND(message_p).frame = frame;
+      NR_RRC_SL_HARQ_REPORT_IND(message_p).slot = slot;
+      NR_RRC_SL_HARQ_REPORT_IND(message_p).rnti = UE->rnti;
+      NR_RRC_SL_HARQ_REPORT_IND(message_p).harq_bit_len = uci_234->sl_harq.harq_bit_len;
+      memcpy(&NR_RRC_SL_HARQ_REPORT_IND(message_p).harq_payload, uci_234->sl_harq.harq_payload, sizeof(uint32_t));
+      itti_send_msg_to_task(TASK_RRC_GNB, GNB_MODULE_ID_TO_INSTANCE(instance), message_p);
+      free(uci_234->sl_harq.harq_payload);
     }
-    LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
-          ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
-          ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
-
-    free(uci_234->sl_harq.harq_payload);
   }
   NR_SCHED_UNLOCK(&nrmac->sched_lock);
 }

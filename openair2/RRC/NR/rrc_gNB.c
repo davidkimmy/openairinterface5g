@@ -2817,6 +2817,22 @@ static void write_rrc_stats(const gNB_RRC_INST *rrc)
   fclose(f);
 }
 
+void nr_gNB_process_sl_harq_report_ind(const protocol_ctxt_t *const ctxt_pP, MessageDef *msg_p, instance_t instance)
+{
+  gNB_RRC_INST *gnb_rrc_inst = RC.nrrrc[ctxt_pP->module_id];
+  // rrc_gNB_ue_context_t *ue_context_p = rrc_gNB_get_ue_context_by_rnti(gnb_rrc_inst, ctxt_pP->rntiMaybeUEid);
+
+  frame_t frame = NR_RRC_SL_HARQ_REPORT_IND(msg_p).frame;
+  slot_t slot = NR_RRC_SL_HARQ_REPORT_IND(msg_p).slot;
+
+  uint8_t *bytes = (uint8_t *)&NR_RRC_SL_HARQ_REPORT_IND(msg_p).harq_payload;
+  LOG_W(RRC, "%4u.%2u %s 0x%04X 0x%04X : <== sl_harq_payload\n",
+        frame, slot, __func__,
+        ((uint16_t)bytes[3] << 8) | (uint16_t)bytes[2],
+        ((uint16_t)bytes[1] << 8) | (uint16_t)bytes[0]);
+  // Add RRCReconfiguration function call here to send with updated parameters
+}
+
 ///---------------------------------------------------------------------------------------------------------------///
 ///---------------------------------------------------------------------------------------------------------------///
 void *rrc_gnb_task(void *args_p) {
@@ -2969,6 +2985,15 @@ void *rrc_gnb_task(void *args_p) {
         rrc_gNB_process_PAGING_IND(msg_p, instance);
         break;
 
+      case NR_RRC_SL_HARQ_REPORT_IND:
+        PROTOCOL_CTXT_SET_BY_INSTANCE(&ctxt,
+                                      instance,
+                                      GNB_FLAG_YES,
+                                      NR_RRC_SL_HARQ_REPORT_IND(msg_p).rnti,
+                                      0,
+                                      0);
+        nr_gNB_process_sl_harq_report_ind(&ctxt, msg_p, instance);
+        break;
       default:
         LOG_E(NR_RRC, "[gNB %ld] Received unexpected message %s\n", instance, msg_name_p);
         break;
