@@ -66,7 +66,7 @@ int nr_mac_get_static_sl_report_bit_index(NR_UE_MAC_INST_t *mac,
         sl_report_config->remote_ue_mapping[i].src_id = src_id;
         sl_report_config->remote_ue_mapping[i].is_active = true;
         ue_idx = i;
-        LOG_I(NR_MAC, "Mapped Remote UE 0x%04x to UE Index %d\n", src_id, ue_idx);
+        LOG_D(NR_MAC, "Mapped Remote UE 0x%04x to UE Index %d\n", src_id, ue_idx);
         break;
       }
     }
@@ -102,7 +102,7 @@ void nr_mac_process_sl_rx_data(NR_UE_MAC_INST_t *mac, uint16_t src_id, int8_t ha
       sl_report_config->sl_harq_table[bit_index].harq_status = ack_nack;
       sl_report_config->sl_harq_table[bit_index].is_active = true;
     }
-    LOG_A(NR_MAC, "(1) sl_harq_table Updated: Remote UE 0x%04x, HARQ PID %d -> Bit %d: %s\n",
+    LOG_D(NR_MAC, "(1) sl_harq_table Updated: Remote UE 0x%04x, HARQ PID %d -> Bit %d: %s\n",
           src_id, harq_id, bit_index, (ack_nack == 1 ? "ACK" : "NACK"));
   }
 }

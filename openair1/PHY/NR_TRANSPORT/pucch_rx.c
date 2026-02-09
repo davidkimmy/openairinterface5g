@@ -1418,7 +1418,13 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
     }
   } //symb
   int nb_bit = pucch_pdu->bit_len_harq + pucch_pdu->sr_flag + pucch_pdu->bit_len_csi_part1 + pucch_pdu->bit_len_csi_part2 + pucch_pdu->bit_len_sl_harq_summary;
-  AssertFatal(nb_bit > 2  && nb_bit < (65 + pucch_pdu->bit_len_sl_harq_summary), "illegal length (%d : %u, %u, %u, %u, %u)\n", nb_bit, pucch_pdu->bit_len_harq, pucch_pdu->sr_flag, pucch_pdu->bit_len_csi_part1, pucch_pdu->bit_len_csi_part2, pucch_pdu->bit_len_sl_harq_summary);
+  AssertFatal(nb_bit > 2  && nb_bit < (65 + pucch_pdu->bit_len_sl_harq_summary), "illegal length (%d : %u, %u, %u, %u, %u)\n",
+              nb_bit,
+              pucch_pdu->bit_len_harq,
+              pucch_pdu->sr_flag,
+              pucch_pdu->bit_len_csi_part1,
+              pucch_pdu->bit_len_csi_part2,
+              pucch_pdu->bit_len_sl_harq_summary);
 
   uint64_t decodedPayload[2];
   uint8_t corr_dB;
@@ -1747,7 +1753,7 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
   if (pucch_pdu->bit_len_sl_harq_summary > 0) {
     uci_pdu->pduBitmap |= UCI_SL_HARQ_SUMMARY_PRESENT;
 
-    int harq_bytes=pucch_pdu->bit_len_sl_harq_summary >> 3;
+    int harq_bytes = pucch_pdu->bit_len_sl_harq_summary >> 3;
     if ((pucch_pdu->bit_len_sl_harq_summary & 7) > 0) harq_bytes++;
     uci_pdu->sl_harq.harq_payload = (uint8_t*)malloc(harq_bytes);
     uci_pdu->sl_harq.harq_crc = decoderState;
@@ -1762,13 +1768,13 @@ void nr_decode_pucch2(PHY_VARS_gNB *gNB,
       decodedPayload[0] >>= 8;
     }
 
-    bit_left = pucch_pdu->bit_len_sl_harq_summary - ((harq_bytes-1) << 3);
+    bit_left = pucch_pdu->bit_len_sl_harq_summary - ((harq_bytes - 1) << 3);
     uci_pdu->sl_harq.harq_payload[i] = decodedPayload[0] & ((1 << bit_left) - 1);
     LOG_D(PHY,"[DLSCH/PDSCH/PUCCH2] %d.%d SL HARQ payload (%d) = %d\n",
           frame, slot, i, uci_pdu->sl_harq.harq_payload[i]);
     decodedPayload[0] = pucch_pdu->bit_len_sl_harq_summary < 64 ? decodedPayload[0] >> pucch_pdu->bit_len_sl_harq_summary : 0;
 
-    LOG_I(PHY,
+    LOG_D(PHY,
           "[PUCCH][SL-HARQ] %d.%d SL HARQ summary = 0x%02x%02x%02x%02x\n",
           frame, slot,
           uci_pdu->sl_harq.harq_payload[3],

@@ -2101,18 +2101,21 @@ static NR_SpCellConfig_t *get_initial_SpCellConfig(int uid,
 
   NR_BWP_UplinkDedicated_t *initialUplinkBWP = calloc(1, sizeof(*initialUplinkBWP));
 
-  initialUplinkBWP->ext1 = calloc(1, sizeof(struct NR_BWP_UplinkDedicated__ext1));
-  initialUplinkBWP->ext1->sl_PUCCH_Config_r16 = calloc(1, sizeof(struct NR_SetupRelease_PUCCH_Config));
-  initialUplinkBWP->ext1->sl_PUCCH_Config_r16->present = NR_SetupRelease_PUCCH_Config_PR_setup;
-  NR_PUCCH_Config_t *sl_pucch_Config = calloc(1, sizeof(*sl_pucch_Config));
-  initialUplinkBWP->ext1->sl_PUCCH_Config_r16->choice.setup = sl_pucch_Config;
-  sl_pucch_Config->resourceSetToAddModList = calloc(1, sizeof(*sl_pucch_Config->resourceSetToAddModList));
-  sl_pucch_Config->resourceSetToReleaseList = NULL;
-  sl_pucch_Config->resourceToAddModList = calloc(1, sizeof(*sl_pucch_Config->resourceToAddModList));
-  sl_pucch_Config->resourceToReleaseList = NULL;
-  uint8_t relay_uid = uid + MAX_MOBILES_PER_GNB;
-  config_pucch_resset1(sl_pucch_Config, relay_uid, NULL);
-  set_pucch_power_config(sl_pucch_Config, configuration->do_CSIRS);
+  if (get_softmodem_params()->sl_mode == 1) {
+    initialUplinkBWP->ext1 = calloc(1, sizeof(struct NR_BWP_UplinkDedicated__ext1));
+    initialUplinkBWP->ext1->sl_PUCCH_Config_r16 = calloc(1, sizeof(struct NR_SetupRelease_PUCCH_Config));
+    initialUplinkBWP->ext1->sl_PUCCH_Config_r16->present = NR_SetupRelease_PUCCH_Config_PR_setup;
+    NR_PUCCH_Config_t *sl_pucch_Config = calloc(1, sizeof(*sl_pucch_Config));
+    initialUplinkBWP->ext1->sl_PUCCH_Config_r16->choice.setup = sl_pucch_Config;
+    sl_pucch_Config->resourceSetToAddModList = calloc(1, sizeof(*sl_pucch_Config->resourceSetToAddModList));
+    sl_pucch_Config->resourceSetToReleaseList = NULL;
+    sl_pucch_Config->resourceToAddModList = calloc(1, sizeof(*sl_pucch_Config->resourceToAddModList));
+    sl_pucch_Config->resourceToReleaseList = NULL;
+    uint8_t relay_uid = uid + MAX_MOBILES_PER_GNB;
+    config_pucch_resset1(sl_pucch_Config, relay_uid, NULL);
+    set_pucch_power_config(sl_pucch_Config, configuration->do_CSIRS);
+  } else
+    initialUplinkBWP->ext1 = NULL;
 
   uplinkConfig->initialUplinkBWP = initialUplinkBWP;
   initialUplinkBWP->pucch_Config = calloc(1, sizeof(*initialUplinkBWP->pucch_Config));

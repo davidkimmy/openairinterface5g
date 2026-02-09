@@ -480,8 +480,11 @@ void nr_mac_reset_ul_failure(NR_UE_sched_ctrl_t *sched_ctrl);
 void nr_mac_check_ul_failure(const gNB_MAC_INST *nrmac, int rnti, NR_UE_sched_ctrl_t *sched_ctrl);
 
 void add_feedback_event(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint16_t fb_frame, uint8_t fb_slot);
+
 uint32_t diff_frame_slot(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1, uint16_t frame2, uint8_t slot2);
+
 bool is_fb_time(NR_UE_info_t *UE, uint16_t current_frame, uint8_t current_slot);
+
 void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint32_t num_slots_per_cg_period, uint16_t fb_frame, uint8_t fb_slot);
 
 #endif /*__LAYER2_NR_MAC_PROTO_H__*/

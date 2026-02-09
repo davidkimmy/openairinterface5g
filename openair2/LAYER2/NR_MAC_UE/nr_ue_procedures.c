@@ -1397,7 +1397,7 @@ void nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
                                                      pucchres->format.choice.format2->nrofSymbols,
                                                      8);
         if (pucch->n_sl_harq > 0) {
-          LOG_I(NR_MAC,"(6) n_sr %d  n_harq %d  n_sl_harq %d  n_csi %d ==> n_uci %d #PRBs %ld  PRB_size %u  #Syms %u\n",
+          LOG_D(NR_MAC, "(6) n_sr %d  n_harq %d  n_sl_harq %d  n_csi %d ==> n_uci %d #PRBs %ld  PRB_size %u  #Syms %u\n",
                         pucch->n_sr, pucch->n_harq, pucch->n_sl_harq, pucch->n_csi, n_uci,
                         pucchres->format.choice.format2->nrofPRBs,
                         pucch_pdu->prb_size,
@@ -2242,7 +2242,7 @@ bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sche
                 current_harq->active = false;
                 current_harq->ack_received = false;
               } else {
-                LOG_W(NR_MAC, "%4d.%2d DLSCH ACK/NACK reporting initiated for harq pid %d before DLSCH decoding completed\n", frame, slot, dl_harq_pid);
+                LOG_W(NR_MAC, "DLSCH ACK/NACK reporting initiated for harq pid %d before DLSCH decoding completed\n", dl_harq_pid);
                 ack_data[code_word][dai_current - 1] = 0;
               }
               dai[code_word][dai_current - 1] = dai_current;

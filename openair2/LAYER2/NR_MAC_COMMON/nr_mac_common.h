@@ -379,10 +379,11 @@ void remove_front_nr_list(NR_list_t *listP);
 int get_nr_sl_psfch_to_pucch_offset(module_id_t module_id, rnti_t sl_rnti);
 
 void nr_rrc_mac_config_req_sl_config(module_id_t module_id,
-                                    NR_SL_ConfiguredGrantConfig_r16_t *nr_sl_cg_config,
-                                    NR_SL_BWP_Config_r16_t *sl_BWP_ToAddMod,
-                                    uint8_t mu,
-                                    rnti_t sl_rnti);
+                                     NR_SL_ConfiguredGrantConfig_r16_t *nr_sl_cg_config,
+                                     NR_SL_BWP_Config_r16_t *sl_BWP_ToAddMod,
+                                     uint8_t mu,
+                                     rnti_t sl_rnti);
+
 uint32_t calc_current_slot(uint32_t sl_ReferenceSlotCG_Type1,
                            uint32_t sl_TimeOffsetCG_Type1,
                            uint16_t sl_PeriodCG_ms,

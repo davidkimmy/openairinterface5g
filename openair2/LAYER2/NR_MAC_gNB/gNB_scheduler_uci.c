@@ -253,6 +253,7 @@ void nr_schedule_pucch(gNB_MAC_INST *nrmac,
           pucch_index, UE->rnti, curr_pucch->frame, curr_pucch->ul_slot, O_ack, O_sr, O_csi, curr_pucch->O_sl_ack);
     nr_fill_nfapi_pucch(nrmac, frameP, slotP, curr_pucch, UE);
     memset(curr_pucch, 0, sizeof(*curr_pucch));
+
   }
 }
 

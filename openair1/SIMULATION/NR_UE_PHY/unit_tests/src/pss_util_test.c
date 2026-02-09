@@ -69,7 +69,7 @@ static  nfapi_config_request_t *config =&config_t;
 /*************** FUNCTIONS ****************************************/
 
 //void phy_init_nr_top(NR_DL_FRAME_PARMS *frame_parms);
-int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_eNB, bool, is_sl);
+int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_eNB, bool is_sl);
 
 /*******************************************************************
 *

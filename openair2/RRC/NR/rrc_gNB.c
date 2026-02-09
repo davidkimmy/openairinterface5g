@@ -2255,7 +2255,7 @@ int rrc_gNB_decode_dcch(const protocol_ctxt_t *const ctxt_pP,
           break;
 
         case NR_UL_DCCH_MessageType__messageClassExtension__c2_PR_sidelinkUEInformationNR_r16:
-          LOG_I(NR_RRC, "Received sidelinkUEInformationNR on UL-DCCH-Message from %4lx\n", ctxt_pP->rntiMaybeUEid);
+          LOG_D(NR_RRC, "Received sidelinkUEInformationNR on UL-DCCH-Message from %4lx\n", ctxt_pP->rntiMaybeUEid);
           xer_fprint(stdout, &asn_DEF_NR_UL_DCCH_Message, (void *)ul_dcch_msg);
           if (handle_sidelinkUEInformationNR(ctxt_pP, ue_context_p, ul_dcch_msg->message.choice.messageClassExtension->choice.c2->choice.sidelinkUEInformationNR_r16) == -1)
             return -1;

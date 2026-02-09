@@ -2173,8 +2173,8 @@ uint64_t nr_mac_aggregate_sl_harq_summary(NR_UE_MAC_INST_t *mac) {
   AssertFatal(sl_report_config != NULL, "Sidelink Report Configuration (sl_report_config) is NULL!\n");
 
   int max_processes = (sl_report_config->active_sl_harq_count < MAX_SL_HARQ_PROCESSES)
-                      ? sl_report_config->active_sl_harq_count
-                      : MAX_SL_HARQ_PROCESSES;
+                       ? sl_report_config->active_sl_harq_count
+                       : MAX_SL_HARQ_PROCESSES;
 
   for (int i = 0; i < max_processes; i++) {
     if (sl_report_config->sl_harq_table[i].is_active) {
@@ -2210,9 +2210,9 @@ NR_PUCCH_Resource_t *nr_get_pucch_resource_from_rsc_id(NR_PUCCH_Config_t *pucch_
       LOG_D(NR_MAC, "\t\ti = %d, Found PUCCH Resource Format %u (current_res->pucch_ResourceId %ld vs resource_id %u)) at index %d.\n",
             i, current_res->format.present, current_res->pucch_ResourceId, resource_id, i);
       if (current_res->format.present ==  NR_PUCCH_Resource__format_PR_format2) {
-        LOG_I(NR_MAC, "    =================================================\n");
-        LOG_I(NR_MAC, "    PUCCH Resource ID %d with PR_format2 Found !!!\n", resource_id);
-        LOG_I(NR_MAC, "    =================================================\n");
+        LOG_D(NR_MAC, "    =================================================\n");
+        LOG_D(NR_MAC, "    PUCCH Resource ID %d with PR_format2 Found !!!\n", resource_id);
+        LOG_D(NR_MAC, "    =================================================\n");
         return current_res;
       }
     }
@@ -2251,7 +2251,7 @@ int nr_mac_schedule_sl_harq_report(NR_UE_MAC_INST_t *mac,
   pucch->pucch_resource = pucchres;
   int n_uci_total = pucch->n_sr + pucch->n_harq + pucch->n_csi + pucch->n_sl_harq;
 
-  LOG_I(NR_MAC, "(4) Prepared SL HARQ Summary 0x%llX (CG ID %d) for non-CRC UCI bits: %d.\n",
+  LOG_D(NR_MAC, "(4) Prepared SL HARQ Summary 0x%llX (CG ID %d) for non-CRC UCI bits: %d.\n",
         (long long)pucch->sl_harq_payload, cg->cg_id, n_uci_total);
 
   return 1;
@@ -2331,7 +2331,7 @@ bool is_cg_period(NR_UE_MAC_INST_t *mac,
   bool is_period = ((frame - prev_frame + 1024) % 1024) % num_frames_per_cg_period == 0;
   if (is_period) {
     prev_frame = frame;
-    LOG_W(NR_MAC, "(2) CG START at %d.%d → FB will tx at %4d.%2d\n", frame, slot, frame, fb_slot);
+    LOG_D(NR_MAC, "(2) CG START at %d.%d → FB will tx at %4d.%2d\n", frame, slot, frame, fb_slot);
     LOG_D(NR_MAC, "Fixed vars:    => fb_slot  %u\n", fb_slot);
     LOG_D(NR_MAC, "Dynamic vars:  => frame %u\n", frame);
   }
@@ -2347,7 +2347,7 @@ bool get_sl_harq_fb_report(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH
       if (cg != NULL && cg->active && cg->harq_feedback_enabled == 0) { // 0 means harq_feedback_enabled is enabled !!!!
         bool is_fb_slot = is_cg_period(mac, cg, frame, slot);
         if (is_fb_slot) {
-          LOG_I(NR_MAC, "(3) current_frame.slot %4u.%2d\n", frame, slot);
+          LOG_D(NR_MAC, "(3) current_frame.slot %4u.%2d\n", frame, slot);
           int any_sl_harq_summary = nr_mac_schedule_sl_harq_report(mac, pucch, cg);
           if (any_sl_harq_summary)
             return true;
@@ -2366,7 +2366,7 @@ void nr_mac_reset_sl_harq_status(NR_UE_MAC_INST_t *mac) {
     sl_report_config->sl_harq_table[i].is_active = false;
   }
 
-  LOG_I(NR_MAC, "(7) Reset %d Sidelink HARQ status bits for next period.\n",
+  LOG_D(NR_MAC, "(7) Reset %d Sidelink HARQ status bits for next period.\n",
         sl_report_config->active_sl_harq_count);
 }
 
@@ -2418,7 +2418,7 @@ void nr_ue_pucch_scheduler(module_id_t module_idP, frame_t frameP, int slotP, vo
   for (int j = 0; j < num_res; j++) {
     if (pucch[j].n_harq + pucch[j].n_sr + pucch[j].n_csi + pucch[j].n_sl_harq != 0) {
       if(pucch[j].n_sl_harq > 0)
-      LOG_W(NR_MAC,
+      LOG_D(NR_MAC,
             "(5) %d.%d configure pucch to fill_ul_config, O_ACK %d, O_ACK_SL %d, O_SR %d, O_CSI %d\n",
             frameP,
             slotP,
