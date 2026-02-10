@@ -2127,7 +2127,7 @@ void nr_rx_pusch(PHY_VARS_gNB *gNB,
     if (phy_data && is_csi_rs_slot) {
       if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS) {
         *is_csi_rs_slot = true;
-        csi_params = (nfapi_nr_dl_tti_csi_rs_pdu_rel15_t *)&ue->csirs_vars[0]->csirs_config_pdu;
+        csi_params = (nfapi_nr_dl_tti_csi_rs_pdu_rel15_t *)&ue->sl_csirs_vars[0]->csirs_config_pdu;
       } else {
         *is_csi_rs_slot = false;
       }
@@ -2152,11 +2152,11 @@ void nr_rx_pusch(PHY_VARS_gNB *gNB,
               csi_params->nr_of_rbs);
         if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS) {
           // FIXIT: Reconsider index of csirs_vars[0] for multiple connected UEs case
-          if (ue->csirs_vars[0]->active == 1) {
+          if (ue->sl_csirs_vars[0]->active == 1) {
             LOG_D(NR_PHY, "%d.%d Received CSI-RS\n", proc->frame_rx, proc->nr_slot_rx);
             nr_slot_fep(ue, frame_parms, proc, symbol, rxdataF, link_type_pc5);
             _nr_ue_csi_rs_procedures(ue, frame_parms, proc, rxdataF, PC5);
-            ue->csirs_vars[0]->active = 0;
+            ue->sl_csirs_vars[0]->active = 0;
           }
         }
       }

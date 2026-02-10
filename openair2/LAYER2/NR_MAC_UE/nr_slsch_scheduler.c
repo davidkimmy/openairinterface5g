@@ -46,6 +46,67 @@
 #define LOWER_BLER 0.2344
 #define UPPER_BLER 5.547
 
+int nr_mac_get_static_sl_report_bit_index(NR_UE_MAC_INST_t *mac,
+                                          uint16_t src_id,
+                                          int8_t sl_harq_pid)
+{
+  SL_REPORT_CONFIG_t *sl_report_config = &mac->sl_report_config;
+  int ue_idx = -1;
+  for (int i = 0; i < MAX_REMOTE_UES; i++) {
+    if (sl_report_config->remote_ue_mapping[i].is_active &&
+        sl_report_config->remote_ue_mapping[i].src_id == src_id) {
+      ue_idx = i;
+      break;
+    }
+  }
+
+  if (ue_idx == -1) {
+    for (int i = 0; i < MAX_REMOTE_UES; i++) {
+      if (!sl_report_config->remote_ue_mapping[i].is_active) {
+        sl_report_config->remote_ue_mapping[i].src_id = src_id;
+        sl_report_config->remote_ue_mapping[i].is_active = true;
+        ue_idx = i;
+        LOG_D(NR_MAC, "Mapped Remote UE 0x%04x to UE Index %d\n", src_id, ue_idx);
+        break;
+      }
+    }
+  }
+
+  if (ue_idx == -1) {
+    LOG_E(NR_MAC, "No space for new Remote UE 0x%04x\n", src_id);
+    return -1;
+  }
+
+  if (sl_harq_pid >= HARQ_BITS_PER_UE) {
+    LOG_W(NR_MAC, "HARQ PID %d exceeds reserved bits per UE (%d)\n", sl_harq_pid, HARQ_BITS_PER_UE);
+    return -1;
+  }
+
+  int bit_index = (ue_idx * HARQ_BITS_PER_UE) + sl_harq_pid;
+
+  return bit_index;
+}
+
+void nr_mac_process_sl_rx_data(NR_UE_MAC_INST_t *mac, uint16_t src_id, int8_t harq_id, uint8_t ack_nack)
+{
+  int bit_index = nr_mac_get_static_sl_report_bit_index(mac, src_id, harq_id);
+
+  if (bit_index >= 0 && bit_index < MAX_SL_HARQ_PROCESSES) {
+    SL_REPORT_CONFIG_t *sl_report_config = &mac->sl_report_config;
+    if (sl_report_config->sl_harq_table[bit_index].is_active) {
+      if (ack_nack)
+        sl_report_config->sl_harq_table[bit_index].harq_status = true;
+    } else {
+      sl_report_config->sl_harq_table[bit_index].src_id = src_id;
+      sl_report_config->sl_harq_table[bit_index].sl_harq_pid = harq_id;
+      sl_report_config->sl_harq_table[bit_index].harq_status = ack_nack;
+      sl_report_config->sl_harq_table[bit_index].is_active = true;
+    }
+    LOG_D(NR_MAC, "(1) sl_harq_table Updated: Remote UE 0x%04x, HARQ PID %d -> Bit %d: %s\n",
+          src_id, harq_id, bit_index, (ack_nack == 1 ? "ACK" : "NACK"));
+  }
+}
+
 const uint8_t nr_rv_round_map[4] = {0, 2, 3, 1};
 
 void reset_sl_harq_list(NR_SL_UE_sched_ctrl_t *sched_ctrl) {
@@ -142,6 +203,12 @@ void handle_nr_ue_sl_harq(module_id_t mod_id,
             harq_pid,
             src_id);
       add_tail_nr_list(&sched_ctrl->available_sl_harq, harq_pid);
+      if (get_softmodem_params()->is_relay_ue) {
+        nr_mac_process_sl_rx_data(mac,
+                                  src_id,
+                                  harq_pid,
+                                  !ack_nack);
+      }
     } else if (harq->round >= (HARQ_ROUND_MAX - 1)) {
       UE->mac_sl_stats.cumul_round[HARQ_ROUND_MAX]++;
       LOG_D(NR_MAC,
@@ -149,6 +216,12 @@ void handle_nr_ue_sl_harq(module_id_t mod_id,
             src_id,
             harq_pid);
       abort_nr_ue_sl_harq(mac, harq_pid, UE);
+      if (get_softmodem_params()->is_relay_ue) {
+        nr_mac_process_sl_rx_data(mac,
+                                  src_id,
+                                  harq_pid,
+                                  !ack_nack);
+      }
     } else {
       harq->round++;
       LOG_D(NR_MAC,
@@ -285,7 +358,7 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   sci2_pdu->dest_id = dest_id;
   sci2_pdu->harq_feedback = cur_harq->is_waiting;
   LOG_D(NR_MAC, "%4d.%2d Comparing Setting harq_feedback %d sl_harq_pid %d\n", frameP, slotP, sci2_pdu->harq_feedback, cur_harq ? cur_harq->sl_harq_pid : 0);
-  sci2_pdu->cast_type = 1;
+  sci2_pdu->cast_type = 2;
   if (format2 == NR_SL_SCI_FORMAT_2C || format2 == NR_SL_SCI_FORMAT_2A) {
     sci2_pdu->csi_req = (csi_acq && csi_req_slot) ? 1 : 0;
     sci2_pdu->csi_req = (cur_harq->round > 0 || is_fdbk_scheduled) ? 0 : sci2_pdu->csi_req;

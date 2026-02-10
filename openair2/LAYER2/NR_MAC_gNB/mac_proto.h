@@ -162,9 +162,44 @@ void config_uldci(const NR_SIB1_t *sib1,
                   uint8_t ndi,
                   NR_UE_UL_BWP_t *ul_bwp);
 
+NR_UE_info_t* nr_sl_fb_scheduling(gNB_MAC_INST *nrmac,
+                                  frame_t frame,
+                                  sub_frame_t slot,
+                                  int *pucch_index);
+
+NR_UE_info_t* set_sl_fb_schedule(gNB_MAC_INST *gNB, frame_t frame, sub_frame_t slot, NR_UE_sched_ctrl_t *sched_ctrl);
+
+int get_pucch_index(int frame,
+                    int slot,
+                    int n_slots_frame,
+                    const NR_TDD_UL_DL_Pattern_t *tdd,
+                    int sched_pucch_size);
+
+void avoid_sl_pucch_resources(gNB_MAC_INST *nr_mac,
+                              NR_ServingCellConfigCommon_t *scc,
+                              NR_UE_sched_ctrl_t *sched_ctrl,
+                              NR_UE_UL_BWP_t *current_BWP,
+                              uint16_t *vrb_map_UL,
+                              uint16_t bwpStart,
+                              int sched_frame,
+                              int sched_slot,
+                              int mu,
+                              int CC_id);
+
+void nr_sl_harq_fb_report_frame_slot(gNB_MAC_INST *mac,
+                                     NR_UE_info_t *UE,
+                                     frame_t frame,
+                                     slot_t slot);
+
+int virtual_resource_schedule(gNB_MAC_INST *mac,
+                              NR_UE_info_t *UE,
+                              frame_t frame,
+                              slot_t slot);
+
 void nr_schedule_pucch(gNB_MAC_INST *nrmac,
                        frame_t frameP,
-                       sub_frame_t slotP);
+                       sub_frame_t slotP,
+                       bool is_feedback);
 
 void nr_srs_ri_computation(const nfapi_nr_srs_normalized_channel_iq_matrix_t *nr_srs_normalized_channel_iq_matrix,
                            const NR_UE_UL_BWP_t *current_BWP,
@@ -200,7 +235,12 @@ void nr_configure_pucch(nfapi_nr_pucch_pdu_t* pucch_pdu,
                         uint16_t O_csi,
                         uint16_t O_ack,
                         uint8_t O_sr,
+                        uint16_t O_sl_ack,
                         int r_pucch);
+
+int compare_frame_slots(NR_UE_info_t* UE, uint16_t frame1, uint8_t slot1, uint16_t frame2, uint8_t slot2);
+
+void get_scheduled_slots_for_sl_ue(NR_UE_info_t *UE, uint8_t *cur_slot, uint8_t *t1_slot, uint8_t *t2_slot);
 
 void find_search_space(int ss_type,
                        NR_BWP_Downlink_t *bwp,
@@ -438,5 +478,13 @@ bool nr_mac_check_release(NR_UE_sched_ctrl_t *sched_ctrl, int rnti);
 void nr_mac_trigger_ul_failure(NR_UE_sched_ctrl_t *sched_ctrl, NR_SubcarrierSpacing_t subcarrier_spacing);
 void nr_mac_reset_ul_failure(NR_UE_sched_ctrl_t *sched_ctrl);
 void nr_mac_check_ul_failure(const gNB_MAC_INST *nrmac, int rnti, NR_UE_sched_ctrl_t *sched_ctrl);
+
+void add_feedback_event(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint16_t fb_frame, uint8_t fb_slot);
+
+uint32_t diff_frame_slot(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1, uint16_t frame2, uint8_t slot2);
+
+bool is_fb_time(NR_UE_info_t *UE, uint16_t current_frame, uint8_t current_slot);
+
+void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint32_t num_slots_per_cg_period, uint16_t fb_frame, uint8_t fb_slot);
 
 #endif /*__LAYER2_NR_MAC_PROTO_H__*/

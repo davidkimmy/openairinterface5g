@@ -74,7 +74,6 @@
 #define NB_NR_UE_MAC_INST 1
 #define MAX_NUM_BWP_UE       4
 #define NUM_SLOT_FRAME    10
-#define MAX_CONFIGURED_GRANTS 8
 
 /*!\brief value for indicating BSR Timer is not running */
 #define NR_MAC_UE_BSR_TIMER_NOT_RUNNING   (0xFFFF)
@@ -363,9 +362,11 @@ typedef struct {
   uint8_t sr_payload;
   uint32_t csi_part1_payload;
   uint32_t csi_part2_payload;
+  uint32_t sl_harq_payload;   // Sidelink HARQ Summary Report payload (PC5)
   int n_sr;
   int n_csi;
   int n_harq;
+  int n_sl_harq;              // Number of Sidelink HARQ summary bits
   int n_CCE;
   int N_CCE;
   int delta_pucch;
@@ -558,11 +559,6 @@ typedef struct {
 } NR_SL_UEs_t;
 
 typedef struct {
-  int16_t frame;
-  int16_t slot;
-} frameslot_t;
-
-typedef struct {
   frameslot_t frame_slot;
   uint16_t rsvp; // The resource reservation period in ms
   uint8_t subch_len; // The total number of the sub-channel allocated
@@ -649,8 +645,28 @@ typedef struct {
 
 typedef struct {
   uint8_t bwp_id;
-  sl_config_grant_t *sl_cg[MAX_CONFIGURED_GRANTS];
+  sl_config_grant_t *sl_cg[MAX_GRANTS];
 } sl_config_grant_bwp_t;
+
+typedef struct {
+  uint16_t src_id;
+  uint8_t sl_harq_pid;
+  uint8_t harq_status;   // 1: ACK, 0: NACK
+  bool is_active;
+} SL_HARQ_ENTRY_t;
+
+typedef struct {
+  uint16_t src_id;       // Remote UE Identity
+  bool is_active;        // Slot is occupied by a known UE
+} SL_REMOTE_UE_MAP_t;
+
+typedef struct {
+  SL_HARQ_ENTRY_t sl_harq_table[MAX_SL_HARQ_PROCESSES];
+  SL_REMOTE_UE_MAP_t remote_ue_mapping[MAX_REMOTE_UES];
+  uint8_t active_sl_harq_count;
+  uint32_t sl_pucch_period;
+  uint32_t next_pucch_slot;
+} SL_REPORT_CONFIG_t;
 
 /*!\brief Top level UE MAC structure */
 typedef struct {
@@ -796,6 +812,7 @@ typedef struct {
   List_t *sl_candidate_resources;
   uint16_t reselection_timer;
   sl_config_grant_bwp_t sl_cg_per_bwp;
+  SL_REPORT_CONFIG_t sl_report_config;
 } NR_UE_MAC_INST_t;
 
 /*@}*/

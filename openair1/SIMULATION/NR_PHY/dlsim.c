@@ -834,7 +834,7 @@ int main(int argc, char **argv)
   else
     UE->is_synchronized = 1;
 
-  if (init_nr_ue_signal(UE, 1) != 0)
+  if (init_nr_ue_signal(UE, 1, false) != 0)
   {
     printf("Error at UE NR initialisation\n");
     exit(-1);

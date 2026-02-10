@@ -90,6 +90,7 @@
 #define RRC_SUBFRAME_PROCESS(mSGpTR)    (mSGpTR)->ittiMsg.rrc_subframe_process
 #define NRRRC_SLOT_PROCESS(mSGpTR)      (mSGpTR)->ittiMsg.nr_rrc_slot_process
 #define NRRRC_SIDELINK_UE_INFO(mSGpTR)  (mSGpTR)->ittiMsg.nr_rrc_sl_ue_information
+#define NR_RRC_SL_HARQ_REPORT_IND(mSGpTR) (mSGpTR)->ittiMsg.nr_rrc_sl_harq_report_ind
 
 #define NR_RRC_RECONFIGURATION_IND(mSGpTR) (mSGpTR)->ittiMsg.nr_rrc_reconfiguration_indication
 
@@ -501,5 +502,14 @@ typedef struct NRRrcReconfiguration_ind_s {
   uint8_t   slot;
   uint8_t   gnb_id;
 } NRRrcReconfiguration_ind;
+
+typedef struct NRRrcSL_HARQ_Report_ind_s {
+  uint32_t frame;
+  uint8_t slot;
+  uint16_t rnti;
+  uint8_t gnb_id;
+  uint16_t harq_bit_len;
+  uint32_t harq_payload;
+} NRRrcSL_HARQ_Report_ind;
 
 #endif /* RRC_MESSAGES_TYPES_H_ */

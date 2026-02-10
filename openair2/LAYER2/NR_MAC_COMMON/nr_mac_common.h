@@ -36,8 +36,19 @@
 #include "nr_mac.h"
 #include "common/utils/nr/nr_common.h"
 
+#define MAX_REMOTE_UES        1
+#define HARQ_BITS_PER_UE      (NR_MAX_HARQ_PROCESSES / MAX_REMOTE_UES)
+#define MAX_SL_HARQ_PROCESSES (NR_MAX_HARQ_PROCESSES)
 #define NB_SRS_PERIOD         (18)
+#define MAX_GRANTS 8
+#define MAX_PSFCH_TO_PUCCH_OFFSET 16
+
 static const uint16_t srs_period[NB_SRS_PERIOD] = { 0, 1, 2, 4, 5, 8, 10, 16, 20, 32, 40, 64, 80, 160, 320, 640, 1280, 2560};
+
+typedef struct {
+  int16_t frame;
+  int16_t slot;
+} frameslot_t;
 
 typedef enum {
   pusch_dmrs_pos0 = 0,
@@ -64,6 +75,12 @@ typedef struct NR_mac_dir_stats {
   uint32_t current_rbs;
 } NR_mac_dir_stats_t;
 
+typedef struct {
+  uint16_t frame;
+  uint8_t slot;
+  bool valid;
+} feedback_event_t;
+
 typedef struct NR_UE_sl_mac_stats {
   NR_mac_dir_stats_t sl;
   uint32_t slsch_DTX;
@@ -80,6 +97,8 @@ typedef struct NR_bler_options {
   uint8_t min_mcs;
   uint8_t harq_round_max;
 } NR_bler_options_t;
+
+int16_t get_feedback_slot(long psfch_period, uint16_t slot);
 
 uint32_t get_Y(const NR_SearchSpace_t *ss, int slot, rnti_t rnti);
 
@@ -357,4 +376,17 @@ void add_tail_nr_list(NR_list_t *listP, int id);
 void add_front_nr_list(NR_list_t *listP, int id);
 void remove_front_nr_list(NR_list_t *listP);
 
+int get_nr_sl_psfch_to_pucch_offset(module_id_t module_id, rnti_t sl_rnti);
+
+void nr_rrc_mac_config_req_sl_config(module_id_t module_id,
+                                     NR_SL_ConfiguredGrantConfig_r16_t *nr_sl_cg_config,
+                                     NR_SL_BWP_Config_r16_t *sl_BWP_ToAddMod,
+                                     uint8_t mu,
+                                     rnti_t sl_rnti);
+
+uint32_t calc_current_slot(uint32_t sl_ReferenceSlotCG_Type1,
+                           uint32_t sl_TimeOffsetCG_Type1,
+                           uint16_t sl_PeriodCG_ms,
+                           uint32_t T_prime_max,
+                           uint8_t S);
 #endif

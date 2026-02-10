@@ -632,6 +632,12 @@ static double compute_Tc(void) {
   return Tc;
 }
 
+void init_sl_reporting(NR_UE_MAC_INST_t *mac)
+{
+  memset(&mac->sl_report_config, 0, sizeof(SL_REPORT_CONFIG_t));
+  mac->sl_report_config.active_sl_harq_count = MAX_SL_HARQ_PROCESSES;
+}
+
 void nr_rrc_mac_config_grant_type1_req_ue(NR_UE_MAC_INST_t *mac,
                                           NR_SetupRelease_SL_ScheduledConfig_r16_t *sl_ScheduledConfig,
                                           NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig,
@@ -643,7 +649,8 @@ void nr_rrc_mac_config_grant_type1_req_ue(NR_UE_MAC_INST_t *mac,
         int cg1_periodValues[10] = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000};  // (ms)
         for(int i = 0; i < sl_ConfiguredGrantConfigList->sl_ConfiguredGrantConfigToAddModList_r16->list.count; i++) {
           struct NR_SL_ConfiguredGrantConfig_r16 *sl_CGConfig = sl_ConfiguredGrantConfigList->sl_ConfiguredGrantConfigToAddModList_r16->list.array[i];
-          mac->sl_cg_per_bwp.sl_cg[i]->sl_period_cg = cg1_periodValues[sl_CGConfig->sl_PeriodCG_r16->choice.sl_PeriodCG1_r16];
+          uint8_t sl_PeriodCG1_index = sl_CGConfig->sl_PeriodCG_r16->choice.sl_PeriodCG1_r16;
+          mac->sl_cg_per_bwp.sl_cg[i]->sl_period_cg = cg1_periodValues[sl_PeriodCG1_index] << mu; // slots
           mac->sl_cg_per_bwp.sl_cg[i]->sl_psfch_to_pucch_cg_type1 = *sl_CGConfig->rrc_ConfiguredSidelinkGrant_r16->sl_PSFCH_ToPUCCH_CG_Type1_r16;
           mac->sl_cg_per_bwp.sl_cg[i]->sl_n1pucch_an = *sl_CGConfig->rrc_ConfiguredSidelinkGrant_r16->sl_N1PUCCH_AN_r16;
           mac->sl_cg_per_bwp.sl_cg[i]->harq_feedback_enabled = *sl_RLC_BearerConfig->sl_MAC_LogicalChannelConfig_r16->sl_HARQ_FeedbackEnabled_r16;
@@ -660,6 +667,9 @@ void nr_rrc_mac_config_grant_type1_req_ue(NR_UE_MAC_INST_t *mac,
           mac->sl_cg_per_bwp.sl_cg[i]->sl_timeoffsetcg_type1 = *sl_CGConfig->rrc_ConfiguredSidelinkGrant_r16->sl_TimeOffsetCG_Type1_r16;
           mac->sl_cg_per_bwp.sl_cg[i]->sl_timereferencesfn_type1 = *sl_CGConfig->rrc_ConfiguredSidelinkGrant_r16->sl_TimeReferenceSFN_Type1_r16;
           mac->sl_cg_per_bwp.sl_cg[i]->sl_timeresource_cg_type1 = *sl_CGConfig->rrc_ConfiguredSidelinkGrant_r16->sl_TimeResourceCG_Type1_r16;
+          if (mac->sl_cg_per_bwp.sl_cg[i]->harq_feedback_enabled == 0) { // 0 means Enabled
+            init_sl_reporting (mac);
+          }
         }
       }
     }
