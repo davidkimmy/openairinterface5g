@@ -1,0 +1,43 @@
+{
+	"name": "ubt24-oai",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": {
+			"USERNAME": "${localEnv:USER}"
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"workbench.colorTheme": "Default Dark Modern"
+			},
+			"extensions": [
+				"ms-vscode.cpptools",
+				"ms-vscode.cpptools-extension-pack"
+			]
+		}
+	},
+	"features": {
+		"ghcr.io/devcontainers/features/git:1": {},
+		"ghcr.io/devcontainers/features/python:1": {},
+		"ghcr.io/devcontainers-extra/features/apt-get-packages:1": {},
+		"ghcr.io/devcontainers-extra/features/bash-command:1": {}
+	},
+	"mounts": [ "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USER}/.ssh,type=bind",
+				"source=${localEnv:HOME}/.bash_aliases,target=/home/${localEnv:USER}/.bash_aliases,type=bind",
+				"source=${localEnv:HOME}/.gitconfig,target=/home/${localEnv:USER}/.gitconfig,type=bind",
+				"source=${localEnv:HOME}/make_nr_oai_new.sh,target=/home/${localEnv:USER}/make_nr_oai_new.sh,type=bind"
+	],
+	"remoteUser": "${localEnv:USER}",
+	"workspaceFolder": "/home/${localEnv:USER}",
+	"updateRemoteUserUID": true,
+	"runArgs": [
+		"--device=/dev/cpu_dma_latency:/dev/cpu_dma_latency",
+		"--cap-add=SYS_NICE",
+		"--device=/dev/net/tun:/dev/net/tun",
+		"--cap-add=NET_ADMIN",
+		"--cap-add=SYS_MODULE",
+		"--network=host",
+		"--privileged"
+	]
+}
