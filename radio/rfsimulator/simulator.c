@@ -108,7 +108,6 @@ static telnetshell_cmddef_t rfsimu_cmdarray[] = {
 static telnetshell_cmddef_t *setmodel_cmddef = &(rfsimu_cmdarray[1]);
 
 static telnetshell_vardef_t rfsimu_vardef[] = {{"", 0, 0, NULL}};
-pthread_mutex_t Sockmutex;
 
 typedef c16_t sample_t; // 2*16 bits complex number
 
@@ -148,6 +147,7 @@ typedef struct {
   void *telnetcmd_qid;
   poll_telnetcmdq_func_t poll_telnetcmdq;
   int wait_timeout;
+  pthread_mutex_t Sockmutex;
 } rfsimulator_state_t;
 
 
@@ -661,7 +661,7 @@ static int startClientSL(openair0_device *device) {
 
 static int rfsimulator_write_internal(rfsimulator_state_t *t, openair0_timestamp timestamp, void **samplesVoid, int nsamps, int nbAnt, int flags, bool alreadyLocked) {
   if (!alreadyLocked)
-    pthread_mutex_lock(&Sockmutex);
+    pthread_mutex_lock(&t->Sockmutex);
 
   LOG_D(HW,"sending %d samples at time: %ld, nbAnt %d\n", nsamps, timestamp, nbAnt);
 
@@ -696,7 +696,7 @@ static int rfsimulator_write_internal(rfsimulator_state_t *t, openair0_timestamp
   t->lastWroteTS=timestamp+nsamps;
 
   if (!alreadyLocked)
-    pthread_mutex_unlock(&Sockmutex);
+    pthread_mutex_unlock(&t->Sockmutex);
 
   LOG_D(HW,"sent %d samples at time: %ld->%ld, energy in first antenna: %d\n",
       nsamps, timestamp, timestamp+nsamps, signal_energy(samplesVoid[0], nsamps) );
@@ -820,12 +820,12 @@ static bool flushInput(rfsimulator_state_t *t, int timeout, int nsamps_for_initi
           b->trashingPacket=true;
         }
 
-        pthread_mutex_lock(&Sockmutex);
+        pthread_mutex_lock(&t->Sockmutex);
 
         if (t->lastWroteTS != 0 && (fabs((double)t->lastWroteTS-b->lastReceivedTS) > (double)CirSize))
           LOG_E(HW,"UEsock: %d Tx/Rx shift too large Tx:%lu, Rx:%lu\n", fd, t->lastWroteTS, b->lastReceivedTS);
 
-        pthread_mutex_unlock(&Sockmutex);
+        pthread_mutex_unlock(&t->Sockmutex);
         b->transferPtr=(char *)&b->circularBuf[(b->lastReceivedTS*b->th.nbAnt)%CirSize];
         b->remainToTransfer=sampleToByte(b->th.size, b->th.nbAnt);
       }
@@ -1007,7 +1007,7 @@ int device_init(openair0_device *device, openair0_config_t *openair0_cfg) {
   rfsimulator->tx_bw=openair0_cfg->tx_bw;  
   rfsimulator_readconfig(rfsimulator);
   LOG_W(HW, "rfsim: sample_rate %f\n", rfsimulator->sample_rate);
-  pthread_mutex_init(&Sockmutex, NULL);
+  pthread_mutex_init(&rfsimulator->Sockmutex, NULL);
   LOG_I(HW,"rfsimulator: running as %s\n", rfsimulator-> typeStamp == ENB_MAGICDL ? "server waiting opposite rfsimulators to connect" : "client: will connect to a rfsimulator server side");
   device->trx_start_func       = rfsimulator->typeStamp == ENB_MAGICDL ?
                                  startServer :
