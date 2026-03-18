@@ -539,6 +539,26 @@ int config_libconfig_init(char *cfgP[], int numP) {
   config_get_if()->numptrs=0;
   pthread_mutex_init(&config_get_if()->memBlocks_mutex, NULL);
   memset(config_get_if()->oneBlock,0,sizeof(config_get_if()->oneBlock));
+
+  /* Check if chanmod option is specified in command line arguments */
+  int chanmod_enabled = 0;
+  if (cfgptr != NULL) {
+    for (int i = 0; i < cfgptr->argc; i++) {
+      if (strstr(cfgptr->argv[i], "--rfsimulator.options") != NULL) {
+        /* Found rfsimulator.options, check if next arg contains chanmod */
+        if (i + 1 < cfgptr->argc && strstr(cfgptr->argv[i + 1], "chanmod") != NULL) {
+          chanmod_enabled = 1;
+          break;
+        }
+      } else if (strstr(cfgptr->argv[i], "rfsimulator.options") != NULL &&
+                 strstr(cfgptr->argv[i], "chanmod") != NULL) {
+        /* Format like --rfsimulator.options=chanmod */
+        chanmod_enabled = 1;
+        break;
+      }
+    }
+  }
+
   /* search for include path parameter and set config file include path accordingly */
   for (int i=0; i<numP; i++) {
   	  if (strncmp(cfgP[i],"incp",4) == 0) {
@@ -557,8 +577,81 @@ int config_libconfig_init(char *cfgP[], int numP) {
   printf("[LIBCONFIG] Path for include directive set to: %s\n", (incp!=NULL)?incp:"libconfig defaults");
   /* set convertion option to allow integer to float conversion*/
    config_set_auto_convert (&(libconfig_privdata.cfg), CONFIG_TRUE);
-  /* Read the file. If there is an error, report it and exit. */
-  if( config_read_file(&(libconfig_privdata.cfg), libconfig_privdata.configfile) == CONFIG_FALSE) {
+
+  int read_result = CONFIG_FALSE;
+
+  /* If chanmod is not enabled, read config file into memory and skip @include lines */
+  if (!chanmod_enabled) {
+    /* Use in-memory string parsing to skip @include directives */
+    FILE *fp = fopen(libconfig_privdata.configfile, "r");
+    if (fp == NULL) {
+      fprintf(stderr,"[LIBCONFIG] Cannot open config file %s: %s\n",
+              libconfig_privdata.configfile, strerror(errno));
+      config_destroy(&(libconfig_privdata.cfg));
+      free(tmppath);
+      return -1;
+    }
+
+    printf("[LIBCONFIG] chanmod not enabled, @include directives will be ignored\n");
+
+    /* Calculate file size */
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    /* Allocate buffer for config content with extra space for potential # additions */
+    char *config_buffer = malloc(file_size * 2);
+    if (config_buffer == NULL) {
+      fprintf(stderr,"[LIBCONFIG] Memory allocation failed for config buffer\n");
+      fclose(fp);
+      config_destroy(&(libconfig_privdata.cfg));
+      free(tmppath);
+      return -1;
+    }
+
+    /* Read file line by line, skipping @include directives */
+    char line[2048];
+    size_t buffer_pos = 0;
+    int include_skipped = 0;
+    while (fgets(line, sizeof(line), fp) != NULL) {
+      /* Check if line contains @include directive */
+      if (strstr(line, "@include") != NULL) {
+        /* Completely skip this line - do not add it to buffer */
+        include_skipped++;
+        printf("[LIBCONFIG] Skipped @include directive: %s", line);
+      } else {
+        /* Copy line as-is */
+        size_t len = strlen(line);
+        if (buffer_pos + len < file_size * 2) {
+          memcpy(config_buffer + buffer_pos, line, len);
+          buffer_pos += len;
+        }
+      }
+    }
+    config_buffer[buffer_pos] = '\0';
+    fclose(fp);
+
+    if (include_skipped > 0) {
+      printf("[LIBCONFIG] Total @include directives skipped: %d\n", include_skipped);
+    }
+
+    /* Read config from string buffer */
+    read_result = config_read_string(&(libconfig_privdata.cfg), config_buffer);
+    free(config_buffer);
+
+    if (read_result == CONFIG_FALSE) {
+      fprintf(stderr,"[LIBCONFIG] Error parsing config: line %d: %s\n",
+              config_error_line(&(libconfig_privdata.cfg)),
+              config_error_text(&(libconfig_privdata.cfg)));
+    }
+  } else {
+    /* chanmod enabled - use normal file reading which processes @include */
+    printf("[LIBCONFIG] chanmod option enabled, @include directives will be processed\n");
+    read_result = config_read_file(&(libconfig_privdata.cfg), libconfig_privdata.configfile);
+  }
+
+  /* Check if reading was successful */
+  if (read_result == CONFIG_FALSE) {
     fprintf(stderr,"[LIBCONFIG] %s %d file %s - line %d: %s\n",__FILE__, __LINE__,
             libconfig_privdata.configfile, config_error_line(&(libconfig_privdata.cfg)),
             config_error_text(&(libconfig_privdata.cfg)));
