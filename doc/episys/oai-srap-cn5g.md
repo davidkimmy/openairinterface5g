@@ -38,7 +38,7 @@ $ git checkout 633af5b5
 $ cd ../..
 $ git checkout relay_ue
 $ cp ~/openairinterface5g/doc/episys/upf.patch .
-$ git apply upf.patch
+$ git apply changes_from_relay_ue_branch.patch
 $ sudo apt-get install libstdc++-12-dev
 $ make setup
 $ make install

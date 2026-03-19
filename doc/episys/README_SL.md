@@ -15,7 +15,7 @@ In this tutorial, we describe how to configure and run a **5G NR sidelink (SL)**
 - Minimum system requirements:
 
   - Desktop/Server for OAI gNB, UE, and OAI CN5G
-  - Operating System: Ubuntu 22.04 LTS Desktop
+  - Operating System: Ubuntu 24.04 LTS Desktop
   - CPU: 16 cores x86_64 @ 3.5 GHz
   - RAM: 64 GB
   - Kernel: lowlatency
