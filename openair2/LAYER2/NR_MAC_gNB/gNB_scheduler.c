@@ -340,45 +340,51 @@ uint32_t diff_frame_slot(NR_UE_info_t *UE, uint16_t frame1, uint8_t slot1,
 
 void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot, uint32_t num_slots_per_cg_period, uint16_t fb_frame, uint8_t fb_slot) {
 
-  static uint32_t slot_counter;
-  static bool first_fb_scheduled, fb_delta_computed;
-  static uint8_t prev_slot, fb_delta_slot, first_fb_slot;
-  static uint16_t prev_frame, fb_delta_frame, first_fb_frame;
+  NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
+  uint32_t *slot_counter = &sched_ctrl->sl_fb_cg_state.slot_counter;
+  bool *first_fb_scheduled = &sched_ctrl->sl_fb_cg_state.first_fb_scheduled;
+  bool *fb_delta_computed = &sched_ctrl->sl_fb_cg_state.fb_delta_computed;
+  uint8_t *prev_slot = &sched_ctrl->sl_fb_cg_state.prev_slot;
+  uint8_t *fb_delta_slot = &sched_ctrl->sl_fb_cg_state.fb_delta_slot;
+  uint8_t *first_fb_slot = &sched_ctrl->sl_fb_cg_state.first_fb_slot;
+  uint16_t *prev_frame = &sched_ctrl->sl_fb_cg_state.prev_frame;
+  uint16_t *fb_delta_frame = &sched_ctrl->sl_fb_cg_state.fb_delta_frame;
+  uint16_t *first_fb_frame = &sched_ctrl->sl_fb_cg_state.first_fb_frame;
 
   NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
   const uint8_t mu = ul_bwp->scs;
   const uint8_t num_slots_frame = nr_slots_per_frame[mu];
 
-  bool cg_start = (slot_counter == 0 && !first_fb_scheduled) || (slot_counter == num_slots_per_cg_period);
+  bool cg_start = (*slot_counter == 0 && !*first_fb_scheduled) || (*slot_counter == num_slots_per_cg_period);
   if (cg_start) {
-    slot_counter = 0;
+    *slot_counter = 0;
 
-    if (!first_fb_scheduled) {
-      first_fb_scheduled = true;
-      first_fb_frame = fb_frame;
-      first_fb_slot = fb_slot;
-      prev_frame = frame;
-      prev_slot = slot;
+    if (!*first_fb_scheduled) {
+      *first_fb_scheduled = true;
+      *first_fb_frame = fb_frame;
+      *first_fb_slot = fb_slot;
+      *prev_frame = frame;
+      *prev_slot = slot;
       add_feedback_event(UE, frame, slot, fb_frame, fb_slot);
     } else {
-      if (!fb_delta_computed) {
-        fb_delta_frame = (first_fb_frame - frame + 1024) % 1024;
-        fb_delta_slot = (first_fb_slot - slot + num_slots_frame) % num_slots_frame;
-        fb_delta_computed = true;
+      if (!*fb_delta_computed) {
+        *fb_delta_frame = (*first_fb_frame - frame + 1024) % 1024;
+        *fb_delta_slot = (*first_fb_slot - slot + num_slots_frame) % num_slots_frame;
+        *fb_delta_computed = true;
       }
-      fb_frame = (frame + fb_delta_frame) % 1024;
-      fb_slot = (slot + fb_delta_slot) % num_slots_frame;
+      fb_frame = (frame + *fb_delta_frame) % 1024;
+      fb_slot = (slot + *fb_delta_slot) % num_slots_frame;
       add_feedback_event(UE, frame, slot, fb_frame, fb_slot);
     }
     LOG_D(NR_MAC,
-          "CG START at %u.%u → FB scheduled at %4u.%2u slot_counter %u\n",
-          frame, slot, fb_frame, fb_slot, slot_counter);
+          "CG START at %u.%u → FB scheduled at %4u.%2u slot_counter %u (UE %04x)\n",
+          frame, slot, fb_frame, fb_slot, *slot_counter, UE->rnti);
   }
 
-  if (first_fb_scheduled) {
-    uint16_t diff = diff_frame_slot(UE, prev_frame, prev_slot, frame, slot);
-    slot_counter += diff;
-    prev_frame = frame;
-    prev_slot = slot;
+  if (*first_fb_scheduled) {
+    uint16_t diff = diff_frame_slot(UE, *prev_frame, *prev_slot, frame, slot);
+    *slot_counter += diff;
+    *prev_frame = frame;
+    *prev_slot = slot;
   }
 }

@@ -1363,7 +1363,7 @@ void nr_ue_configure_pucch(NR_UE_MAC_INST_t *mac,
       pucch_pdu->payload =
           (pucch->csi_part1_payload << (pucch->n_harq + pucch->n_sr)) | (pucch->sr_payload << pucch->n_harq) | pucch->ack_payload;
       if (get_softmodem_params()->sl_mode == 1) {
-        pucch_pdu->payload |= pucch->sl_harq_payload << (pucch->n_harq + pucch->n_sr + pucch->n_csi);
+        pucch_pdu->payload |= (uint64_t) pucch->sl_harq_payload << (pucch->n_harq + pucch->n_sr + pucch->n_csi);
       }
     }
 

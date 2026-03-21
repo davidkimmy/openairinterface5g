@@ -1097,23 +1097,25 @@ void handle_nr_uci_pucch_2_3_4(module_id_t mod_id,
     //@TODO:Handle CSI Report 2
     // nothing to free (yet)
   }
-  if (get_softmodem_params()->sl_mode == 1) {
+  MessageDef *sl_harq_msg = NULL;
+  if (get_softmodem_params()->sl_mode == 1 && !sched_ctrl->ul_failure) {
     if ((uci_234->pduBitmap >> 4) & 0x01) {
       LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
             ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
             ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
-      MessageDef *message_p = itti_alloc_new_message(TASK_RRC_GNB, 0, NR_RRC_SL_HARQ_REPORT_IND);
-      instance_t instance = 0;
-      NR_RRC_SL_HARQ_REPORT_IND(message_p).frame = frame;
-      NR_RRC_SL_HARQ_REPORT_IND(message_p).slot = slot;
-      NR_RRC_SL_HARQ_REPORT_IND(message_p).rnti = UE->rnti;
-      NR_RRC_SL_HARQ_REPORT_IND(message_p).harq_bit_len = uci_234->sl_harq.harq_bit_len;
-      memcpy(&NR_RRC_SL_HARQ_REPORT_IND(message_p).harq_payload, uci_234->sl_harq.harq_payload, sizeof(uint32_t));
-      itti_send_msg_to_task(TASK_RRC_GNB, GNB_MODULE_ID_TO_INSTANCE(instance), message_p);
+      sl_harq_msg = itti_alloc_new_message(TASK_RRC_GNB, 0, NR_RRC_SL_HARQ_REPORT_IND);
+      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).frame = frame;
+      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).slot = slot;
+      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).rnti = UE->rnti;
+      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).harq_bit_len = uci_234->sl_harq.harq_bit_len;
+      memcpy(&NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).harq_payload, uci_234->sl_harq.harq_payload, sizeof(uint32_t));
       free(uci_234->sl_harq.harq_payload);
     }
   }
   NR_SCHED_UNLOCK(&nrmac->sched_lock);
+  // Send ITTI message after releasing sched_lock to avoid potential deadlock
+  if (sl_harq_msg)
+    itti_send_msg_to_task(TASK_RRC_GNB, GNB_MODULE_ID_TO_INSTANCE(0), sl_harq_msg);
 }
 
 static void set_pucch_allocation(const NR_UE_UL_BWP_t *ul_bwp, const int r_pucch, const int bwp_size, NR_sched_pucch_t *pucch)

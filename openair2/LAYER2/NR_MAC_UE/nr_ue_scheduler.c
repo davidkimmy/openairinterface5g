@@ -2318,6 +2318,7 @@ bool is_cg_period(NR_UE_MAC_INST_t *mac,
     uint8_t remote_ue_psfch_slot = get_feedback_slot(sl_psfch_period, remote_tx_slot);
     fb_slot = (remote_ue_psfch_slot + K_offset) % n_slots_frame;
   }
+
   if(slot != fb_slot)
     return false;
 
@@ -2402,8 +2403,11 @@ void nr_ue_pucch_scheduler(module_id_t module_idP, frame_t frameP, int slotP, vo
 
   // SL ACKNACK summary
   bool any_sl_harq_summary = get_sl_harq_fb_report(mac, frameP, slotP, &pucch[num_res]);
-  if (any_sl_harq_summary)
-    num_res++;
+  if (any_sl_harq_summary) {
+    LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frameP, slotP,
+          (pucch[num_res].sl_harq_payload >> 16) & 0xFFFF, pucch[num_res].sl_harq_payload & 0xFFFF);
+      num_res++;
+  }
 
   if (num_res == 0)
     return;

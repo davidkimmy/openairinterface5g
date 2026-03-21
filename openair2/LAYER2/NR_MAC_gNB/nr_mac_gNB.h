@@ -503,6 +503,18 @@ typedef struct NR_UE_ul_harq {
   NR_sched_pusch_t sched_pusch;
 } NR_UE_ul_harq_t;
 
+typedef struct sl_fb_cg_state {
+  uint32_t slot_counter;
+  bool first_fb_scheduled;
+  bool fb_delta_computed;
+  uint8_t prev_slot;
+  uint8_t fb_delta_slot;
+  uint8_t first_fb_slot;
+  uint16_t prev_frame;
+  uint16_t fb_delta_frame;
+  uint16_t first_fb_frame;
+} sl_fb_cg_state_t;
+
 /*! \brief scheduling control information set through an API */
 #define MAX_CSI_REPORTS 48
 typedef struct {
@@ -609,6 +621,8 @@ typedef struct {
 
   feedback_event_t fb_event;
 
+  /// Per-UE state for SL HARQ feedback CG period (avoids wrong slot when switching Remote UE -> Relay UE)
+  sl_fb_cg_state_t sl_fb_cg_state;
 } NR_UE_sched_ctrl_t;
 
 typedef struct {
