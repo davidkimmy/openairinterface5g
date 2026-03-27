@@ -186,6 +186,11 @@ static void nr_processDLSegment(void *arg)
   //if we return before LDPC decoder run, the block is in error
   rdata->decodeIterations = dlsch->max_ldpc_iterations + 1;
 
+  if (E <= 0 || Qm <= 0) {
+    LOG_E(PHY, "nr_processDLSegment: invalid E=%d Qm=%d segment %d — skip LDPC (corrupt PDSCH config?)\n", E, Qm, r);
+    return;
+  }
+
   start_meas(&rdata->ts_deinterleave);
 
   //VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_DLSCH_DEINTERLEAVING, VCD_FUNCTION_IN);
@@ -358,6 +363,17 @@ uint32_t nr_dlsch_decoding(PHY_VARS_NR_UE *phy_vars_ue,
   A = dlsch->dlsch_config.TBS;
   ret = dlsch->max_ldpc_iterations + 1;
   dlsch->last_iteration_cnt = ret;
+
+  if (dlsch->Nl == 0 || dlsch->dlsch_config.qamModOrder == 0) {
+    LOG_E(PHY,
+          "%u.%u DLSCH decode skipped: invalid Nl=%d Qm=%d (corrupt DCI / bad RF?)\n",
+          frame,
+          nr_slot_rx,
+          dlsch->Nl,
+          dlsch->dlsch_config.qamModOrder);
+    return dlsch->max_ldpc_iterations + 1;
+  }
+
   harq_process->G = nr_get_G(nb_rb, nb_symb_sch, nb_re_dmrs, dmrs_length, dlsch->dlsch_config.qamModOrder,dlsch->Nl);
   G = harq_process->G;
 
@@ -431,6 +447,12 @@ uint32_t nr_dlsch_decoding(PHY_VARS_NR_UE *phy_vars_ue,
   notifiedFIFO_t nf;
   initNotifiedFIFO(&nf);
   set_abort(&harq_process->abort_decode, false);
+  for (r = 0; r < harq_process->C; r++) {
+    if (nr_get_E(G, harq_process->C, dlsch->dlsch_config.qamModOrder, dlsch->Nl, r) == 0) {
+      LOG_E(PHY, "DLSCH: nr_get_E returned 0 for segment %u — abort decode (no LDPC jobs queued)\n", r);
+      return (1 + dlsch->max_ldpc_iterations);
+    }
+  }
   for (r=0; r<harq_process->C; r++) {
     //printf("start rx segment %d\n",r);
     E = nr_get_E(G, harq_process->C, dlsch->dlsch_config.qamModOrder, dlsch->Nl, r);

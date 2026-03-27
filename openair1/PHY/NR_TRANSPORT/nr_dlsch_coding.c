@@ -171,6 +171,11 @@ void ldpc8blocks( void *p) {
   uint32_t A = rel15->TBSize[0]<<3;
   uint8_t nb_re_dmrs;
 
+  if (rel15->nrOfLayers == 0 || mod_order == 0) {
+    LOG_E(PHY, "ldpc8blocks: invalid nrOfLayers=%u qamModOrder=%u — skip encoding\n", rel15->nrOfLayers, mod_order);
+    return;
+  }
+
   if (rel15->dmrsConfigType==NFAPI_NR_DMRS_TYPE1)
     nb_re_dmrs = 6*rel15->numDmrsCdmGrpsNoData;
   else

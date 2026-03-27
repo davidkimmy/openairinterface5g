@@ -25,7 +25,6 @@
 #include "executables/nr-uesoftmodem.h"
 #include "PHY/phy_extern_nr_ue.h"
 #include "PHY/INIT/nr_phy_init.h"
-#include "PHY/NR_REFSIG/pss_nr.h"
 #include "NR_MAC_UE/mac_proto.h"
 #include "RRC/NR_UE/rrc_proto.h"
 #include "SCHED_NR_UE/phy_frame_config_nr.h"
@@ -397,7 +396,8 @@ static void UE_synch_sl(void *arg) {
 
   static int freq_offset = 0;
   if (sl_nr_slss_search(UE, &syncD->proc, 16) == 0) {
-    freq_offset = UE->common_vars.freq_offset; // frequency offset computed with pss in initial sync
+    /* PC5 FFO belongs in sidelink sync state; common_vars.freq_offset is for the Uu link. */
+    freq_offset = UE->SL_UE_PHY_PARAMS.sync_params.freq_offset;
     int hw_slot_offset = ((UE->rx_offset << 1) / fp->samples_per_subframe * fp->slots_per_subframe) +
                       round((float)((UE->rx_offset << 1) % fp->samples_per_subframe) / fp->samples_per_slot0);
 
@@ -896,9 +896,9 @@ void *UE_thread_sl(void *arg)
   AssertFatal(UE->rfdevice_sl.trx_start_func_sl != NULL, "Undefined function: trx_start_func_sl\n");
   AssertFatal(UE->rfdevice_sl.trx_start_func_sl(&UE->rfdevice_sl) == 0, "Could not start the device\n");
 
-  if (UE->sl_mode == 1) {
-    init_context_synchro_nr(fp, PC5);
-  }
+  /* Do NOT call init_context_synchro_nr(..., PC5) here: it replaces global Uu PSS/SSS
+   * buffers used by the gNB DL chain (PBCH/PDCCH). Sidelink SLSS search uses
+   * SL_UE_PHY_PARAMS.init_params.sl_pss_for_correlation (see sl_generate_pss_ifft_samples). */
 
   notifiedFIFO_t nf;
   initNotifiedFIFO(&nf);

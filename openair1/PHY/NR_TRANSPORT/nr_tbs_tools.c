@@ -33,6 +33,7 @@
 #include "nr_transport_common_proto.h"
 #include "PHY/CODING/coding_defs.h"
 #include "PHY/defs_nr_common.h"
+#include "common/utils/LOG/log.h"
 
 uint32_t nr_get_G(uint16_t nb_rb, uint16_t nb_symb_sch,uint8_t nb_re_dmrs,uint16_t length_dmrs, uint8_t Qm, uint8_t Nl) {
 	uint32_t G;
@@ -56,8 +57,12 @@ uint32_t nr_get_E(uint32_t G, uint8_t C, uint8_t Qm, uint8_t Nl, uint8_t r) {
   uint32_t E;
   uint8_t Cprime = C; //assume CBGTI not present
 
-  AssertFatal(Nl>0,"Nl is 0\n");
-  AssertFatal(Qm>0,"Qm is 0\n");
+  /* Under bad RF, MAC/PHY can supply corrupted DCI (Nl=0 or Qm=0). Asserting crashes the UE/gNB;
+   * callers must check for E==0 and abort the current TB. */
+  if (Nl == 0 || Qm == 0 || Cprime == 0) {
+    LOG_E(PHY, "nr_get_E: invalid params Nl=%u Qm=%u C=%u (G=%u r=%u)\n", Nl, Qm, Cprime, G, r);
+    return 0;
+  }
   if (r <= Cprime - ((G/(Nl*Qm))%Cprime) - 1)
       E = Nl*Qm*(G/(Nl*Qm*Cprime));
   else

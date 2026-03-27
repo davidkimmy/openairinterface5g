@@ -307,6 +307,15 @@ int nr_ulsch_decoding(PHY_VARS_gNB *phy_vars_gNB,
   uint8_t n_layers        = pusch_pdu->nrOfLayers;
   // ------------------------------------------------------------------
 
+  if (n_layers == 0 || Qm == 0) {
+    LOG_E(PHY,
+          "ULSCH decode skipped: invalid Nl=%u Qm=%u rnti %x (corrupt UCI/PUSCH config / bad RF?)\n",
+          n_layers,
+          Qm,
+          ulsch->rnti);
+    return -1;
+  }
+
   harq_process->TBS = pusch_pdu->pusch_data.tb_size;
 
   dtx_det = 0;
@@ -397,6 +406,13 @@ int nr_ulsch_decoding(PHY_VARS_gNB *phy_vars_gNB,
 
   Kr = harq_process->K;
   Kr_bytes = Kr >> 3;
+
+  for (uint32_t rs = 0; rs < harq_process->C; rs++) {
+    if (nr_get_E(G, harq_process->C, Qm, n_layers, rs) == 0) {
+      LOG_E(PHY, "ULSCH: nr_get_E returned 0 for segment %u — abort decode\n", rs);
+      return -1;
+    }
+  }
 
   uint32_t offset = 0;
   if (phy_vars_gNB && phy_vars_gNB->ldpc_offload_flag && mcs > 9) {

@@ -153,9 +153,9 @@ static int sl_nr_pss_correlation(PHY_VARS_NR_UE *UE, int frame_index)
   }
 
 
-  // computing absolute value of frequency offset
-  sync_params->freq_offset = ffo_est*sl_fp->subcarrier_spacing;
-  UE->common_vars.freq_offset =   sync_params->freq_offset;
+  // computing absolute value of frequency offset (keep in sync_params only; do not overwrite
+  // UE->common_vars.freq_offset — that is used by the Uu/gNB PHY on dual-radio relay UEs)
+  sync_params->freq_offset = ffo_est * sl_fp->subcarrier_spacing;
   for (int pss_index = 0; pss_index < SL_NR_NUM_IDs_IN_PSS; pss_index++) avg[pss_index]/=(length/4);
 
   sync_params->N_sl_id2 = pss_source;

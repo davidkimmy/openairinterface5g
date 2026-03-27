@@ -65,6 +65,11 @@ int nr_ulsch_encoding(PHY_VARS_NR_UE *ue,
   int rv_index = pscch_pssch_pdu == NULL ? ulsch->pusch_pdu.pusch_data.rv_index:pscch_pssch_pdu->rv_index;
   int tbslbrm = pscch_pssch_pdu==NULL?ulsch->pusch_pdu.tbslbrm:pscch_pssch_pdu->tbslbrm;
 
+  if (num_layers <= 0 || mod_order == 0) {
+    LOG_E(NR_PHY, "ULSCH encoding aborted: Nl=%d mod_order=%u\n", num_layers, mod_order);
+    return -1;
+  }
+
   uint16_t Kr=0;
   uint32_t r_offset=0;
   uint32_t F=0;

@@ -315,10 +315,18 @@ static void configure_dlsch(NR_UE_DLSCH_t *dlsch0,
 
   NR_DL_UE_HARQ_t *dlsch0_harq = &harq_list[current_harq_pid];
 
-  //get nrOfLayers from DCI info
+  /* Layer count from DM-RS port bitmap (38.212 / DCI). If DCI is garbage (false positive under
+   * bad RF), dmrs_ports can be 0 → Nl=0 and nr_get_E / LDPC will assert or misbehave. */
   uint8_t Nl = 0;
   for (int i = 0; i < 12; i++) { // max 12 ports
-    if ((dlsch_config_pdu->dmrs_ports>>i)&0x01) Nl += 1;
+    if ((dlsch_config_pdu->dmrs_ports >> i) & 0x01)
+      Nl += 1;
+  }
+  if (Nl == 0) {
+    LOG_W(PHY,
+          "configure_dlsch: dmrs_ports=0x%x yields Nl=0 (invalid/corrupt DCI?) — using Nl=1\n",
+          dlsch_config_pdu->dmrs_ports);
+    Nl = 1;
   }
   dlsch0->Nl = Nl;
   downlink_harq_process(dlsch0_harq, current_harq_pid, dlsch_config_pdu->ndi, dlsch_config_pdu->rv, dlsch0->rnti_type);
