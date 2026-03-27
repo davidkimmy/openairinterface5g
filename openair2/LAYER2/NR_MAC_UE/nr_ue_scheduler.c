@@ -2298,6 +2298,16 @@ bool is_cg_period(NR_UE_MAC_INST_t *mac,
   static bool first_fb_scheduled;
   static int fb_slot;
   static uint32_t num_frames_per_cg_period;
+  static uint16_t prev_frame;
+  static uint16_t last_seen_frame = 0xFFFF;
+
+  // Detect frame wrap: if we see a frame much smaller than the last one, we've wrapped
+  if (last_seen_frame != 0xFFFF && frame < 100 && last_seen_frame > 900) {
+    first_fb_scheduled = false;
+    num_frames_per_cg_period = 0;
+    prev_frame = 0;
+  }
+  last_seen_frame = frame;
 
   if (!first_fb_scheduled && !num_frames_per_cg_period) {
     NR_UE_UL_BWP_t *ul_bwp = &mac->current_UL_BWP;
@@ -2321,8 +2331,6 @@ bool is_cg_period(NR_UE_MAC_INST_t *mac,
 
   if(slot != fb_slot)
     return false;
-
-  static uint16_t prev_frame;
 
   if (!first_fb_scheduled) {
     prev_frame = frame;
@@ -2402,11 +2410,18 @@ void nr_ue_pucch_scheduler(module_id_t module_idP, frame_t frameP, int slotP, vo
     num_res++;
 
   // SL ACKNACK summary
-  bool any_sl_harq_summary = get_sl_harq_fb_report(mac, frameP, slotP, &pucch[num_res]);
-  if (any_sl_harq_summary) {
-    LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frameP, slotP,
-          (pucch[num_res].sl_harq_payload >> 16) & 0xFFFF, pucch[num_res].sl_harq_payload & 0xFFFF);
-    num_res++;
+  if (mac->is_synced_sl &&
+      mac->sl_tx_res_pool &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16 &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
+    bool any_sl_harq_summary = get_sl_harq_fb_report(mac, frameP, slotP, &pucch[num_res]);
+
+    if (any_sl_harq_summary) {
+      LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : ==> sl_harq_payload\n", frameP, slotP,
+            (pucch[num_res].sl_harq_payload >> 16) & 0xFFFF, pucch[num_res].sl_harq_payload & 0xFFFF);
+      num_res++;
+    }
   }
 
   if (num_res == 0)
@@ -4418,7 +4433,10 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind) {
     }
     if ((mac->if_module != NULL) && (mac->if_module->scheduled_response != NULL))
       mac->if_module->scheduled_response(&scheduled_response);
-    if (resource)
+    /* Only free resource when it was heap-allocated (sl_mode 1 configured grant).
+     * For sl_mode 2 Remote UE, resource is from get_resource_element() and points
+     * into sl_candidate_resources->data; freeing it causes "free(): invalid pointer". */
+    if (resource && get_softmodem_params()->sl_mode == 1)
       free_and_zero(resource);
   }
   NR_UE_SL_SCHED_UNLOCK(&mac->sl_sched_lock);

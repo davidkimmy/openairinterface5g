@@ -323,6 +323,11 @@ typedef struct gNB_RRC_UE_s {
   /* Nas Pdu */
   ngap_pdu_t nas_pdu;
 
+  /* SL HARQ-based MCS adaptation (Relay UE): -1 = use config default */
+  uint8_t sl_max_mcs_pssch_r16;
+  uint32_t sl_harq_ack_count;
+  uint32_t sl_harq_nack_count;
+
 } gNB_RRC_UE_t;
 
 typedef struct rrc_gNB_ue_context_s {

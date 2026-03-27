@@ -192,8 +192,8 @@ NR_UE_info_t* nr_sl_fb_scheduling(gNB_MAC_INST *nrmac,
   UE_iterator(nrmac->UE_info.list, UE) {
     if (UE->NR_SL_MAC_PARAMS->sl_tx_res_pool == NULL ||
         UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16 == NULL)
-      return NULL;
-    if (UE->is_cg_sent[UE->active_cg_id]) {
+      continue;
+    if (UE->is_cg_sent[UE->active_cg_id] && !UE->UE_sched_ctrl.ul_failure) {
       const uint16_t rnti = UE->rnti;
       if (UE->NR_SL_MAC_PARAMS->scheduling_rrc_reconfig) {
         nr_sl_harq_fb_report_frame_slot(nrmac, UE, frame, slot);
@@ -1100,15 +1100,24 @@ void handle_nr_uci_pucch_2_3_4(module_id_t mod_id,
   MessageDef *sl_harq_msg = NULL;
   if (get_softmodem_params()->sl_mode == 1 && !sched_ctrl->ul_failure) {
     if ((uci_234->pduBitmap >> 4) & 0x01) {
-      LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
-            ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
-            ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
-      sl_harq_msg = itti_alloc_new_message(TASK_RRC_GNB, 0, NR_RRC_SL_HARQ_REPORT_IND);
-      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).frame = frame;
-      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).slot = slot;
-      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).rnti = UE->rnti;
-      NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).harq_bit_len = uci_234->sl_harq.harq_bit_len;
-      memcpy(&NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).harq_payload, uci_234->sl_harq.harq_payload, sizeof(uint32_t));
+      uint32_t harq_payload;
+      memcpy(&harq_payload, uci_234->sl_harq.harq_payload, sizeof(uint32_t));
+
+      /* Filter out invalid/uninitialized payload (0xFFFF 0xFFFF) */
+      if (harq_payload == 0xFFFFFFFF) {
+        LOG_D(NR_MAC, "%4u.%2u RNTI 0x%04X: Invalid SL HARQ payload 0xFFFFFFFF, not sending to RRC\n",
+              frame, slot, UE->rnti);
+      } else {
+        LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
+              ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
+              ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
+        sl_harq_msg = itti_alloc_new_message(TASK_RRC_GNB, 0, NR_RRC_SL_HARQ_REPORT_IND);
+        NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).frame = frame;
+        NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).slot = slot;
+        NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).rnti = UE->rnti;
+        NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).harq_bit_len = uci_234->sl_harq.harq_bit_len;
+        NR_RRC_SL_HARQ_REPORT_IND(sl_harq_msg).harq_payload = harq_payload;
+      }
       free(uci_234->sl_harq.harq_payload);
     }
   }

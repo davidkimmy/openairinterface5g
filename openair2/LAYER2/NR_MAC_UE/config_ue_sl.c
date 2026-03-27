@@ -764,6 +764,8 @@ int nr_rrc_mac_config_req_sl_dedicated_config(module_id_t module_id,
           if (txpool->sl_MinMaxMCS_List_r16) {
             sl_mac->sl_bler.min_mcs = txpool->sl_MinMaxMCS_List_r16->list.array[0]->sl_MinMCS_PSSCH_r16;
             sl_mac->sl_bler.max_mcs = txpool->sl_MinMaxMCS_List_r16->list.array[0]->sl_MaxMCS_PSSCH_r16;
+            LOG_W(NR_MAC, "SL MCS range updated: min_mcs=%ld max_mcs=%ld (PSSCH)\n",
+                  (long)sl_mac->sl_bler.min_mcs, (long)sl_mac->sl_bler.max_mcs);
           } else {
             sl_mac->sl_bler.min_mcs = 0;
             sl_mac->sl_bler.max_mcs = MAX_MCS;

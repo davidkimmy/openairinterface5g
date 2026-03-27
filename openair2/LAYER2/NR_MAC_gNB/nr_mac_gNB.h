@@ -513,6 +513,7 @@ typedef struct sl_fb_cg_state {
   uint16_t prev_frame;
   uint16_t fb_delta_frame;
   uint16_t first_fb_frame;
+  uint16_t last_seen_frame;
 } sl_fb_cg_state_t;
 
 /*! \brief scheduling control information set through an API */
@@ -725,6 +726,10 @@ typedef struct gNB_MAC_INST_s {
   int                             pucch_failure_thres;
   /// PUSCH Failure threshold (compared to consecutive PUSCH DTX)
   int                             pusch_failure_thres;
+  /// Circular buffer of recently-removed RNTIs (for stale PHY CRC report detection)
+#define NR_MAC_REMOVED_RNTI_BUF 16
+  rnti_t   recently_removed_rnti[NR_MAC_REMOVED_RNTI_BUF];
+  int      recently_removed_rnti_idx;
   /// Subcarrier Offset
   int                             ssb_SubcarrierOffset;
   int                             ssb_OffsetPointA;

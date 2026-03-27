@@ -5,6 +5,9 @@ add_library(rfsimulator MODULE
 )
 target_link_libraries(rfsimulator PRIVATE SIMU)
 set_target_properties(rfsimulator PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_custom_command(TARGET rfsimulator POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E create_symlink librfsimulator.so liboai_device.so
+                   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(replay_node stored_node.c)
 target_link_libraries (replay_node minimal_lib)

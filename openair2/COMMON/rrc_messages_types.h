@@ -501,6 +501,7 @@ typedef struct NRRrcReconfiguration_ind_s {
   uint32_t  frame;
   uint8_t   slot;
   uint8_t   gnb_id;
+  bool      mcs_only; /* true = MCS-only HARQ update; Relay UE must NOT forward to Remote UE */
 } NRRrcReconfiguration_ind;
 
 typedef struct NRRrcSL_HARQ_Report_ind_s {

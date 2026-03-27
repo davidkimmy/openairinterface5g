@@ -107,7 +107,8 @@ nr_ue_rrc_SL_UEInformation_trigger(
 void nr_rrc_ue_process_sidelink_radioResourceConfig(
   const protocol_ctxt_t *const ctxt_pP,
   const uint8_t gNB_index,
-  NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_ConfigDedicatedNR
+  NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_ConfigDedicatedNR,
+  bool mcs_only
 );
 
 void
@@ -2327,7 +2328,14 @@ void nr_rrc_ue_process_sl_ConfigDedicatedNR(const protocol_ctxt_t *const ctxt_pP
   NR_UE_RRC_INST_t *rrc = &NR_UE_rrc_inst[ctxt_pP->module_id];
   uint8_t mu = 0;
   if (sl_conf) {
-    rrc->sl_dedicated_cfg = CALLOC(1, sizeof(NR_SetupRelease_SL_ConfigDedicatedNR_r16_t));
+    // Only allocate if not already allocated (first configuration)
+    // For MCS updates, we reuse the existing sl_dedicated_cfg and update it
+    if (rrc->sl_dedicated_cfg == NULL) {
+      rrc->sl_dedicated_cfg = CALLOC(1, sizeof(NR_SetupRelease_SL_ConfigDedicatedNR_r16_t));
+      LOG_D(NR_RRC, "[UE %d] First SL configuration: allocated sl_dedicated_cfg\n", ctxt_pP->module_id);
+    } else {
+      LOG_D(NR_RRC, "[UE %d] SL reconfiguration: reusing existing sl_dedicated_cfg (MCS update)\n", ctxt_pP->module_id);
+    }
     if (sl_conf->present == NR_SetupRelease_SL_ConfigDedicatedNR_r16_PR_setup) {
       rrc->sl_dedicated_cfg->present = sl_conf->present;
       if (sl_conf->choice.setup) {
@@ -2545,6 +2553,9 @@ void extract_nr_sl_Rest_ResourcePool_Config(struct NR_SL_ResourcePool_r16 *sl_Re
       mcs_config->sl_MCS_Table_r16 = recvd_sl_RxPool->sl_MinMaxMCS_List_r16->list.array[i]->sl_MCS_Table_r16;
       mcs_config->sl_MinMCS_PSSCH_r16 = recvd_sl_RxPool->sl_MinMaxMCS_List_r16->list.array[i]->sl_MinMCS_PSSCH_r16;
       mcs_config->sl_MaxMCS_PSSCH_r16 = recvd_sl_RxPool->sl_MinMaxMCS_List_r16->list.array[i]->sl_MaxMCS_PSSCH_r16;
+      LOG_W(NR_RRC,
+            "Relay UE: Received SL pool MCS config[%d]: sl_MinMCS_PSSCH_r16=%ld sl_MaxMCS_PSSCH_r16=%ld\n",
+            i, mcs_config->sl_MinMCS_PSSCH_r16, mcs_config->sl_MaxMCS_PSSCH_r16);
       ASN_SEQUENCE_ADD(&sl_ResourcePool->sl_MinMaxMCS_List_r16->list, mcs_config);
     }
   }
@@ -2655,7 +2666,9 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
         (ie->nonCriticalExtension->nonCriticalExtension->nonCriticalExtension->nonCriticalExtension != NULL) &&
         (ie->nonCriticalExtension->nonCriticalExtension->nonCriticalExtension->nonCriticalExtension->sl_ConfigDedicatedNR_r16 != NULL)) {
         NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_conf = ie->nonCriticalExtension->nonCriticalExtension->nonCriticalExtension->nonCriticalExtension->sl_ConfigDedicatedNR_r16;
-        nr_rrc_ue_process_sidelink_radioResourceConfig(ctxt_pP, gNB_index, sl_conf);
+        /* If SL was already configured, this is a HARQ-driven MCS-only update — must not be forwarded to Remote UE */
+        bool mcs_only = (NR_UE_rrc_inst[ctxt_pP->module_id].sl_dedicated_cfg != NULL);
+        nr_rrc_ue_process_sidelink_radioResourceConfig(ctxt_pP, gNB_index, sl_conf, mcs_only);
         free_nr_sl_SetupRelease_SL_ConfigDedicatedNR_r16(sl_conf);
      }
    }
@@ -3064,6 +3077,11 @@ void *rrc_nrue_task(void *args_p)
       }
 
       case NR_RRC_RECONFIGURATION_IND: {
+        if (NR_RRC_RECONFIGURATION_IND(msg_p).mcs_only) {
+          LOG_W(NR_RRC, "\n*** [RelayUE %d] MCS-only RRCReconfiguration: applying locally, NOT forwarding to Remote UE ***\n\n", ue_mod_id);
+          break;
+        }
+        LOG_W(NR_RRC, "\n*** [RelayUE %d] Full RRCReconfiguration: forwarding to Remote UE ***\n\n", ue_mod_id);
         rnti_t remote_ue_rnti = 0x1; // remote UE ID
         NR_RRCReconfiguration_v1610_IEs_t *rrc_ext_v1610 = prepare_rrc_reconfiguration_for_Remote_UE(remote_ue_rnti, NR_UE_rrc_inst[ue_mod_id].sl_dedicated_cfg);
         uint8_t xid = 3;
@@ -3117,13 +3135,15 @@ void *rrc_nrue_task(void *args_p)
 
 void nr_rrc_ue_process_sidelink_radioResourceConfig(const protocol_ctxt_t *const ctxt_pP,
                                                     const uint8_t gNB_index,
-                                                    NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_ConfigDedicatedNR)
+                                                    NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_ConfigDedicatedNR,
+                                                    bool mcs_only)
 {
   //process sl_CommConfig, configure MAC/PHY for transmitting SL communication (RRC_CONNECTED)
   if (sl_ConfigDedicatedNR != NULL) {
     switch (sl_ConfigDedicatedNR->present){
       case NR_SetupRelease_SL_ConfigDedicatedNR_r16_PR_setup:
-        LOG_D(NR_RRC, "[UE %d] Received message sidelink_radioResourceConfig\n", ctxt_pP->module_id);
+        LOG_W(NR_RRC, "[UE %d] Relay UE: Received RRCReconfiguration with updated SL TX parameters (sidelink_radioResourceConfig)%s\n",
+              ctxt_pP->module_id, mcs_only ? " [MCS-only, will NOT forward to Remote UE]" : "");
         nr_rrc_ue_process_sl_ConfigDedicatedNR(ctxt_pP,
                                                gNB_index,
                                                sl_ConfigDedicatedNR);
@@ -3133,6 +3153,7 @@ void nr_rrc_ue_process_sidelink_radioResourceConfig(const protocol_ctxt_t *const
           message_p = itti_alloc_new_message(TASK_RRC_NRUE, 0, NR_RRC_RECONFIGURATION_IND);
           NR_RRC_RECONFIGURATION_IND(message_p).frame = ctxt_pP->frame;
           NR_RRC_RECONFIGURATION_IND(message_p).slot = ctxt_pP->subframe;
+          NR_RRC_RECONFIGURATION_IND(message_p).mcs_only = mcs_only;
           itti_send_msg_to_task(TASK_RRC_NRUE, GNB_MODULE_ID_TO_INSTANCE(0), message_p);
         }
         LOG_W(NR_RRC, "Received sl-RNTI-r16 = %lu\n", sl_rnti);

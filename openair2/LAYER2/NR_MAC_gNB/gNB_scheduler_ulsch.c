@@ -517,6 +517,15 @@ void handle_nr_ul_harq(const int CC_idP,
         return;
       }
     }
+    /* Check if this RNTI was recently removed: stale PHY pipeline CRC report */
+    for (int j = 0; j < NR_MAC_REMOVED_RNTI_BUF; j++) {
+      if (nrmac->recently_removed_rnti[j] == crc_pdu->rnti) {
+        LOG_D(NR_MAC, "%s(): stale PUSCH CRC for recently-removed RNTI 0x%04x, discarding\n",
+              __func__, crc_pdu->rnti);
+        NR_SCHED_UNLOCK(&nrmac->sched_lock);
+        return;
+      }
+    }
     NR_SCHED_UNLOCK(&nrmac->sched_lock);
     LOG_E(NR_MAC, "%s(): unknown RNTI 0x%04x in PUSCH\n", __func__, crc_pdu->rnti);
     return;

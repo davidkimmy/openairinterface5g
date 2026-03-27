@@ -45,6 +45,7 @@
 #include "RRC/L2_INTERFACE/openair_rrc_L2_interface.h"
 #include "LAYER2/RLC/rlc.h"
 #include "LAYER2/NR_MAC_gNB/mac_proto.h"
+#include "LAYER2/NR_MAC_COMMON/nr_mac_common.h"
 #include "common/utils/LOG/log.h"
 #include "COMMON/mac_rrc_primitives.h"
 #include "RRC/NR/MESSAGES/asn1_msg.h"
@@ -685,10 +686,54 @@ static void rrc_gNB_generate_defaultRRCReconfiguration(const protocol_ctxt_t *co
 }
 
 //-----------------------------------------------------------------------------
+/** Apply per-UE SL MCS override (from HARQ adaptation) to built sl_ConfigDedicatedNR. */
+static void apply_sl_mcs_override_from_ue_context(const gNB_RRC_UE_t *ue_p,
+                                                  NR_SetupRelease_SL_ConfigDedicatedNR_r16_t *sl_conf)
+//-----------------------------------------------------------------------------
+{
+  if (!ue_p || !sl_conf || !sl_conf->choice.setup)
+    return;
+  struct NR_SL_PHY_MAC_RLC_Config_r16 *sl_phy = sl_conf->choice.setup->sl_PHY_MAC_RLC_Config_r16;
+  if (!sl_phy || !sl_phy->sl_FreqInfoToAddModList_r16)
+    return;
+  const long max_mcs = (long)ue_p->sl_max_mcs_pssch_r16;
+  for (int i = 0; i < sl_phy->sl_FreqInfoToAddModList_r16->list.count; i++) {
+    NR_SL_FreqConfig_r16_t *freq = sl_phy->sl_FreqInfoToAddModList_r16->list.array[i];
+    if (!freq || !freq->sl_BWP_ToAddModList_r16)
+      continue;
+    for (int j = 0; j < freq->sl_BWP_ToAddModList_r16->list.count; j++) {
+      NR_SL_BWP_Config_r16_t *bwp = freq->sl_BWP_ToAddModList_r16->list.array[j];
+      if (!bwp || !bwp->sl_BWP_PoolConfig_r16 || !bwp->sl_BWP_PoolConfig_r16->sl_TxPoolScheduling_r16
+          || !bwp->sl_BWP_PoolConfig_r16->sl_TxPoolScheduling_r16->sl_PoolToAddModList_r16)
+        continue;
+      struct NR_SL_TxPoolDedicated_r16__sl_PoolToAddModList_r16 *pool_list =
+        bwp->sl_BWP_PoolConfig_r16->sl_TxPoolScheduling_r16->sl_PoolToAddModList_r16;
+      for (int k = 0; k < pool_list->list.count; k++) {
+        NR_SL_ResourcePoolConfig_r16_t *pool_cfg = pool_list->list.array[k];
+        if (!pool_cfg || !pool_cfg->sl_ResourcePool_r16 || !pool_cfg->sl_ResourcePool_r16->sl_MinMaxMCS_List_r16)
+          continue;
+        struct NR_SL_MinMaxMCS_List_r16 *mcs_list = pool_cfg->sl_ResourcePool_r16->sl_MinMaxMCS_List_r16;
+        for (int m = 0; m < mcs_list->list.count; m++) {
+          NR_SL_MinMaxMCS_Config_r16_t *mcs_cfg = mcs_list->list.array[m];
+          if (mcs_cfg) {
+            long old_pool_mcs = mcs_cfg->sl_MaxMCS_PSSCH_r16;
+            long p = old_pool_mcs;
+            if (p > max_mcs)
+              p = max_mcs;
+            mcs_cfg->sl_MaxMCS_PSSCH_r16 = p;
+          }
+        }
+      }
+    }
+  }
+}
+
+//-----------------------------------------------------------------------------
 NR_RRCReconfiguration_v1610_IEs_t* prepare_rrc_reconfig_v1610(module_id_t module_id,
                                                               rnti_t sl_rnti,
                                                               NR_SL_TxResourceReqList_r16_t *sl_TxRscReqList_r16,
-                                                              const NR_SL_UE_AssistanceInformationNR_r16_t *trafficPatternList) {
+                                                              const NR_SL_UE_AssistanceInformationNR_r16_t *trafficPatternList,
+                                                              rrc_gNB_ue_context_t *ue_context_p) {
 //-----------------------------------------------------------------------------
 
     LOG_D(NR_RRC, "Preparing RRCReconfiguration-v1610-IEs with Sidelink IEs.\n");
@@ -697,6 +742,8 @@ NR_RRCReconfiguration_v1610_IEs_t* prepare_rrc_reconfig_v1610(module_id_t module
 
     v1610_ies->sl_ConfigDedicatedNR_r16 = CALLOC(1, sizeof(NR_SetupRelease_SL_ConfigDedicatedNR_r16_t));
     nr_rrc_pre_configure_NR_SetupRelease_SL_ConfigDedicatedNR(module_id, v1610_ies->sl_ConfigDedicatedNR_r16, sl_rnti, sl_TxRscReqList_r16, trafficPatternList);
+    if (ue_context_p)
+      apply_sl_mcs_override_from_ue_context(&ue_context_p->ue_context, v1610_ies->sl_ConfigDedicatedNR_r16);
     return v1610_ies;
 }
 
@@ -1493,7 +1540,8 @@ int nr_rrc_reconfiguration_req_sidelink(rrc_gNB_ue_context_t                    
                                         NR_SidelinkUEInformationNR_r16_IEs_t         *sl_UEInfo_r16,
                                         const NR_SL_UE_AssistanceInformationNR_r16_t *trafficPatternList) {
 
-  if(sl_UEInfo_r16 == NULL && trafficPatternList == NULL)
+  bool has_mcs_override = ue_context_pP != NULL;
+  if (sl_UEInfo_r16 == NULL && trafficPatternList == NULL && !has_mcs_override)
     return 0;
 
   uint8_t xid = rrc_gNB_get_next_transaction_identifier(ctxt_pP->module_id);
@@ -1503,7 +1551,7 @@ int nr_rrc_reconfiguration_req_sidelink(rrc_gNB_ue_context_t                    
   NR_RRCReconfiguration_v1610_IEs_t* rrc_ext_v1610 = NULL;
   rnti_t assigned_sl_rnti = ctxt_pP->rntiMaybeUEid;
   NR_SL_TxResourceReqList_r16_t *sl_TxRscReqList_r16 = (sl_UEInfo_r16 != NULL) ? sl_UEInfo_r16->sl_TxResourceReqList_r16 : NULL;
-  rrc_ext_v1610 = prepare_rrc_reconfig_v1610(ctxt_pP->module_id, assigned_sl_rnti, sl_TxRscReqList_r16, trafficPatternList);
+  rrc_ext_v1610 = prepare_rrc_reconfig_v1610(ctxt_pP->module_id, assigned_sl_rnti, sl_TxRscReqList_r16, trafficPatternList, ue_context_pP);
 
 
   uint8_t buffer[RRC_BUF_SIZE];
@@ -1563,6 +1611,8 @@ static int nr_rrc_gNB_decode_ccch(module_id_t module_id, rnti_t rnti, const uint
         rrc_gNB_ue_context_t *ue_context_p = rrc_gNB_get_ue_context_by_rnti(gnb_rrc_inst, rnti);
         if (ue_context_p != NULL) {
           LOG_W(NR_RRC, "Got RRC setup request for a already registered RNTI %x, dropping the old one and give up this rrcSetupRequest\n", ue_context_p->ue_context.rnti);
+          if (get_softmodem_params()->sl_mode == 1)
+            nr_rrc_mac_clear_sl_harq_schedule(module_id, rnti);
           rrc_gNB_remove_ue_context(gnb_rrc_inst, ue_context_p);
         } else {
           rrcSetupRequest = &ul_ccch_msg->message.choice.c1->choice.rrcSetupRequest->rrcSetupRequest;
@@ -2817,21 +2867,76 @@ static void write_rrc_stats(const gNB_RRC_INST *rrc)
   fclose(f);
 }
 
+/* Thresholds for SL HARQ-based MCS adaptation */
+#define SL_HARQ_MCS_WINDOW      16
+#define SL_HARQ_NACK_RATIO_HIGH 0.2f
+#define SL_HARQ_NACK_RATIO_LOW  0.05f
+#define SL_MCS_PSSCH_MAX        28
+
 void nr_gNB_process_sl_harq_report_ind(const protocol_ctxt_t *const ctxt_pP, MessageDef *msg_p, instance_t instance)
 {
-  // TODO: Following two statements will be used for sending updated RRCReconfiguration message
-  // gNB_RRC_INST *gnb_rrc_inst = RC.nrrrc[ctxt_pP->module_id];
-  // rrc_gNB_ue_context_t *ue_context_p = rrc_gNB_get_ue_context_by_rnti(gnb_rrc_inst, ctxt_pP->rntiMaybeUEid);
+  gNB_RRC_INST *gnb_rrc_inst = RC.nrrrc[instance];
+  const rnti_t rnti = NR_RRC_SL_HARQ_REPORT_IND(msg_p).rnti;
+  rrc_gNB_ue_context_t *ue_context_p = rrc_gNB_get_ue_context_by_rnti(gnb_rrc_inst, rnti);
+  if (!ue_context_p) {
+    LOG_W(NR_RRC, "%s: RNTI 0x%04X not found, dropping SL HARQ report\n", __func__, (unsigned)rnti);
+    return;
+  }
 
   frame_t frame = NR_RRC_SL_HARQ_REPORT_IND(msg_p).frame;
   slot_t slot = NR_RRC_SL_HARQ_REPORT_IND(msg_p).slot;
+  uint32_t harq_payload = NR_RRC_SL_HARQ_REPORT_IND(msg_p).harq_payload;
+  /* Low 16 bits = ACK(1)/NACK(0) per HARQ process; high 16 bits = active process bitmap */
+  uint16_t ack_nack = (uint16_t)(harq_payload & 0xFFFF);
+  uint16_t harq_process_bmap = (uint16_t)(harq_payload >> 16);
 
-  uint8_t *bytes = (uint8_t *)&NR_RRC_SL_HARQ_REPORT_IND(msg_p).harq_payload;
-  LOG_W(RRC, "%4u.%2u %s 0x%04X 0x%04X : <== sl_harq_payload\n",
-        frame, slot, __func__,
-        ((uint16_t)bytes[3] << 8) | (uint16_t)bytes[2],
-        ((uint16_t)bytes[1] << 8) | (uint16_t)bytes[0]);
-  // Add RRCReconfiguration function call here to send with updated parameters
+
+  LOG_D(RRC, "%4u.%2u %s RNTI 0x%04X payload 0x%04X 0x%04X : <== sl_harq\n",
+        frame, slot, __func__, (unsigned)rnti,
+        (unsigned)harq_process_bmap, (unsigned)ack_nack);
+
+  uint32_t ack = 0, nack = 0;
+  for (int i = 0; i < 16; i++) {
+    if (!(harq_process_bmap & (1u << i)))
+      continue;
+    if (ack_nack & (1u << i))
+      ack++;
+    else
+      nack++;
+  }
+  gNB_RRC_UE_t *ue_p = &ue_context_p->ue_context;
+  ue_p->sl_harq_ack_count  += ack;
+  ue_p->sl_harq_nack_count += nack;
+
+  /* MCS adaptation: run once per window of SL_HARQ_MCS_WINDOW results */
+  const uint32_t total = ue_p->sl_harq_ack_count + ue_p->sl_harq_nack_count;
+  if (total >= SL_HARQ_MCS_WINDOW) {
+    const float nack_ratio = (float)ue_p->sl_harq_nack_count / (float)total;
+    ue_p->sl_harq_ack_count  = 0;
+    ue_p->sl_harq_nack_count = 0;
+
+    uint8_t old_max_mcs = ue_p->sl_max_mcs_pssch_r16;
+    uint8_t new_max_mcs = old_max_mcs;
+
+    if (nack_ratio > SL_HARQ_NACK_RATIO_HIGH) {
+      if (new_max_mcs > 0)
+        new_max_mcs--;
+    } else if (nack_ratio < SL_HARQ_NACK_RATIO_LOW) {
+      if (new_max_mcs < SL_MCS_PSSCH_MAX)
+        new_max_mcs++;
+    }
+
+    if (new_max_mcs != old_max_mcs) {
+      ue_p->sl_max_mcs_pssch_r16 = new_max_mcs;
+      LOG_D(NR_RRC,
+            "SL HARQ-based MCS adaptation: RNTI %04x sl_max_mcs_pssch_r16 %d -> %d "
+            "(ack=%u nack=%u nack_ratio=%.2f)\n",
+            (unsigned)rnti, (int)old_max_mcs, (int)new_max_mcs, ack, nack, (double)nack_ratio);
+      LOG_W(NR_RRC, "gNB: Sending RRCReconfiguration to RNTI %04x with updated SL TX params (max_mcs=%d)\n",
+            (unsigned)rnti, (int)new_max_mcs);
+      nr_rrc_reconfiguration_req_sidelink(ue_context_p, ctxt_pP, NULL, NULL);
+    }
+  }
 }
 
 ///---------------------------------------------------------------------------------------------------------------///
@@ -2987,6 +3092,11 @@ void *rrc_gnb_task(void *args_p) {
         break;
 
       case NR_RRC_SL_HARQ_REPORT_IND:
+        LOG_D(NR_RRC,
+              "%4u.%2u RNTI 0x%04X NR_RRC_SL_HARQ_REPORT_IND received at RRC task\n",
+              NR_RRC_SL_HARQ_REPORT_IND(msg_p).frame,
+              NR_RRC_SL_HARQ_REPORT_IND(msg_p).slot,
+              (unsigned)NR_RRC_SL_HARQ_REPORT_IND(msg_p).rnti);
         PROTOCOL_CTXT_SET_BY_INSTANCE(&ctxt,
                                       instance,
                                       GNB_FLAG_YES,

@@ -5799,6 +5799,18 @@ void nr_rrc_mac_config_req_sl_config(module_id_t module_id,
   }
 }
 
+void nr_rrc_mac_clear_sl_harq_schedule(module_id_t module_id, rnti_t rnti)
+{
+  gNB_MAC_INST *gNB = RC.nrmac[module_id];
+  UE_iterator(gNB->UE_info.list, UE) {
+    if (UE->rnti == rnti && UE->NR_SL_MAC_PARAMS != NULL) {
+      UE->NR_SL_MAC_PARAMS->scheduling_rrc_reconfig = false;
+      LOG_D(NR_MAC, "Cleared SL HARQ scheduling for RNTI %04x (RRC context removed)\n", rnti);
+      return;
+    }
+  }
+}
+
 /* Compute sidelink Configured Grant Type 1's current logical slot
  sl_ReferenceSlotCG_Type1 - reference logical slot defined by sl-TimeReferenceSFN-Type1.
  sl_TimeOffsetCG_Type1 - slot offset with respect to logical slot defined by sl_ReferenceSlotCG_Type1

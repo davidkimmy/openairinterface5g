@@ -2252,6 +2252,10 @@ void mac_remove_nr_ue(gNB_MAC_INST *nr_mac, rnti_t rnti)
   memcpy(UE_info->list, newUEs, sizeof(UE_info->list));
   NR_SCHED_UNLOCK(&UE_info->mutex);
 
+  /* Record in recently-removed ring so stale PHY CRC reports can be identified */
+  nr_mac->recently_removed_rnti[nr_mac->recently_removed_rnti_idx] = rnti;
+  nr_mac->recently_removed_rnti_idx = (nr_mac->recently_removed_rnti_idx + 1) % NR_MAC_REMOVED_RNTI_BUF;
+
   delete_nr_ue_data(UE, nr_mac->common_channels, &UE_info->uid_allocator);
 }
 

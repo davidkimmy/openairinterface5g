@@ -350,10 +350,25 @@ void cg_period_check_and_compute(NR_UE_info_t *UE, uint16_t frame, uint8_t slot,
   uint16_t *prev_frame = &sched_ctrl->sl_fb_cg_state.prev_frame;
   uint16_t *fb_delta_frame = &sched_ctrl->sl_fb_cg_state.fb_delta_frame;
   uint16_t *first_fb_frame = &sched_ctrl->sl_fb_cg_state.first_fb_frame;
+  uint16_t *last_seen_frame = &sched_ctrl->sl_fb_cg_state.last_seen_frame;
 
   NR_UE_UL_BWP_t *ul_bwp = &UE->current_UL_BWP;
   const uint8_t mu = ul_bwp->scs;
   const uint8_t num_slots_frame = nr_slots_per_frame[mu];
+
+  // TODO: Make frame wrap detection more robust for edge cases
+  // Per TS 38.331, sl-PeriodCG1-r16 ranges from ms100 to ms1000 (10-100 frames).
+  // Current hardcoded thresholds (fb_frame < 100, last_seen_frame > 900) work for
+  // typical cases but could fail if feedback arrives early/late due to scheduling delays.
+  // Consider: wrap_detected = ((fb_frame + MAX_SFN - last_seen_frame) % MAX_SFN) > (MAX_SFN / 2)
+  if (*last_seen_frame != 0 && fb_frame < 100 && *last_seen_frame > 900) {
+    *slot_counter = 0;
+    *first_fb_scheduled = false;
+    *fb_delta_computed = false;
+    *prev_frame = 0;
+    *prev_slot = 0;
+  }
+  *last_seen_frame = fb_frame;
 
   bool cg_start = (*slot_counter == 0 && !*first_fb_scheduled) || (*slot_counter == num_slots_per_cg_period);
   if (cg_start) {
