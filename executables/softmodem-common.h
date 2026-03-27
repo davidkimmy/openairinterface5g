@@ -375,6 +375,24 @@ extern uint64_t get_softmodem_optmask(void);
 extern uint64_t set_softmodem_optmask(uint64_t bitmask);
 extern uint64_t clear_softmodem_optmask(uint64_t bitmask);
 extern softmodem_params_t *get_softmodem_params(void);
+
+/* TUN/interface index helpers for multi-UE scenarios with --node-number */
+static inline int get_tun_fd_index(void) {
+  uint16_t n = get_softmodem_params()->node_number;
+  if (n >= 2) return (int)(n - 2);
+  if (n == 0 && get_softmodem_params()->relay_type > 0)
+    return get_softmodem_params()->is_relay_ue ? 0 : 1;
+  return 0;
+}
+
+static inline uint16_t get_tun_iface_id(void) {
+  uint16_t n = get_softmodem_params()->node_number;
+  if (n != 0) return n - 1;
+  if (get_softmodem_params()->relay_type > 0)
+    return get_softmodem_params()->is_relay_ue ? 1 : 2;
+  return 1;
+}
+
 extern void get_common_options(uint32_t execmask);
 extern char *get_softmodem_function(uint64_t *sofmodemfunc_mask_ptr);
 #define SOFTMODEM_RTSIGNAL  (SIGRTMIN+1)

@@ -421,13 +421,15 @@ static void nr_sdap_rx_entity(nr_sdap_entity_t *entity,
      * deliver the retrieved SDAP SDU to the upper layer.
      */
     extern int nas_sock_fd[];
-    int len = write(nas_sock_fd[0], &buf[offset], size-offset);
+    int index = get_tun_fd_index();
+    int len = write(nas_sock_fd[index], &buf[offset], size-offset);
     LOG_D(SDAP, "RX Entity len : %d\n", len);
     LOG_D(SDAP, "RX Entity size : %d\n", size);
     LOG_D(SDAP, "RX Entity offset : %d\n", offset);
 
     if (len != size-offset)
-      LOG_E(SDAP, "%s:%d:%s: fatal\n", __FILE__, __LINE__, __FUNCTION__);
+      LOG_E(SDAP, "FATAL: write failed! Expected %d bytes, wrote %d bytes to nas_sock_fd[%d]\n",
+            size-offset, len, index);
   }
 }
 

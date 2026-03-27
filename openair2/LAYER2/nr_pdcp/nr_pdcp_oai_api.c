@@ -551,14 +551,15 @@ bool pdcp_data_ind(const protocol_ctxt_t *const  ctxt_pP,
 
 #include "LAYER2/MAC/mac_extern.h"
 
-static void reblock_tun_socket(void)
+static void reblock_tun_socket(int id)
 {
   extern int nas_sock_fd[];
   int f;
-
-  f = fcntl(nas_sock_fd[0], F_GETFL, 0);
+  /* Use get_tun_fd_index() to match the index used during TUN creation */
+  int index = (id == -1) ? 0 : get_tun_fd_index();
+  f = fcntl(nas_sock_fd[index], F_GETFL, 0);
   f &= ~(O_NONBLOCK);
-  if (fcntl(nas_sock_fd[0], F_SETFL, f) == -1) {
+  if (fcntl(nas_sock_fd[index], F_SETFL, f) == -1) {
     LOG_E(PDCP, "reblock_tun_socket failed\n");
     exit(1);
   }
@@ -619,14 +620,15 @@ static void *ue_tun_read_thread(void *_)
 
   bool relay_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
   bool is_relay_ue = get_softmodem_params()->is_relay_ue;
+  int index = get_tun_fd_index();
   int rb_id = 1;
   rb_id = ((get_softmodem_params()->sl_mode == 2) && relay_enabled && !is_relay_ue) ? 2 : rb_id;
   pthread_setname_np( pthread_self(),"ue_tun_read");
   LOG_I(PDCP,"ue_tun_read_thread created on core %d\n",sched_getcpu());
   while (1) {
-    len = read(nas_sock_fd[0], &rx_buf, NL_MAX_PAYLOAD);
+    len = read(nas_sock_fd[index], &rx_buf, NL_MAX_PAYLOAD);
     if (len == -1) {
-      LOG_E(PDCP, "%s:%d:%s: fatal\n", __FILE__, __LINE__, __FUNCTION__);
+      LOG_E(PDCP, "%s:%d:%s: fatal reading from nas_sock_fd[%d]\n", __FILE__, __LINE__, __FUNCTION__, index);
       exit(1);
     }
 
@@ -660,7 +662,7 @@ static void start_pdcp_tun_enb(void)
 {
   pthread_t t;
 
-  reblock_tun_socket();
+  reblock_tun_socket(-1);
 
   if (pthread_create(&t, NULL, enb_tun_read_thread, NULL) != 0) {
     LOG_E(PDCP, "%s:%d:%s: fatal\n", __FILE__, __LINE__, __FUNCTION__);
@@ -668,11 +670,10 @@ static void start_pdcp_tun_enb(void)
   }
 }
 
-static void start_pdcp_tun_ue(void)
+static void start_pdcp_tun_ue(int id)
 {
   pthread_t t;
-
-  reblock_tun_socket();
+  reblock_tun_socket(id);
 /*
   if (pthread_create(&t, NULL, ue_tun_read_thread, NULL) != 0) {
     LOG_E(PDCP, "%s:%d:%s: fatal\n", __FILE__, __LINE__, __FUNCTION__);
@@ -766,12 +767,12 @@ uint64_t nr_pdcp_module_init(uint64_t _pdcp_optmask, int id)
       netlink_init_tun(ifsuffix_ue, num_if, id);
       //Add --nr-ip-over-lte option check for next line
       if (IS_SOFTMODEM_NOS1){
-        nas_config(1, 1, !get_softmodem_params()->nsa ? 2 : 3, ifsuffix_ue);
+        nas_config(get_tun_iface_id(), 1, !get_softmodem_params()->nsa ? 2 : 3, ifsuffix_ue);
         int pdusession_id = 10;
         set_qfi_pduid(7, pdusession_id);
       }
       LOG_I(PDCP, "UE pdcp will use tun interface\n");
-      start_pdcp_tun_ue();
+      start_pdcp_tun_ue(id);
     } else if(ENB_NAS_USE_TUN) {
       char *ifsuffix_base_s = get_softmodem_params()->nsa ? "gnb" : "enb";
       netlink_init_tun(ifsuffix_base_s, 1, id);

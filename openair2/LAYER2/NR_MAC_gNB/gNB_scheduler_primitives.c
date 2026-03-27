@@ -1872,7 +1872,12 @@ void configure_UE_BWP(gNB_MAC_INST *nr_mac,
     DL_BWP->pdsch_Config = bwpd->pdsch_Config->choice.setup;
     UL_BWP->configuredGrantConfig = ubwpd->configuredGrantConfig ? ubwpd->configuredGrantConfig->choice.setup : NULL;
     UL_BWP->pusch_Config = ubwpd->pusch_Config->choice.setup;
-    UL_BWP->sl_pucch_Config = ubwpd->ext1->sl_PUCCH_Config_r16->choice.setup;
+    // Check if sidelink extensions are present (only in SL Mode 2)
+    if (ubwpd->ext1 && ubwpd->ext1->sl_PUCCH_Config_r16) {
+      UL_BWP->sl_pucch_Config = ubwpd->ext1->sl_PUCCH_Config_r16->choice.setup;
+    } else {
+      UL_BWP->sl_pucch_Config = NULL;
+    }
     UL_BWP->pucch_Config = ubwpd->pucch_Config->choice.setup;
     UL_BWP->srs_Config = ubwpd->srs_Config->choice.setup;
     UL_BWP->csi_MeasConfig = servingCellConfig->csi_MeasConfig ? servingCellConfig->csi_MeasConfig->choice.setup : NULL;
@@ -1884,6 +1889,7 @@ void configure_UE_BWP(gNB_MAC_INST *nr_mac,
     DL_BWP->pdsch_Config = NULL;
     UL_BWP->pusch_Config = NULL;
     UL_BWP->pucch_Config = NULL;
+    UL_BWP->sl_pucch_Config = NULL;
     UL_BWP->csi_MeasConfig = NULL;
     UL_BWP->configuredGrantConfig = NULL;
   }

@@ -48,6 +48,7 @@
 
 #include "pdcp.h"
 #include <executables/nr-uesoftmodem.h>
+#include "executables/softmodem-common.h"
 
 char nl_rx_buf[NL_MAX_PAYLOAD];
 
@@ -141,8 +142,12 @@ int netlink_init_tun(char *ifprefix, int num_if, int id) {//for UE, id = 1, 2, .
   int endx = (id == 0) ? num_if : id;
   int index;
   for (int i = begx; i < endx; i++) {
-    sprintf(ifname, "oaitun_%.3s%d", ifprefix, i+1);
-    index = get_softmodem_params()->sl_mode == 2 ? 0 : i;
+    /* For specific node (id != 0), use get_tun_iface_id() and get_tun_fd_index()
+     * to ensure consistency with SDAP/PDCP/NAS layers.
+     * For multi-interface mode (id == 0), use loop variable i as before. */
+    int iface_id = (id == 0) ? i + 1 : get_tun_iface_id();
+    sprintf(ifname, "oaitun_%.3s%d", ifprefix, iface_id);
+    index = (id == 0) ? i : get_tun_fd_index();
     nas_sock_fd[index] = tun_alloc(ifname);
 
     if (nas_sock_fd[index] == -1) {

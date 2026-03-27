@@ -2406,7 +2406,7 @@ void nr_ue_pucch_scheduler(module_id_t module_idP, frame_t frameP, int slotP, vo
   if (any_sl_harq_summary) {
     LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frameP, slotP,
           (pucch[num_res].sl_harq_payload >> 16) & 0xFFFF, pucch[num_res].sl_harq_payload & 0xFFFF);
-      num_res++;
+    num_res++;
   }
 
   if (num_res == 0)
