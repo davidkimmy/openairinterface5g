@@ -42,6 +42,13 @@
 #include "gnb_config.h"
 #include "executables/softmodem-common.h"
 
+// For SL Mode 2 sourceL2Id support - include MAC defs after gnb_config to avoid conflicts
+#include "LAYER2/NR_MAC_UE/mac_defs.h"
+// Weak stub: get_mac_inst is only available in UE builds (overridden by UE MAC implementation)
+__attribute__((weak)) NR_UE_MAC_INST_t *get_mac_inst(uint8_t module_id) {
+  return NULL;  // gNB builds don't have UE MAC
+}
+
 #include "LAYER2/nr_srap/nr_srap_entity.h"
 #include "LAYER2/nr_srap/nr_srap_header.h"
 #include "LAYER2/nr_srap/nr_srap_manager.h"
@@ -555,12 +562,14 @@ static void reblock_tun_socket(int id)
 {
   extern int nas_sock_fd[];
   int f;
-  /* Use get_tun_fd_index() to match the index used during TUN creation */
-  int index = (id == -1) ? 0 : get_tun_fd_index();
+  /* Calculate index to match netlink_init.c storage:
+   * When id > 0: stored at index (id - 1) based on loop variable i = begx = id - 1
+   * When id == 0 or id == -1: use index 0 for backwards compatibility */
+  int index = (id <= 0) ? 0 : (id - 1);
   f = fcntl(nas_sock_fd[index], F_GETFL, 0);
   f &= ~(O_NONBLOCK);
   if (fcntl(nas_sock_fd[index], F_SETFL, f) == -1) {
-    LOG_E(PDCP, "reblock_tun_socket failed\n");
+    LOG_E(PDCP, "reblock_tun_socket failed for id=%d, index=%d\n", id, index);
     exit(1);
   }
 }
@@ -609,7 +618,7 @@ static void *enb_tun_read_thread(void *_)
   return NULL;
 }
 
-static void *ue_tun_read_thread(void *_)
+static void *ue_tun_read_thread(void *arg)
 {
   extern int nas_sock_fd[];
   char rx_buf[NL_MAX_PAYLOAD];
@@ -620,11 +629,15 @@ static void *ue_tun_read_thread(void *_)
 
   bool relay_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
   bool is_relay_ue = get_softmodem_params()->is_relay_ue;
-  int index = get_tun_fd_index();
+  /* Calculate index to match netlink_init.c storage:
+   * When id > 0: stored at index (id - 1) based on loop variable i = begx = id - 1
+   * When id == 0: use index 0 for backwards compatibility */
+  int id = (int)(intptr_t)arg;
+  int index = (id <= 0) ? 0 : (id - 1);
   int rb_id = 1;
   rb_id = ((get_softmodem_params()->sl_mode == 2) && relay_enabled && !is_relay_ue) ? 2 : rb_id;
   pthread_setname_np( pthread_self(),"ue_tun_read");
-  LOG_I(PDCP,"ue_tun_read_thread created on core %d\n",sched_getcpu());
+  LOG_I(PDCP,"ue_tun_read_thread created on core %d for id=%d, using nas_sock_fd[%d]\n",sched_getcpu(), id, index);
   while (1) {
     len = read(nas_sock_fd[index], &rx_buf, NL_MAX_PAYLOAD);
     if (len == -1) {
@@ -634,11 +647,24 @@ static void *ue_tun_read_thread(void *_)
 
     LOG_D(PDCP, "%s(): nas_sock_fd read returns len %d\n", __func__, len);
 
-    nr_pdcp_manager_lock(nr_pdcp_ue_manager);
-    has_ue = nr_pdcp_get_first_ue_id(nr_pdcp_ue_manager, &rntiMaybeUEid);
-    nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
+    // For SL Mode 2, use sourceL2Id (src_id) instead of RNTI
+    if (get_softmodem_params()->sl_mode == 2) {
+      NR_UE_MAC_INST_t *mac = get_mac_inst(0);
+      if (mac == NULL) {
+        continue;
+      }
+      // Note: src_id can be 0, which is a valid sourceL2Id
+      rntiMaybeUEid = mac->src_id;
+      has_ue = true;
+    } else {
+      nr_pdcp_manager_lock(nr_pdcp_ue_manager);
+      has_ue = nr_pdcp_get_first_ue_id(nr_pdcp_ue_manager, &rntiMaybeUEid);
+      nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 
-    if (!has_ue) continue;
+      if (!has_ue) {
+        continue;
+      }
+    }
 
     ctxt.module_id = 0;
     ctxt.enb_flag = 0;
@@ -675,11 +701,11 @@ static void start_pdcp_tun_ue(int id)
   pthread_t t;
   reblock_tun_socket(id);
 /*
-  if (pthread_create(&t, NULL, ue_tun_read_thread, NULL) != 0) {
+  if (pthread_create(&t, NULL, ue_tun_read_thread, (void*)(intptr_t)id) != 0) {
     LOG_E(PDCP, "%s:%d:%s: fatal\n", __FILE__, __LINE__, __FUNCTION__);
     exit(1);
   }*/
-  threadCreate(&t,ue_tun_read_thread,NULL,"ue_tun_read_thread",-1,OAI_PRIORITY_RT_MAX-1);
+  threadCreate(&t, ue_tun_read_thread, (void*)(intptr_t)id, "ue_tun_read_thread", -1, OAI_PRIORITY_RT_MAX - 1);
 }
 
 /****************************************************************************/

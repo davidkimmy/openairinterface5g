@@ -1108,7 +1108,7 @@ void handle_nr_uci_pucch_2_3_4(module_id_t mod_id,
         LOG_D(NR_MAC, "%4u.%2u RNTI 0x%04X: Invalid SL HARQ payload 0xFFFFFFFF, not sending to RRC\n",
               frame, slot, UE->rnti);
       } else {
-        LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
+        LOG_D(NR_MAC, "%4u.%2u 0x%04X 0x%04X : <== sl_harq_payload\n", frame, slot,
               ((uint16_t)uci_234->sl_harq.harq_payload[3] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[2],
               ((uint16_t)uci_234->sl_harq.harq_payload[1] << 8) | (uint16_t)uci_234->sl_harq.harq_payload[0]);
         sl_harq_msg = itti_alloc_new_message(TASK_RRC_GNB, 0, NR_RRC_SL_HARQ_REPORT_IND);

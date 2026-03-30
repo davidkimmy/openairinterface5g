@@ -2186,7 +2186,7 @@ uint64_t nr_mac_aggregate_sl_harq_summary(NR_UE_MAC_INST_t *mac) {
     }
   }
 
-  LOG_W(NR_MAC, "\tAggregated SL HARQ Summary (Active PIDs, Status): 0x%04X 0x%04X\n",
+  LOG_D(NR_MAC, "\tAggregated SL HARQ Summary (Active PIDs, Status): 0x%04X 0x%04X\n",
         ((uint32_t) sl_harq_summary >> 16) & 0xFFFF, (uint32_t) sl_harq_summary & 0xFFFF);
   return sl_harq_summary;
 }
@@ -2418,7 +2418,7 @@ void nr_ue_pucch_scheduler(module_id_t module_idP, frame_t frameP, int slotP, vo
     bool any_sl_harq_summary = get_sl_harq_fb_report(mac, frameP, slotP, &pucch[num_res]);
 
     if (any_sl_harq_summary) {
-      LOG_W(NR_MAC, "%4u.%2u 0x%04X 0x%04X : ==> sl_harq_payload\n", frameP, slotP,
+      LOG_D(NR_MAC, "%4u.%2u 0x%04X 0x%04X : ==> sl_harq_payload\n", frameP, slotP,
             (pucch[num_res].sl_harq_payload >> 16) & 0xFFFF, pucch[num_res].sl_harq_payload & 0xFFFF);
       num_res++;
     }

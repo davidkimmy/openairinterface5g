@@ -732,6 +732,7 @@ nr_phy_data_t UE_dl_preprocessing(PHY_VARS_NR_UE *UE, UE_nr_rxtx_proc_t *proc,  
       LOG_D(PHY, "In %s: slot %d:%d, time %llu\n", __FUNCTION__, proc->frame_rx, proc->nr_slot_rx, (rdtsc_oai()-a)/3500);
     }
   } else {
+    /* Skip Uu PBCH/PDCCH/DLSCH when in SL Mode 2 (sidelink-only; no gNB link) */
     if (proc->rx_slot_type == NR_DOWNLINK_SLOT || proc->rx_slot_type == NR_MIXED_SLOT){
 
       if(UE->if_inst != NULL && UE->if_inst->dl_indication != NULL) {
@@ -750,7 +751,6 @@ nr_phy_data_t UE_dl_preprocessing(PHY_VARS_NR_UE *UE, UE_nr_rxtx_proc_t *proc,  
 
       LOG_D(PHY, "In %s: slot %d, time %llu\n", __FUNCTION__, proc->nr_slot_rx, (rdtsc_oai()-a)/3500);
     }
-
     ue_ta_procedures(UE, proc->nr_slot_tx, proc->frame_tx);
   }
   return phy_data;

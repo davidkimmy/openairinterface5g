@@ -2913,6 +2913,9 @@ void *rrc_nrue_task(void *args_p)
                ue_mod_id,
                ITTI_MSG_NAME (msg_p),
                NR_RRC_MAC_SYNC_IND (msg_p).frame);
+         /* In SL Mode 2 (sidelink-only) Uu is not used; skip RLF sync to avoid T310 from Uu OUT_OF_SYNC */
+         if (get_softmodem_params()->sl_mode == 2)
+           break;
          nr_sync_msg_t sync_msg = NR_RRC_MAC_SYNC_IND (msg_p).in_sync ?
                                   IN_SYNC : OUT_OF_SYNC;
          NR_UE_Timers_Constants_t *tac = &NR_UE_rrc_inst[ue_mod_id].timers_and_constants;

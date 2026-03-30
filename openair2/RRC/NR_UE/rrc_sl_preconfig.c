@@ -707,12 +707,48 @@ void nr_UE_configure_Sidelink(uint8_t id, uint8_t is_sync_source, ueinfo_t *uein
   }
 
   LOG_D(NR_RRC, "SL L2 SRCid %x, SL ipv4 addr X.X.%d.%d\n", ueinfo->srcid, ueinfo->thirdOctet, ueinfo->fourthOctet);
-  nas_config(1 + ueinfo->srcid, ueinfo->thirdOctet, ueinfo->fourthOctet, "oai_sl_tun");
+
+  // Check if TUN interface already exists (created by PDCP in SA mode)
+  extern int nas_sock_fd[];
+  uint16_t node_num = get_softmodem_params()->node_number;
+  int tun_index = get_tun_fd_index();  // Use same index calculation as PDCP/SDAP
+
+  // Only create TUN if it doesn't exist yet (PDCP may have already created it in SA mode)
+  if (node_num > 0 && nas_sock_fd[tun_index] <= 0) {
+    extern void nas_getparams(void);
+    nas_getparams();
+    extern int netlink_init_tun(char *ifsuffix, int num_if, int id);
+    netlink_init_tun("ue", 1, node_num);
+  }
+
+  // Configure the TUN interface with IP address
+  // For node 3: interface id=2 (oaitun_ue2), for node 4: interface id=3 (oaitun_ue3)
+  int iface_id = (node_num >= 3) ? (node_num - 1) : (1 + ueinfo->srcid);
+
+  // Auto-detect multi-UE same-host scenario and adjust subnet to avoid routing conflicts
+  // Only apply auto-subnet for pure SL Mode 2 (not relay scenarios)
+  int third_octet = ueinfo->thirdOctet;
+  bool relay_enabled = get_softmodem_params()->relay_type > 0;
+
+  if (get_softmodem_params()->sl_mode == 2 && node_num >= 2 && !relay_enabled) {
+    // Check if other oaitun_ue* interfaces exist (multi-UE same-host)
+    FILE *fp = popen("ip link show | grep -c 'oaitun_ue' 2>/dev/null", "r");
+    int existing_tuns = 0;
+    if (fp != NULL) {
+      if (fscanf(fp, "%d", &existing_tuns) == 1 && existing_tuns > 0) {
+        // Multiple UEs on same host detected - use node_number to assign unique subnet
+        third_octet = node_num - 1;  // node 2→subnet 1, node 3→subnet 2, node 4→subnet 3
+      }
+      pclose(fp);
+    }
+  }
+
+  nas_config(iface_id, third_octet, ueinfo->fourthOctet, "oaitun_ue");
+
   nr_rrc_mac_config_req_sl_preconfig(id, sl_preconfig, sync_source);
 
   if (get_softmodem_params()->sl_mode == 2) {
     add_sl_srbs(id);
-    bool relay_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
     // SL RadioBearers
     for (int i = 0; i < sl_preconfig->sidelinkPreconfigNR_r16.sl_RadioBearerPreConfigList_r16->list.count; i++) {
       add_drb_sl(ueinfo->srcid, (NR_SL_RadioBearerConfig_r16_t *)sl_preconfig->sidelinkPreconfigNR_r16.sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
