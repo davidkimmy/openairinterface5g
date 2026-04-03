@@ -100,7 +100,13 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 
 
 ## 5. Build 5G NR Sidelink
-### 5.1 **Build OAI:**
+
+### 5.1 **Ubuntu 24.04 Build Support:**
+
+&emsp;This branch includes Ubuntu 24.04 support with necessary build system modifications. Simply follow the standard build instructions:<br>
+&emsp;&emsp;**Note:** This branch includes a fix for ASN.1 compiler installation. The build system will automatically install **ASN.1 compiler v0.9.29** (commit 998e7ea2) instead of the newer vlm_master branch. This is required because the codebase is currently compatible with v0.9.29 (June 2024), while newer versions (v1.2+, v1.4+) generate incompatible pointer structures instead of structs, which would require approximately 1500 code changes throughout the codebase.
+
+### 5.2 **Build OAI:**
 &emsp;Follow these steps to build OAI with support for 5G Sidelink and related features:
 ```
 $ git clone https://gitlab.eurecom.fr/oai/openairinterface5g.git
@@ -114,7 +120,7 @@ $ ./build_oai -C -I --install-optional-packages   # Only necessary on fresh inst
 $ ./build_oai --nrUE --gNB -w USRP -w SIMU
 ```
 
-#### 5.1.1 **For Active Development and Faster Build Times:**
+#### 5.2.1 **For Active Development and Faster Build Times:**
 
 &emsp;If you are actively developing and want to speed up the build process, you can directly build only the executables:
 ```
@@ -122,7 +128,7 @@ $ cd ~/openairinterface5g/cmake_targets/ran_build/build
 $ make nr-softmodem nr-uesoftmodem rfsimulator -j$(nproc)
 ```
 
-#### 5.1.2 **Enabling Address Sanitizer in RFSIM:**
+#### 5.2.2 **Enabling Address Sanitizer in RFSIM:**
 &emsp;If you want to use AddressSanitizer (ASan) during softmodem execution in RFSIM, add the following flag in the build_oai argument option:
 ```
  --sanitize-address
@@ -131,10 +137,13 @@ $ make nr-softmodem nr-uesoftmodem rfsimulator -j$(nproc)
 ```
 $ sudo sysctl vm.mmap_rnd_bits=28
 ```
-
+&emsp;&emsp;**Verification (after running `./build_oai -I`):**
+```bash
+$ /opt/asn1c/bin/asn1c -version
+# Should output: ASN.1 Compiler, v0.9.29
+```
 ## 6. EpiSci's 5G Sidelink Mode 1
 ### 6.1 **5G SL Relay**
-
 &emsp; To enable relay scenario support in our system, we have implemented the Sidelink Relay Adaptation Protocol (SRAP). The SRAP supports two types of relaying modes:<br>
 &emsp;&emsp; ◉ UE-to-Network (U2N)<br>
 &emsp;&emsp; ◉ UE-to-UE (U2U)<br>

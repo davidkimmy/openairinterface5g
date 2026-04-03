@@ -103,6 +103,7 @@ get_distribution_release() {
 check_supported_distribution() {
     local distribution=$(get_distribution_release)
     case "$distribution" in
+        "ubuntu24.04") return 0 ;;
         "ubuntu23.10") return 0 ;;
         "ubuntu22.04") return 0 ;;
         "ubuntu21.04") return 0 ;;
@@ -549,7 +550,7 @@ check_install_additional_tools (){
         "ubuntu18.04")
             optional_packages="python-dev python-pip python-pyroute2 python python-numpy python-scipy python-matplotlib ctags"
             ;;
-        "ubuntu20.04" | "ubuntu21.04" | "ubuntu22.04" | "debian11" )
+        "ubuntu20.04" | "ubuntu21.04" | "ubuntu22.04" | "ubuntu23.10" | "ubuntu24.04" | "debian11" )
             optional_packages="python3 python3-pip python3-dev python3-scipy python3-matplotlib python3-pyroute2 universal-ctags"
             ;;
     esac
@@ -593,10 +594,20 @@ check_install_oai_software() {
             add_cmake_repo
             specific_packages=""
             ;;
+         "ubuntu24.04")
+            specific_packages=""
+            ;;
          "debian11")
             specific_packages="libz-dev"
             ;;
     esac
+
+    # For Ubuntu 24.04, skip libatlas-base-dev due to version conflict with liblapacke
+    if [[ "$(get_distribution_release)" == "ubuntu24.04" ]]; then
+        BLAS_PACKAGES="libblas-dev liblapack-dev liblapacke-dev"
+    else
+        BLAS_PACKAGES="libatlas-base-dev libblas-dev liblapack-dev liblapacke-dev"
+    fi
     $SUDO apt-get install -y \
     $specific_packages \
 	automake  \
@@ -605,10 +616,7 @@ check_install_oai_software() {
         ninja-build \
 	pkg-config \
 	git \
-	libatlas-base-dev \
-	libblas-dev \
-	liblapack-dev \
-	liblapacke-dev \
+	$BLAS_PACKAGES \
 	libreadline-dev \
 	libconfig-dev \
 	libsctp-dev  \
@@ -670,7 +678,7 @@ install_asn1c_from_source(){
     # GIT_SSL_NO_VERIFY=true git clone https://gitlab.eurecom.fr/oai/asn1c.git /tmp/asn1c
     git clone https://github.com/mouse07410/asn1c /tmp/asn1c
     cd /tmp/asn1c
-    git checkout vlm_master
+    git checkout 998e7ea2
     autoreconf -iv
     ./configure --prefix /opt/asn1c/
     make -j`nproc`
