@@ -166,6 +166,7 @@ void init_nr_ue_vars(PHY_VARS_NR_UE *ue,
   ue->Mod_id      = UE_id;
   ue->if_inst     = nr_ue_if_module_init(0);
   ue->dci_thres   = 0;
+  ue->sci_thres   = 0;
   ue->target_Nid_cell = -1;
   bool is_sl = sl_mode > 0 ? true : false;
   // initialize all signal buffers

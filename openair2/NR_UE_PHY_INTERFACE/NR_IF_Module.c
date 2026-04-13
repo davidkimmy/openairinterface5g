@@ -1136,7 +1136,11 @@ int nr_ue_ul_indication(nr_uplink_indication_t *ul_info)
   NR_TDD_UL_DL_ConfigCommon_t *tdd_UL_DL_ConfigurationCommon =
       mac->scc != NULL ? mac->scc->tdd_UL_DL_ConfigurationCommon
                        : (mac->scc_SIB ? mac->scc_SIB->tdd_UL_DL_ConfigurationCommon : NULL);
-  if (mac->phy_config_request_sent && is_nr_UL_slot(tdd_UL_DL_ConfigurationCommon, ul_info->slot_tx, mac->frame_type))
+  int is_ul_slot = (tdd_UL_DL_ConfigurationCommon != NULL)
+                   ? is_nr_UL_slot(tdd_UL_DL_ConfigurationCommon, ul_info->slot_tx, mac->frame_type)
+                   : 0;
+
+  if (mac->phy_config_request_sent && is_ul_slot)
     nr_ue_ul_scheduler(ul_info);
 
   pthread_mutex_unlock(&mac_IF_mutex);

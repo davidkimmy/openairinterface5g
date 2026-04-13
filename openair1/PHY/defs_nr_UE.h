@@ -430,8 +430,10 @@ typedef struct PHY_VARS_NR_UE_s {
   uint8_t ho_initiated;
   /// \brief indicator that Handover procedure has been triggered
   uint8_t ho_triggered;
-  /// threshold for false dci detection
+  /// threshold for false dci detection (UU interface, PDCCH)
   int dci_thres;
+  /// threshold for false sci detection (PC5 interface, PSCCH)
+  int sci_thres;
   /// \brief Measurement variables.
   PHY_NR_MEASUREMENTS measurements;
   NR_DL_FRAME_PARMS  frame_parms;

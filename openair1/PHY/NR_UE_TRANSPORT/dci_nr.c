@@ -917,11 +917,13 @@ uint8_t nr_dci_decoding_procedure(PHY_VARS_NR_UE *ue,
                                              pscch_flag == 0 ? NR_POLAR_DCI_MESSAGE_TYPE : NR_POLAR_SCI_MESSAGE_TYPE,
                                              dci_length,
                                              L);
-        ue->dci_thres = (ue->dci_thres + mb) / 2;
-        if (mb > (ue->dci_thres+30)) {
-          LOG_W(PHY,"DCI false positive. Dropping DCI index %d. Mismatched bits: %d/%d. Current DCI threshold: %d\n",j,mb,pscch_flag==0?L*108:L*18,ue->dci_thres);
+        int *thres = pscch_flag == 0 ? &ue->dci_thres : &ue->sci_thres;
+        if (mb > (*thres + 30)) {
+          LOG_W(PHY,"%s false positive. Dropping index %d. Mismatched bits: %d/%d. Current threshold: %d\n",
+                pscch_flag == 0 ? "DCI" : "SCI", j, mb, pscch_flag == 0 ? L*108 : L*18, *thres);
           continue;
         } else {
+          *thres = (*thres + mb) / 2;
           if (pscch_flag == 0) {
             dci_ind->SFN = proc->frame_rx;
             dci_ind->slot = proc->nr_slot_rx;
