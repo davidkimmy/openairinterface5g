@@ -41,6 +41,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/route.h>
+#include <ifaddrs.h>
 
 #include "nas_config.h"
 #include "common/utils/LOG/log.h"
@@ -315,6 +316,84 @@ int nas_config_mbms_s1(int interface_id, int thirdOctet, int fourthOctet, char *
   return returnValue;
 }
 
+/**
+ * Detect if multiple UEs on the same host are using the same subnet.
+ * Scans existing oaitun_ue* interfaces and compares their IP subnets
+ * with the provided IP address.
+ *
+ * @param ipAddress IP address to check (e.g., "10.0.0.1")
+ * @return true if another oaitun_ue* interface exists with same /24 subnet, false otherwise
+ */
+static bool detect_same_subnet_interfaces(const char *ipAddress) {
+  struct ifaddrs *ifaddr, *ifa;
+  struct in_addr provided_addr;
+
+  if (inet_pton(AF_INET, ipAddress, &provided_addr) != 1 || getifaddrs(&ifaddr) == -1) {
+    return false;
+  }
+
+  uint32_t provided_subnet = ntohl(provided_addr.s_addr) & 0xFFFFFF00;
+
+  for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+
+    if (strncmp(ifa->ifa_name, "oaitun_ue", 9) == 0) {
+      struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+      uint32_t existing_subnet = ntohl(sa->sin_addr.s_addr) & 0xFFFFFF00;
+
+      if (existing_subnet == provided_subnet && sa->sin_addr.s_addr != provided_addr.s_addr) {
+        freeifaddrs(ifaddr);
+        return true;
+      }
+    }
+  }
+
+  freeifaddrs(ifaddr);
+  return false;
+}
+
+/**
+ * Configure policy-based routing for SL Mode 2 using system() calls.
+ * This matches OAI's existing pattern of using system() for routing configuration.
+ *
+ * @param interfaceName Name of the TUN interface (e.g., "oaitun_ue1")
+ * @param ipAddress IP address assigned to this interface
+ * @param iface_num Interface number (extracted from oaitun_ue<N>)
+ * @return 0 on success, non-zero on failure
+ */
+static int configure_policy_routing_system(const char *interfaceName,
+                                            const char *ipAddress,
+                                            int iface_num) {
+  char cmd[512];
+  int table_id = 100 + iface_num;
+  int priority = 1000 + iface_num;
+  int ret;
+
+  // Cleanup old rules/routes
+  snprintf(cmd, sizeof(cmd),
+           "ip rule del from %s table %d 2>/dev/null || true; "
+           "ip route del 10.0.0.0/24 table %d 2>/dev/null || true",
+           ipAddress, table_id, table_id);
+  ret = system(cmd);
+  (void)ret;
+
+  // Add policy rule and route
+  snprintf(cmd, sizeof(cmd), "ip rule add from %s table %d priority %d", ipAddress, table_id, priority);
+  ret = system(cmd);
+  (void)ret;
+
+  snprintf(cmd, sizeof(cmd), "ip route add 10.0.0.0/24 dev %s table %d", interfaceName, table_id);
+  ret = system(cmd);
+  (void)ret;
+
+  snprintf(cmd, sizeof(cmd), "ip route add 10.0.0.0/24 dev %s 2>/dev/null || true", interfaceName);
+  ret = system(cmd);
+  (void)ret;
+
+  return 0;
+}
 
 // non blocking full configuration of the interface (address, and the two lest octets of the address)
 int nas_config(int interface_id, int thirdOctet, int fourthOctet, char *ifname) {
@@ -327,6 +406,52 @@ int nas_config(int interface_id, int thirdOctet, int fourthOctet, char *ifname) 
   sprintf(broadcastAddress, "%s.%d.255",baseNetAddress, thirdOctet);
   sprintf(interfaceName, "%s%s%d", (UE_NAS_USE_TUN || ENB_NAS_USE_TUN)?"oaitun_":ifname,
           UE_NAS_USE_TUN?"ue": (ENB_NAS_USE_TUN?"enb":""),interface_id);
+
+  // For SL Mode 2, detect same-subnet scenario and conditionally apply policy routing
+  if (get_softmodem_params()->sl_mode == 2) {
+    bool same_subnet = detect_same_subnet_interfaces(ipAddress);
+
+    // Configure interface with ioctl
+    bringInterfaceUp(interfaceName, 0);
+    returnValue = setInterfaceParameter(interfaceName, ipAddress, SIOCSIFADDR);
+    if (returnValue != 0) return returnValue;
+
+    returnValue = setInterfaceParameter(interfaceName, netMask, SIOCSIFNETMASK);
+    if (returnValue != 0) return returnValue;
+
+    returnValue = setInterfaceParameter(interfaceName, broadcastAddress, SIOCSIFBRDADDR);
+    if (returnValue != 0) return returnValue;
+
+    returnValue = bringInterfaceUp(interfaceName, 1);
+    if (returnValue != 0) return returnValue;
+
+    // Configure kernel params for inter-subnet routing (inline sysctl configuration)
+    char cmd[512];
+    int ret;
+
+    snprintf(cmd, sizeof(cmd), "sysctl -w net.ipv4.conf.%s.accept_local=1 >/dev/null 2>&1", interfaceName);
+    ret = system(cmd);
+    (void)ret;
+
+    snprintf(cmd, sizeof(cmd), "sysctl -w net.ipv4.conf.%s.rp_filter=0 >/dev/null 2>&1", interfaceName);
+    ret = system(cmd);
+    (void)ret;
+
+    // Apply policy routing tables only if same subnet detected
+    if (same_subnet) {
+      int iface_num = 0;
+      sscanf(interfaceName, "oaitun_ue%d", &iface_num);
+      if (iface_num > 0) {
+        configure_policy_routing_system(interfaceName, ipAddress, iface_num);
+      }
+    }
+
+    LOG_I(OIP, "%s configured: %s/%s%s\n", interfaceName, ipAddress, netMask,
+          same_subnet ? " (policy routing)" : "");
+
+    return 0;
+  }
+
   bringInterfaceUp(interfaceName, 0);
   // sets the machine address
   returnValue= setInterfaceParameter(interfaceName, ipAddress,SIOCSIFADDR);
