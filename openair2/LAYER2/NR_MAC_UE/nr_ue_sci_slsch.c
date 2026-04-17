@@ -736,8 +736,12 @@ void config_pssch_slsch_pdu_rx(sl_nr_rx_config_pssch_pdu_t *nr_sl_pssch_pdu,
   if (!servingcellconfig_rateMatching)
     nr_sl_pssch_pdu->tbslbrm = 0;
   int num_psfch_symbols = 0;
-  if (sl_has_psfch && sl_res_pool->sl_PSFCH_Config_r16 && sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 && *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16>0) {
-     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication.nbits is 1; FYI psfch_overhead_indication.nbits is set to 1 in case of PSFCH period 2 or 4 in sl_determine_sci_1a_len()
+  /*
+    Use psfch_overhead from decoded SCI to match TX-side PSSCH symbol calculation
+    The TX sets this field based on whether the transmission slot has PSFCH overhead
+  */
+  if (sci_pdu->psfch_overhead.nbits && sci_pdu->psfch_overhead.val) {
+     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication is set
      num_psfch_symbols = 3;
   }
   int pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
@@ -833,8 +837,10 @@ int config_pssch_sci_pdu_rx(sl_nr_rx_config_pssch_sci_pdu_t *nr_sl_pssch_sci_pdu
   //Guard symbol + AGC symbol are also excluded
   //Indicates the number of symbols for PSCCH+PSSCH txn
   int num_psfch_symbols = 0;
-  if (sl_has_psfch && sl_res_pool->sl_PSFCH_Config_r16 && sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 && *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16>0) {
-     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication.nbits is 1; FYI psfch_overhead_indication.nbits is set to 1 in case of PSFCH period 2 or 4 in sl_determine_sci_1a_len()
+  // Use psfch_overhead from decoded SCI to match TX-side PSSCH symbol calculation
+  // The TX sets this field based on whether the transmission slot has PSFCH overhead
+  if (sci_pdu->psfch_overhead.nbits && sci_pdu->psfch_overhead.val) {
+     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication is set
      num_psfch_symbols = 3;
   }
   nr_sl_pssch_sci_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;

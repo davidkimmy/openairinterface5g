@@ -51,6 +51,13 @@ char *nfapi_str=NULL;
 int ldpc_offload_flag=0;
 uint8_t nfapi_mode=0;
 
+/* SL Mode 2: Global srcid for TUN interface indexing */
+int sl_mode2_srcid = -1;
+
+void set_sl_mode2_srcid(int srcid) {
+  sl_mode2_srcid = srcid;
+}
+
 static mapping softmodem_funcs[] = MAPPING_SOFTMODEM_FUNCTIONS;
 static struct timespec start;
 

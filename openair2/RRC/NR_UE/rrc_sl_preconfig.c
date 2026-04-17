@@ -712,18 +712,17 @@ void nr_UE_configure_Sidelink(uint8_t id, uint8_t is_sync_source, ueinfo_t *uein
   extern int nas_sock_fd[];
   uint16_t node_num = get_softmodem_params()->node_number;
   int tun_index = get_tun_fd_index();  // Use same index calculation as PDCP/SDAP
+  int iface_id = get_tun_iface_id();   // Get consistent interface ID
 
   // Only create TUN if it doesn't exist yet (PDCP may have already created it in SA mode)
+  // For SL Mode 2, use srcid-based ID; for other modes, use node-number-based ID
   if (node_num > 0 && nas_sock_fd[tun_index] <= 0) {
     extern void nas_getparams(void);
     nas_getparams();
     extern int netlink_init_tun(char *ifsuffix, int num_if, int id);
-    netlink_init_tun("ue", 1, node_num);
+    int tun_init_id = (get_softmodem_params()->sl_mode == 2) ? (1 + ueinfo->srcid) : node_num;
+    netlink_init_tun("ue", 1, tun_init_id);
   }
-
-  // Configure the TUN interface with IP address
-  // For node 3: interface id=2 (oaitun_ue2), for node 4: interface id=3 (oaitun_ue3)
-  int iface_id = (node_num >= 3) ? (node_num - 1) : (1 + ueinfo->srcid);
 
   // Auto-detect multi-UE same-host scenario and adjust subnet to avoid routing conflicts
   // Only apply auto-subnet for pure SL Mode 2 (not relay scenarios)

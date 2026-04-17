@@ -515,6 +515,8 @@ int main( int argc, char **argv ) {
     if(node_number == 0 && (sl_mode == 0 || sl_mode == 1)) {
       init_pdcp(0, srap_enabled);
     } else if (sl_mode == 2) {
+      // Set global srcid for TUN interface indexing (same-host and different-host scenarios)
+      set_sl_mode2_srcid(ueinfo.srcid);
       init_pdcp(1+ueinfo.srcid, srap_enabled);
     } else {
       init_pdcp(mode_offset + ue_id_g, srap_enabled);

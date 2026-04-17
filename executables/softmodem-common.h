@@ -376,8 +376,21 @@ extern uint64_t set_softmodem_optmask(uint64_t bitmask);
 extern uint64_t clear_softmodem_optmask(uint64_t bitmask);
 extern softmodem_params_t *get_softmodem_params(void);
 
-/* TUN/interface index helpers for multi-UE scenarios with --node-number */
+/* SL Mode 2: Store srcid from config for TUN interface indexing */
+extern int sl_mode2_srcid;
+extern void set_sl_mode2_srcid(int srcid);
+
+/* TUN/interface index helpers for multi-UE scenarios
+ * - SL Mode 2: Use srcid from config file (works for same-host and different-host)
+ * - Other modes: Use node-number from command line
+ */
 static inline int get_tun_fd_index(void) {
+  // SL Mode 2: Use srcid (0-based index for nas_sock_fd array)
+  if (get_softmodem_params()->sl_mode == 2 && sl_mode2_srcid >= 0) {
+    return sl_mode2_srcid;
+  }
+
+  // Other modes: Use node-number
   uint16_t n = get_softmodem_params()->node_number;
   if (n >= 2) return (int)(n - 2);
   if (n == 0 && get_softmodem_params()->relay_type > 0)
@@ -386,6 +399,12 @@ static inline int get_tun_fd_index(void) {
 }
 
 static inline uint16_t get_tun_iface_id(void) {
+  // SL Mode 2: Use 1+srcid for interface naming (oaitun_ue1, oaitun_ue2, ...)
+  if (get_softmodem_params()->sl_mode == 2 && sl_mode2_srcid >= 0) {
+    return 1 + sl_mode2_srcid;
+  }
+
+  // Other modes: Use node-number
   uint16_t n = get_softmodem_params()->node_number;
   if (n != 0) return n - 1;
   if (get_softmodem_params()->relay_type > 0)

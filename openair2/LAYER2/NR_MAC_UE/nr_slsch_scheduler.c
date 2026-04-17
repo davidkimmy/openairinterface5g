@@ -338,15 +338,24 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   if (frameP % 5 == 0)
     LOG_D(NR_MAC, "cqi ---> %d Tx %4d.%2d dest: %d mcs %i\n",
           cqi, frameP, slotP, dest_id, sci_pdu->mcs);
-
-  sci_pdu->psfch_overhead.val = 0;
-  if ((psfch_period == 2 || psfch_period == 4) && (is_fdbk_scheduled)) {
-      sci_pdu->psfch_overhead.val =  1;
-      LOG_D(NR_MAC, "%4d.%2d Setting psfch_overhead 1\n", frameP, slotP);
-  } else if ((psfch_period == 2 || psfch_period == 4) && (!is_fdbk_scheduled)) {
-      sci_pdu->psfch_overhead.val = 0;
-      LOG_D(NR_MAC, "%4d.%2d Setting psfch_overhead 0\n", frameP, slotP);
+  /*
+    Set psfch_overhead based on relay_type:
+    Relay scenarios: Use is_fdbk_scheduled (dynamic feedback scheduling)
+    Non-relay Mode 2: Use slot_has_psfch (periodic slot-based PSFCH allocation)
+  */
+  bool psfch_overhead_indicator = false;
+  if (get_softmodem_params()->relay_type != 0) {
+    // Relay case: PSFCH overhead only if feedback is actually scheduled in this slot
+    psfch_overhead_indicator = is_fdbk_scheduled;
+  } else {
+    // Non-relay case: Check if THIS slot has PSFCH overhead that reduces PSSCH symbols
+    SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[0];
+    uint16_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
+    frameslot_t fs = {frameP, slotP};
+    uint64_t tx_abs_slot = normalize(&fs, mu);
+    psfch_overhead_indicator = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
   }
+  sci_pdu->psfch_overhead.val = ((psfch_period == 2 || psfch_period == 4) && psfch_overhead_indicator) ? 1 : 0;
 
   sci_pdu->reserved.val = mac->is_synced_sl ? 1 : 0;
   sci_pdu->conflict_information_receiver.val = 0;

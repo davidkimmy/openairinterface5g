@@ -267,7 +267,7 @@ void nr_ue_ulsch_procedures(PHY_VARS_NR_UE *UE,
               harq_process_ue->a,
               !is_pc5 ? pusch_pdu->pusch_data.tb_size : pscch_pssch_pdu->tb_size,
               WS_C_RNTI, rnti, frame, slot, 0, 0);
-  // Note, we check for pscch_pssch_pdu == NULL inside of nr_ulsch_encoding 
+  // Note, we check for pscch_pssch_pdu == NULL inside of nr_ulsch_encoding
   if (nr_ulsch_encoding(UE, &phy_data->ulsch, is_pc5 ? pscch_pssch_pdu : NULL, frame_parms, harq_pid, G) == -1)
     return;
  
