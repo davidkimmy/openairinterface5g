@@ -18,7 +18,7 @@ In 5G, the User Plane Function (UPF) is a core network function responsible for 
 
 &emsp;After installation, start docker service as following.
 ```
-$ systemctl start docker.service
+systemctl start docker.service
 ```
 
 ## 3. Build UPF from Source
@@ -27,30 +27,45 @@ $ systemctl start docker.service
 
 Follow these steps to build UPF image
 ```
-$ cd ~/oai-cn5g
-$ git clone https://gitlab.eurecom.fr/oai/cn5g/oai-cn5g-upf.git
-$ cd oai-cn5g-upf
-$ git fetch
-$ cd src/
-$ git submodule update --init --recursive
-$ cd common--src
-$ git checkout 633af5b5
-$ cd ../..
-$ git checkout relay_ue
-$ cp ~/openairinterface5g/doc/episys/upf.patch .
-$ git apply changes_from_relay_ue_branch.patch
-$ sudo apt-get install libstdc++-12-dev
-$ make setup
-$ make install
+cd ~/oai-cn5g
+git clone https://gitlab.eurecom.fr/oai/cn5g/oai-cn5g-upf.git
+cd oai-cn5g-upf
+git fetch
+cd src/
+git submodule update --init --recursive
+cd common-src
+git checkout 633af5b5
+cd ../..
+git checkout relay_ue
+
+### 3.1.1 **Apply Relay UE Patch:**
+The `upf_update_for_ubuntu_24.patch` includes relay UE functionality. It adds automatic Ubuntu version detection. Testing tools (iperf3, ffmpeg) are included.
+
+```bash
+cp ~/openairinterface5g/doc/episys/upf_update_for_ubuntu_24.patch .
+git apply upf_update_for_ubuntu_24.patch
 ```
 
 ### 3.2 **Build UPF docker image:**
-&emsp;Follow these steps to build UPF docker image
+&emsp;The Dockerfile automatically detects and uses the correct Ubuntu version (22.04 or 24.04) based on the build argument.
 
+**Auto-detect host OS (Recommended):**
+```bash
+cd ~/oai-cn5g/oai-cn5g-upf
+ln -s docker/Dockerfile.upf.ubuntu dockerfile
+. /etc/os-release && docker buildx build --build-arg UBUNTU_VERSION=$VERSION_CODENAME . -t oai-upf:latest
 ```
-$ cd ~/oai-cn5g/oai-cn5g-upf
-$ ln -s docker/Dockerfile.upf.ubuntu dockerfile
-$ docker buildx build . -t oai-upf:latest
+
+**Or specify version explicitly:**
+```bash
+cd ~/oai-cn5g/oai-cn5g-upf
+ln -s docker/Dockerfile.upf.ubuntu dockerfile
+
+# For Ubuntu 22.04
+docker buildx build --build-arg UBUNTU_VERSION=jammy . -t oai-upf:latest
+
+# For Ubuntu 24.04
+docker buildx build --build-arg UBUNTU_VERSION=noble . -t oai-upf:latest
 ```
 
 ### 3.3 **Update docker-compose yaml file:**
@@ -62,12 +77,12 @@ image: oai-upf:latest
 
 ## 4. Launch OAI-SRAP-CN5G
 ```
-$ cd ~/oai-cn5g/
-$ docker compose up -d
+cd ~/oai-cn5g/
+docker compose up -d
 ```
 
 &emsp;You may stop docker compose using the following command.
 ```
-$ cd ~/oai-cn5g/
-$ docker compose down
+cd ~/oai-cn5g/
+docker compose down
 ```
