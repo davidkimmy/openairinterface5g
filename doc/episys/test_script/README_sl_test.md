@@ -79,22 +79,22 @@ For two-host or three-host tests:
 Edit `~/.ssh/config` to define host aliases:
 
 ```bash
-# Remote UE host and nrUE (for two-host PC5 tests)
+# Remote UE host and nrUE host (for two-host PC5 tests, and Uu tests)
 Host remote_ue nr_ue
     HostName 192.168.1.100
     User your_username
     IdentityFile ~/.ssh/id_ed25519
     StrictHostKeyChecking no
 
-# Relay UE host (for three-host SRAP tests)
+# Relay UE host (for three-hosts SRAP tests)
 Host relay_ue
     HostName 192.168.1.101
     User your_username
     IdentityFile ~/.ssh/id_ed25519
     StrictHostKeyChecking no
 
-# gNB host (for three-host SRAP tests or Uu interface test)
-# local host (the host running test scrip. In SL mode 2 test, it will work as SyncRef UE)
+# gNB host (for three-hosts rfsim SRAP tests)
+# local host (the host running test script. It will work as SyncRef UE in SL mode 2 tests, or gNB in Uu tests)
 Host gNB local
     HostName 192.168.1.102
     User your_username
@@ -103,11 +103,11 @@ Host gNB local
 ```
 
 > **Important:** The test script requires these exact host alias names in `~/.ssh/config`:
-> - `remote_ue` — Used for nearby UE in two-host and three-host tests
-> - `relay_ue` — Used for relay UE (syncref) in three-host SRAP tests
-> - `nr_ue` — Used for nrUE in Uu interface test
-> - `gNB` — Used for gNB in three-host SRAP tests or Uu interface test
-> - `local` — Used to identify the local host IP address and user name
+> - `remote_ue` — Used for nearby UE in two-host and three-hosts tests
+> - `nr_ue` — Used for nrUE in Uu interface tests
+> - `relay_ue` — Used for relay UE (syncref) in three-hosts SRAP tests
+> - `gNB` — Used for gNB in three-hosts rfsim SRAP tests
+> - `local` — Used to identify the local host IP address and user name, mandatory in all tests
 >
 > These names are hardcoded in `run_sl_test.sh`. If your SSH config uses different names, update the script variables (`REMOTE_UE_HOST`, `RELAY_UE_HOST`, `GNB_HOST`) accordingly.
 
@@ -145,10 +145,22 @@ enabled_tests=(
 )
 ```
 
+Additional settings in `run_sl_test_config.sh`:
+
+```bash
+# Base directory for log output (default: script directory)
+base_log_dir="~/openairinterface5g"
+
+# USRP serial numbers (required for SL Mode 1 relay tests only)
+RELAY_UE_USRP_SN_FOR_UU=340EA03    # USRP for Uu interface
+RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
+```
+
 ### 3. Run Tests
 
 ```bash
-./run_sl_test.sh
+./run_sl_test.sh                          # use base_log_dir from config (or script dir)
+./run_sl_test.sh -d ~/openairinterface5g  # override: logs saved under ~/openairinterface5g/
 ```
 
 ## Configuration Guide
@@ -355,7 +367,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |  
 
 ### Log Files
 
-All logs saved to `<script_dir>/test_<timestamp>/` (where script_dir is the location of run_sl_test.sh):
+All logs saved to `<base_dir>/test_<timestamp>/`, where base_dir is determined by (highest priority first): `-d` flag > `base_log_dir` in config > script directory. A `latest` symlink points to the most recent test folder.
 - `test_summary_<timestamp>.csv` - Summary table
 - `result_syncref.log` - Syncref UE output (local host, Mode 2)
 - `result_syncref_remote.log` - Syncref UE output (remote host, copied via SCP)

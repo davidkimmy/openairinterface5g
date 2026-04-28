@@ -27,6 +27,12 @@
 #     rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts:0:1
 # )
 
+# USRP serial numbers for the SL mode 1 relay test.
+RELAY_UE_USRP_SN_FOR_UU=340EA03
+RELAY_UE_USRP_SN_FOR_SL=3271246
+#RELAY_UE_USRP_SN_FOR_SL=340E9F3
+#RELAY_UE_USRP_SN_FOR_SL=340EA3B
+
 uu_basic_tests=(
     rfsim_uu_ping_test_on_local_host
     rfsim_uu_ping_test_on_two_hosts
@@ -59,6 +65,9 @@ enabled_tests=(
     # slmode1_basic_tests
     # slmode2_csi_psfch_tests
 )
+
+# Base directory for logs. The default will be this script folder.
+base_log_dir="~/openairinterface5g"
 
 # Select active test profile among: pilot, regress, stress
 test_profile='pilot'
@@ -120,6 +129,7 @@ echo "SNR Array (RFSIM)    : ${snr_array[@]}"
 echo "Atten Array (USRP)   : ${atten_array[@]}"
 echo "TX Gain (USRP)       : $tx_gain"
 echo "RX Gain (USRP)       : $rx_gain"
+echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""
 echo "Enabled Test Cases:"
 if [ ${#enabled_tests[@]} -eq 0 ]; then

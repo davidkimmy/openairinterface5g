@@ -2,14 +2,28 @@
 #############################################################
 # Standalone shell script
 # Usage:
-#   Shell> ./run_sl_test.sh
+#   Shell> ./run_sl_test.sh [-d <base_dir>]
 #############################################################
 
 timestamp=$(date +"%Y%m%d_%H%M%S")
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-log_dir="$SCRIPT_DIR/test_${timestamp}"
+
+# Priority: CLI -d > config base_log_dir > SCRIPT_DIR
+base_dir="$SCRIPT_DIR"
+source "$SCRIPT_DIR/run_sl_test_config.sh" 2>/dev/null
+[[ -n "$base_log_dir" ]] && base_dir="${base_log_dir/#\~/$HOME}"
+
+while getopts "d:" opt; do
+    case $opt in
+        d) base_dir="$OPTARG" ;;
+        *) echo "Usage: $0 [-d <base_dir>]"; exit 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+log_dir="$base_dir/test_${timestamp}"
 mkdir -p "$log_dir"
-ln -sfn "test_${timestamp}" "$SCRIPT_DIR/latest"
+ln -sfn "test_${timestamp}" "$base_dir/latest"
 echo "Log files will be saved at $log_dir"
 
 test_summary_file="$log_dir/test_summary_${timestamp}.csv"
@@ -17,9 +31,7 @@ test_summary_file="$log_dir/test_summary_${timestamp}.csv"
 CONF_PATH=$HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF
 REMOTE_UE_HOST="remote_ue" # host name in the ~/.ssh/config
 REMOTE_HOST_IP=$(ssh -G $REMOTE_UE_HOST | awk '/^hostname / {print $2}')
-REMOTE_USER=$(ssh -G $REMOTE_UE_HOST | awk '/^user / {print $2}') # Specify user name of the remote host
 echo "Remote Host IP address = " $REMOTE_HOST_IP
-echo "Remote User = " $REMOTE_USER
 
 LOCAL_HOST="local" # host name in the ~/.ssh/config
 LOCAL_HOST_IP=$(ssh -G $LOCAL_HOST | awk '/^hostname / {print $2}') #  #LOCAL_HOST_IP=$(ip route get 1.2.3.4 | awk '{print $7}')
@@ -27,17 +39,14 @@ echo "Local Host IP address = " $LOCAL_HOST_IP
 
 RELAY_UE_HOST="relay_ue" # host name in the ~/.ssh/config
 RELAY_UE_HOST_IP=$(ssh -G $RELAY_UE_HOST | awk '/^hostname / {print $2}')
-RELAY_USER=$(ssh -G $RELAY_UE_HOST | awk '/^user / {print $2}') # Specify user name of the remote host
 echo "Relay UE Host IP address = " $RELAY_UE_HOST_IP
 
 NR_UE_HOST="nr_ue" # host name in the ~/.ssh/config
 NR_UE_HOST_IP=$(ssh -G $NR_UE_HOST | awk '/^hostname / {print $2}')
-NR_UE_USER=$(ssh -G $NR_UE_HOST | awk '/^user / {print $2}') # Specify user name of the remote host
 echo "nrUE Host IP address = " $NR_UE_HOST_IP
 
 GNB_HOST="gNB" # host name in the ~/.ssh/config
 GNB_HOST_IP=$(ssh -G $GNB_HOST | awk '/^hostname / {print $2}')
-GNB_USER=$(ssh -G $GNB_HOST | awk '/^user / {print $2}') # Specify user name of the remote host
 echo "gNB Host IP address = " $GNB_HOST_IP
 
 # Read default values from config files (before any tests modify them)
@@ -45,11 +54,6 @@ DEFAULT_CSI_ACQ=$(grep "sl_CSI_Acquisition" $CONF_PATH/sl_sync_ref.conf | grep -
 DEFAULT_PSFCH_PERIOD=$(grep "sl_PSFCH_Period" $CONF_PATH/sl_sync_ref.conf | grep -oP '\d+' | head -1)
 echo "Default CSI Acquisition = " $DEFAULT_CSI_ACQ
 echo "Default PSFCH Period = " $DEFAULT_PSFCH_PERIOD
-
-RELAY_UE_USRP_SN_FOR_UU=340EA03
-RELAY_UE_USRP_SN_FOR_SL=3271246
-#RELAY_UE_USRP_SN_FOR_SL=340E9F3
-#RELAY_UE_USRP_SN_FOR_SL=340EA3B
 
 TX_GAIN=0      # Default: 0
 RX_GAIN=110    # Default: 110

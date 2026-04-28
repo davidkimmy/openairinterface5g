@@ -117,13 +117,16 @@
 run_sl_test_config.sh     # Configuration
 ~/.ssh/config             # SSH host aliases
 ~/openairinterface5g/     # OAI source
-&lt;script_dir&gt;/
+&lt;base_dir&gt;/
   latest -&gt; test_&lt;ts&gt;/    # Symlink
   test_&lt;timestamp&gt;/       # Results
     test_summary_*.csv
     result_syncref.log
     result_nearby.log
     ping_result_*.txt</div>
+      <div class="box" style="margin-top: 10px; font-size: 0.75em;">
+        <strong>base_dir priority:</strong> <code>-d</code> flag &gt; <code>base_log_dir</code> in config &gt; script directory
+      </div>
     </div>
   </div>
 </section>
@@ -152,11 +155,11 @@ run_sl_test_config.sh     # Configuration
       <h3>Required SSH Host Aliases</h3>
       <table>
         <tr><th>Alias</th><th>Role</th></tr>
-        <tr><td><code>remote_ue</code></td><td>Nearby UE in 2/3-host tests</td></tr>
+        <tr><td><code>remote_ue</code></td><td>Nearby UE in 2/3-hosts tests</td></tr>
         <tr><td><code>nr_ue</code></td><td>nrUE in Uu interface tests</td></tr>
-        <tr><td><code>relay_ue</code></td><td>Relay UE in 3-host SRAP</td></tr>
-        <tr><td><code>gNB</code></td><td>gNB in 3-host / Uu tests</td></tr>
-        <tr><td><code>local</code></td><td>Local host IP &amp; username</td></tr>
+        <tr><td><code>relay_ue</code></td><td>Relay UE in 3-hosts SRAP tests</td></tr>
+        <tr><td><code>gNB</code></td><td>gNB in 3-hosts rfsim SRAP tests</td></tr>
+        <tr><td><code>local</code></td><td>Local host IP &amp; user name, mandatory in all tests</td></tr>
       </table>
       <div class="box-orange box" style="margin-top: 10px;">
         Aliases are <strong>hardcoded</strong> in <code>run_sl_test.sh</code>.<br>
@@ -188,20 +191,22 @@ run_sl_test_config.sh     # Configuration
       </ul>
     </div>
     <div>
-      <h3>Predefined Test Groups</h3>
-      <table>
-        <tr><th>Group</th><th>Tests</th></tr>
-        <tr><td><code>slmode2_basic_tests</code></td><td>PC5 Mode 2 ping (local, 2-host, USRP)</td></tr>
-        <tr><td><code>slmode2_csi_psfch_tests</code></td><td>CSI/PSFCH parametric (local, 2-host, USRP)</td></tr>
-        <tr><td><code>slmode1_basic_tests</code></td><td>SRAP relay ping (local, 3-host, USRP)</td></tr>
-        <tr><td><code>uu_basic_tests</code></td><td>Uu ping (local, 2-host, USRP)</td></tr>
-      </table>
-      <h3 style="margin-top: 15px;">Example Config</h3>
-      <pre><code>test_profile='pilot'
-enabled_tests=(
-    slmode2_basic_tests[0]
-    rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host:0:1
-)</code></pre>
+      <h3>Additional Config Settings</h3>
+      <pre><code># Log output directory (default: script dir)
+base_log_dir="~/openairinterface5g"
+
+# USRP serial numbers (SL Mode 1 relay only)
+RELAY_UE_USRP_SN_FOR_UU=340EA03
+RELAY_UE_USRP_SN_FOR_SL=3271246</code></pre>
+      <h3 style="margin-top: 15px;">Running Tests</h3>
+      <pre><code># use base_log_dir from config (or script dir)
+./run_sl_test.sh
+
+# override: logs saved under ~/openairinterface5g/
+./run_sl_test.sh -d ~/openairinterface5g</code></pre>
+      <div class="box" style="margin-top: 10px; font-size: 0.75em;">
+        <strong>Log dir priority:</strong> <code>-d</code> flag &gt; <code>base_log_dir</code> in config &gt; script directory
+      </div>
     </div>
   </div>
 </section>
@@ -221,9 +226,18 @@ enabled_tests=(
     <tr><td><code>rfsim_uu_ping_test_on_two_hosts</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">2</td><td>gNB &harr; UE ping across two machines</td></tr>
     <tr><td><code>usrp_B210_*</code></td><td style="text-align:center;">All</td><td style="text-align:center;">2-3</td><td>USRP hardware variants of above tests</td></tr>
   </table>
-  <div class="box-green box" style="margin-top: 10px;">
-    <strong>Pass criteria:</strong> &ge;60% ICMP ping success rate &nbsp;|&nbsp;
-    <strong>PSSCH stats:</strong> TX/RX counters extracted from UE logs for each direction
+  <div class="two-col" style="margin-top: 10px;">
+    <div class="box-green box">
+      <strong>Pass criteria:</strong> &ge;60% ICMP ping success rate &nbsp;|&nbsp;
+      <strong>PSSCH stats:</strong> TX/RX counters extracted from UE logs
+    </div>
+    <div class="box">
+      <strong>Predefined groups:</strong>
+      <code>uu_basic_tests</code>,
+      <code>slmode2_basic_tests</code>,
+      <code>slmode2_csi_psfch_tests</code>,
+      <code>slmode1_basic_tests</code>
+    </div>
   </div>
 </section>
 
@@ -259,7 +273,7 @@ rfsim_slmode1_srap_ping_test_on_local_host     |    1 |     1 |   1 |    42s  | 
         <li><code>ping_result_*.txt</code> &mdash; ping output</li>
       </ul>
       <div class="box" style="margin-top: 8px; font-size: 0.75em;">
-        Results in <code>&lt;script_dir&gt;/latest/</code>
+        Results in <code>&lt;base_dir&gt;/latest/</code>
       </div>
     </div>
   </div>
