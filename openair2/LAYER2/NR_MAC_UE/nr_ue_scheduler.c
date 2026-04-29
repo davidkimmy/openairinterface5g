@@ -3610,14 +3610,7 @@ void preprocess(NR_UE_MAC_INST_t *mac,
 
     /* retransmission */
     if (sched_pssch->sl_harq_pid >= 0) {
-      if (sched_ctrl->available_sl_harq.head < 0) {
-        LOG_W(NR_MAC, "[UE][%4d.%2d] UE has no free SL HARQ process, skipping\n",
-              frame,
-              slot);
-        continue;
-      } else {
-         sched_ctrl->sched_csi_report.active = false;
-      }
+      sched_ctrl->sched_csi_report.active = false;
     } else {
       if (sched_ctrl->available_sl_harq.head < 0) {
         LOG_W(NR_MAC, "[UE][%4d.%2d] UE has no free SL HARQ process, skipping\n",
@@ -3634,25 +3627,33 @@ void preprocess(NR_UE_MAC_INST_t *mac,
       }
     }
 
-    /*
-    * SLSCH tx computes feedback frame and slot, which will be used by transmitter of PSFCH after receiving SLSCH.
-    * Transmitter of SLSCH stores the feedback frame and slot in harq process to use those in retreiving the feedback.
-    */
     if (configured_PSFCH) {
       const uint8_t psfch_periods[] = {0, 1, 2, 4};
       NR_SL_PSFCH_Config_r16_t *sl_psfch_config = mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup;
       long psfch_period = (sl_psfch_config->sl_PSFCH_Period_r16)
                             ? psfch_periods[*sl_psfch_config->sl_PSFCH_Period_r16] : 0;
 
-      int rcv_tx_frame = (frame + ((slot + DURATION_RX_TO_TX) / nr_slots_frame)) % 1024;
-      int rcv_tx_slot = (slot + DURATION_RX_TO_TX) % nr_slots_frame;
+      int tx_abs_slot_in_frame = frame * nr_slots_frame + slot;
+      int rx_abs_slot = tx_abs_slot_in_frame + DURATION_RX_TO_TX;
+
+      int rcv_tx_frame = (rx_abs_slot / nr_slots_frame) % 1024;
+      int rcv_tx_slot = rx_abs_slot % nr_slots_frame;
       int psfch_slot = get_feedback_slot(psfch_period, rcv_tx_slot);
+
+      if (psfch_slot < rcv_tx_slot) {
+        rcv_tx_frame = (rcv_tx_frame + 1) % 1024;
+      }
+
       update_harq_lists(mac, frame, slot, UE);
       *fb_frame = rcv_tx_frame;
       *fb_slot = psfch_slot;
-      LOG_D(NR_MAC, "Tx SLSCH %4d.%2d, Expected Feedback: %4d.%2d in current PSFCH: psfch_period %ld\n",
+      LOG_D(NR_MAC, "Tx SLSCH %4d.%2d (abs=%d), RX at %4d.%2d (abs=%d), Expected Feedback: %4d.%2d (psfch_period %ld)\n",
             frame,
             slot,
+            tx_abs_slot_in_frame,
+            rcv_tx_frame,
+            rcv_tx_slot,
+            rx_abs_slot,
             *fb_frame,
             *fb_slot,
             psfch_period);
@@ -3723,6 +3724,26 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
 
     if (sched_pssch->rbSize <= 0)
       continue;
+
+    bool is_retransmission = (harq_id >= 0 && sched_ctrl->sl_harq_processes[harq_id].round != 0);
+
+    bool has_feedback_data = false;
+    if (is_fdbk_scheduled) {
+      for (int i = 0; i < sl_num_slsch_feedbacks(mac); i++) {
+        SL_sched_feedback_t *sched_psfch = &sched_ctrl->sched_psfch[i];
+        if (sched_psfch->feedback_frame == frame &&
+            sched_psfch->feedback_slot == slot &&
+            sched_psfch->harq_feedback != 0) {
+          has_feedback_data = true;
+          break;
+        }
+      }
+    }
+
+    if (sched_ctrl->num_total_bytes == 0 && !is_retransmission && !has_feedback_data) {
+      LOG_D(NR_MAC, "[MAC SCHED SKIP] %4d.%2d No data, not retrans, no feedback - skipping\n", frame, slot);
+      continue;
+    }
 
     NR_UE_sl_harq_t *cur_harq = NULL;
 
@@ -4157,12 +4178,17 @@ sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
     LOG_D(NR_MAC, "pool_id %d, phy_sl_bitmap.size %lu, bits_unused %d\n", pool_id, sl_tx_rsrc_pool->phy_sl_bitmap.size, sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused);
     frameslot_t fs = {frame, slot};
     uint64_t tx_abs_slot = normalize(&fs, mu);
-    sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
     int num_psfch_symbols = 0;
-    if (sl_has_psfch && sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16 && sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16
-        && *sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 > 0) {
-      // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication.nbits is 1; FYI psfch_overhead_indication.nbits is set to 1 in case of PSFCH period 2 or 4 in sl_determine_sci_1a_len()
+
+    if (psfch_period == 1) {
       num_psfch_symbols = 3;
+    } else if (psfch_period == 2 || psfch_period == 4) {
+      // Check if PSFCH symbols are present in the TRANSMISSION slot
+      // Per 38.214 Section 8.4.1.2: symbol reservation is for the TX slot
+      sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+      if (sl_has_psfch) {
+        num_psfch_symbols = 3;
+      }
     }
     // Number of symbols used for PSCCH
     uint16_t num_sl_pscch_sym = pscch_tda[*sl_tx_rsrc_pool->respool->sl_PSCCH_Config_r16->choice.setup->sl_TimeResourcePSCCH_r16];
@@ -4694,9 +4720,24 @@ bool slot_has_psfch(NR_UE_MAC_INST_t *mac, BIT_STRING_t *phy_sl_bitmap, uint64_t
   AssertFatal(tdd->pattern1.nrofUplinkSlots == 4 && tdd->pattern1.nrofDownlinkSlots == 6,
               "Invalid configuration set. Please update the nrofUplinkSlots to 4 and nrofDownlinkSlots to 6.\n");
   bool sl_slot = is_sl_slot(mac, phy_sl_bitmap, phy_sl_map_size, abs_index_cur_slot);
-  bool has_psfch = sl_slot && ((((fs0.slot + psfch_period - 1) % nr_slots_period) % psfch_period) == 0);
-  LOG_D(NR_MAC, "slot %d has_psfch %d, abs slot %ld, is_sl_slot %d\n",
-        fs0.slot, has_psfch, abs_index_cur_slot, sl_slot);
+  // PSFCH period defines which UL slots have PSFCH resources
+  // Period 2: PSFCH in slots 7,9 (every 2nd UL slot starting from first)
+  // Period 4: PSFCH in slot 9 (last UL slot only)
+  int slot_in_period = fs0.slot % nr_slots_period;
+  int first_ul_slot = tdd ? get_first_ul_slot(tdd->pattern1.nrofDownlinkSlots, tdd->pattern1.nrofDownlinkSymbols, tdd->pattern1.nrofUplinkSymbols) : 0;
+  int num_ul_slots = tdd ? tdd->pattern1.nrofUplinkSlots : nr_slots_period;
+
+  // Check if current slot matches any PSFCH slot position
+  bool has_psfch = false;
+  if (sl_slot && psfch_period > 0) {
+    for (int k = 1; k * psfch_period <= num_ul_slots; k++) {
+      int psfch_slot_offset = (first_ul_slot + k * psfch_period - 1) % nr_slots_period;
+      if (slot_in_period == psfch_slot_offset) {
+        has_psfch = true;
+        break;
+      }
+    }
+  }
   return has_psfch;
 }
 
@@ -4826,14 +4867,25 @@ List_t get_nr_sl_comm_opportunities(NR_UE_MAC_INST_t *mac,
             num_sl_pscch_sym,
             num_sl_pscch_rbs);
       uint8_t start_sl_pscch_sym = 1;
-      // PSSCH
       uint16_t sl_pssch_sym_start = *sl_bwp_generic->sl_StartSymbol_r16;
-      sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, i, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
       int num_psfch_symbols = 0;
-      if (sl_has_psfch && resource_pool->sl_PSFCH_Config_r16 && resource_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16
-          && *resource_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 > 0) {
-        // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication.nbits is 1; FYI psfch_overhead_indication.nbits is set to 1 in case of PSFCH period 2 or 4 in sl_determine_sci_1a_len()
+
+      if (psfch_period == 1) {
         num_psfch_symbols = 3;
+      } else if (psfch_period == 2 || psfch_period == 4) {
+        uint8_t psfch_time_gaps[] = {2, 3};
+        uint8_t min_time_gap = 3;
+        if (resource_pool->sl_PSFCH_Config_r16 &&
+            resource_pool->sl_PSFCH_Config_r16->choice.setup &&
+            resource_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16) {
+          long gap_index = *resource_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16;
+          min_time_gap = (gap_index < 2) ? psfch_time_gaps[gap_index] : 3;
+        }
+        uint64_t psfch_feedback_slot = i + min_time_gap;
+        sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, psfch_feedback_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+        if (sl_has_psfch) {
+          num_psfch_symbols = 3;
+        }
       }
 
       // PSFCH requires an additional 3 symbols

@@ -259,16 +259,24 @@ void fill_pssch_pscch_pdu(sl_nr_ue_mac_params_t *sl_mac_params,
   nr_sl_pssch_pscch_pdu->num_subch,
   nr_sl_pssch_pscch_pdu->subchannel_size);
 
-  bool sending_fdbk = false;
+  const uint8_t psfch_periods[] = {0,1,2,4};
+  long psfch_period = 0;
   if (sl_res_pool->sl_PSFCH_Config_r16 &&
       sl_res_pool->sl_PSFCH_Config_r16->choice.setup &&
-      sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16)
-    sending_fdbk = is_fdbk_scheduled && (*sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 > 0);
-  if (sending_fdbk) {
-     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication.nbits is 1; FYI psfch_overhead_indication.nbits is set to 1 in case of PSFCH period 2 or 4 in sl_determine_sci_1a_len()
-     num_psfch_symbols = 3;
+      sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
+    long period_index = *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+    psfch_period = (period_index < 4) ? psfch_periods[period_index] : 0;
   }
-  nr_sl_pssch_pscch_pdu->pssch_numsym = resource ? resource->sl_pssch_sym_len : 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
+
+  if (psfch_period == 1) {
+    num_psfch_symbols = 3;
+  } else if (psfch_period == 2 || psfch_period == 4) {
+    if (sci_pdu->psfch_overhead.nbits > 0 && sci_pdu->psfch_overhead.val == 1) {
+      num_psfch_symbols = 3;
+    }
+  }
+  // Always calculate dynamically based on current psfch_overhead bit to handle retransmissions on different slots
+  nr_sl_pssch_pscch_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
   nr_sl_pssch_pscch_pdu->pssch_startsym = resource ? resource->sl_pssch_sym_start : *sl_bwp_generic->sl_StartSymbol_r16;
 
   nr_sl_pssch_pscch_pdu->sci2_beta_offset = *sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16->list.array[sci_pdu->beta_offset_indicator];
@@ -514,13 +522,9 @@ void config_pscch_pdu_rx(sl_nr_rx_config_pscch_pdu_t *nr_sl_pscch_pdu,
   nr_sl_pscch_pdu->l_subch=1;
   //number of symbols for Sidelink transmission on PSSCH/PSCCH
   //(Total Sidelink symbols available - number of psfch symbols configured - 2)
-  //Guard symbol + AGC symbol are also excluded
-  //Indicates the number of symbols for PSCCH+PSSCH txn
   int num_psfch_symbols = 0;
-  if (sl_has_psfch && sl_res_pool->sl_PSFCH_Config_r16 && sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 &&
-      *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 > 0) {
-     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication.nbits is 1; FYI psfch_overhead_indication.nbits is set to 1 in case of PSFCH period 2 or 4 in sl_determine_sci_1a_len()
-     num_psfch_symbols = 3;
+  if (sl_has_psfch) {
+    num_psfch_symbols = 3;
   }
 
   nr_sl_pscch_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
@@ -688,7 +692,10 @@ int nr_ue_process_sci1_indication_pdu(NR_UE_MAC_INST_t *mac,module_id_t mod_id,f
   uint64_t rx_abs_slot = normalize(&fs, mu);
   uint16_t phy_map_sz = ((sl_rx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_rx_rsrc_pool->phy_sl_bitmap.bits_unused);
   uint8_t sl_has_psfch = slot_has_psfch(mac, &sl_rx_rsrc_pool->phy_sl_bitmap, rx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
-  sl_has_psfch = psfch_period > 1 ? mac->sci_pdu_rx.psfch_overhead.val : sl_has_psfch;
+
+  if (psfch_period > 1) {
+    sl_has_psfch = (mac->sci_pdu_rx.psfch_overhead.val == 1) ? 1 : 0;
+  }
 
   int ret = config_pssch_sci_pdu_rx(&rx_config.sl_rx_config_list[0].rx_sci2_config_pdu,
                           NR_SL_SCI_FORMAT_2A,
@@ -737,12 +744,26 @@ void config_pssch_slsch_pdu_rx(sl_nr_rx_config_pssch_pdu_t *nr_sl_pssch_pdu,
     nr_sl_pssch_pdu->tbslbrm = 0;
   int num_psfch_symbols = 0;
   /*
-    Use psfch_overhead from decoded SCI to match TX-side PSSCH symbol calculation
-    The TX sets this field based on whether the transmission slot has PSFCH overhead
+    Determine PSFCH symbol reservation based on PSFCH period:
+    - Period 1: Always reserve 3 symbols (PSFCH in every slot)
+    - Period 2/4: Reserve 3 symbols only if psfch_overhead bit is set in SCI
   */
-  if (sci_pdu->psfch_overhead.nbits && sci_pdu->psfch_overhead.val) {
-     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication is set
-     num_psfch_symbols = 3;
+  const uint8_t psfch_periods[] = {0,1,2,4}; // Convert index to actual period
+  long psfch_period = 0;
+  if (sl_res_pool->sl_PSFCH_Config_r16 &&
+      sl_res_pool->sl_PSFCH_Config_r16->choice.setup &&
+      sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
+    long period_index = *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+    psfch_period = (period_index < 4) ? psfch_periods[period_index] : 0;
+  }
+
+  if (psfch_period == 1) {
+    num_psfch_symbols = 3;
+  } else if (psfch_period == 2 || psfch_period == 4) {
+    // For PSFCH Period 2/4: SPEC-COMPLIANT - reserve when overhead bit is 1
+    if (sci_pdu->psfch_overhead.nbits && sci_pdu->psfch_overhead.val == 1) {
+      num_psfch_symbols = 3;
+    }
   }
   int pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
   uint16_t l_subch;
@@ -830,18 +851,23 @@ int config_pssch_sci_pdu_rx(sl_nr_rx_config_pssch_sci_pdu_t *nr_sl_pssch_sci_pdu
   // Size of subchannels in RBs
   nr_sl_pssch_sci_pdu->subchannel_size = subch_to_rb[*sl_res_pool->sl_SubchannelSize_r16];
   // In case of PSCCH PSSCH RX: this is always 1. Blind decoding done for every channel
-  // In case of RESOURCE SENSING: this is equal to number of subchannels forming a resource.
   nr_sl_pssch_sci_pdu->l_subch = 1;
-  //number of symbols for Sidelink transmission on PSSCH/PSCCH
-  //(Total Sidelink symbols available - number of psfch symbols configured - 2)
-  //Guard symbol + AGC symbol are also excluded
-  //Indicates the number of symbols for PSCCH+PSSCH txn
   int num_psfch_symbols = 0;
-  // Use psfch_overhead from decoded SCI to match TX-side PSSCH symbol calculation
-  // The TX sets this field based on whether the transmission slot has PSFCH overhead
-  if (sci_pdu->psfch_overhead.nbits && sci_pdu->psfch_overhead.val) {
-     // As per 38214 8.1.3.2, num_psfch_symbols can be 3 if psfch_overhead_indication is set
-     num_psfch_symbols = 3;
+  const uint8_t psfch_periods[] = {0,1,2,4};
+  long psfch_period = 0;
+  if (sl_res_pool->sl_PSFCH_Config_r16 &&
+      sl_res_pool->sl_PSFCH_Config_r16->choice.setup &&
+      sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
+    long period_index = *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+    psfch_period = (period_index < 4) ? psfch_periods[period_index] : 0;
+  }
+
+  if (psfch_period == 1) {
+    num_psfch_symbols = 3;
+  } else if (psfch_period == 2 || psfch_period == 4) {
+    if (sci_pdu->psfch_overhead.nbits && sci_pdu->psfch_overhead.val == 1) {
+      num_psfch_symbols = 3;
+    }
   }
   nr_sl_pssch_sci_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
 
@@ -919,7 +945,10 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
   NR_SL_BWP_Generic_r16_t *sl_bwp_generic = (non_relay || (mac->sl_bwp_dedicated == NULL))
                                             ? mac->sl_bwp->sl_BWP_Generic_r16
                                             : mac->sl_bwp_dedicated->sl_BWP_Generic_r16;
-  sl_has_psfch = psfch_period > 1 ? mac->sci_pdu_rx.psfch_overhead.val : sl_has_psfch;
+
+  if (psfch_period > 1) {
+    sl_has_psfch = (mac->sci_pdu_rx.psfch_overhead.val == 1) ? 1 : 0;
+  }
   config_pssch_slsch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pssch_config_pdu,
                             sci_pdu,
                             sl_bwp_generic,

@@ -812,8 +812,19 @@ void update_harq_lists(NR_UE_MAC_INST_t *mac, frame_t frame, sub_frame_t slot, N
   int cur = sched_ctrl->feedback_sl_harq.head;
   while (cur != -1) {
     NR_UE_sl_harq_t *harq = &sched_ctrl->sl_harq_processes[cur];
-    if ((harq->feedback_frame < frame
-         || (harq->feedback_frame == frame && harq->feedback_slot < slot))) {
+
+    int frame_diff = (frame - harq->feedback_frame + 1024) % 1024;
+    bool feedback_overdue = false;
+
+    if (frame_diff > 512) {
+      feedback_overdue = false;
+    } else if (frame_diff > 0) {
+      feedback_overdue = true;
+    } else {
+      feedback_overdue = (harq->feedback_slot < slot);
+    }
+
+    if (feedback_overdue) {
       remove_nr_list(&sched_ctrl->feedback_sl_harq, cur);
       harq->feedback_slot = -1;
       harq->is_waiting = false;
