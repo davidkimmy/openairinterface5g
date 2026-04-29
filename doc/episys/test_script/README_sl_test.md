@@ -111,6 +111,20 @@ Host gNB local
 >
 > These names are hardcoded in `run_sl_test.sh`. If your SSH config uses different names, update the script variables (`REMOTE_UE_HOST`, `RELAY_UE_HOST`, `GNB_HOST`) accordingly.
 
+**Host Assignment per Test Mode:**
+
+| SL Mode | Type | Hosts | gNB | SyncRef UE | Nearby UE |
+|---------|------|-------|-----|------------|-----------|
+| Mode 2 | RFSIM | 1 | — | `local` | `local` |
+| Mode 2 | RFSIM | 2 | — | `local` | `remote_ue` |
+| Mode 2 | USRP | 2 | — | `local` | `remote_ue` |
+| Mode 1 (SRAP) | RFSIM | 1 | `local` | `local` | `local` |
+| Mode 1 (SRAP) | RFSIM | 3 | `gNB`, `local` | `relay_ue` | `remote_ue` |
+| Mode 1 (SRAP) | USRP | 3 | `local` | `relay_ue` | `remote_ue` |
+| Uu | RFSIM | 1 | `local` | — | `local` (nrUE) |
+| Uu | RFSIM | 2 | `local` | — | `nr_ue` (nrUE) |
+| Uu | USRP | 2 | `local` | — | `nr_ue` (nrUE) |
+
 **Setup passwordless SSH:**
 ```bash
 # Generate SSH key if you don't have one
@@ -159,8 +173,11 @@ RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
 ### 3. Run Tests
 
 ```bash
-./run_sl_test.sh                          # use base_log_dir from config (or script dir)
+./run_sl_test.sh                          # use config settings (or defaults)
 ./run_sl_test.sh -d ~/openairinterface5g  # override: logs saved under ~/openairinterface5g/
+./run_sl_test.sh -g 1                     # force gnome-terminal on
+./run_sl_test.sh -g 0                     # force gnome-terminal off
+./run_sl_test.sh -d ~/openairinterface5g -g 1  # both overrides
 ```
 
 ## Configuration Guide
@@ -345,7 +362,7 @@ Replace `rfsim` prefix with `usrp_B210` for hardware tests:
 
 ### Summary Table
 
-After all tests complete, a summary table is displayed and saved to `<script_dir>/test_<timestamp>/test_summary_<timestamp>.csv`:
+After all tests complete, a summary table is displayed and saved to `<base_dir>/test_<timestamp>/test_summary_<timestamp>.csv`:
 
 ```
 Test Name                                                              | Itrn | Hosts | MCS | Runtime | Ping Rate | PSSCH Rate1        | PSSCH Rate2        | PSSCH Total | Result
@@ -369,20 +386,19 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |  
 
 All logs saved to `<base_dir>/test_<timestamp>/`, where base_dir is determined by (highest priority first): `-d` flag > `base_log_dir` in config > script directory. A `latest` symlink points to the most recent test folder.
 - `test_summary_<timestamp>.csv` - Summary table
-- `result_syncref.log` - Syncref UE output (local host, Mode 2)
-- `result_syncref_remote.log` - Syncref UE output (remote host, copied via SCP)
-- `result_nearby.log` - Nearby UE output (local host)
-- `result_nearby_remote.log` - Nearby UE output (remote host, copied via SCP)
+- `commands.txt` - All executed commands (gNB, nrUE, syncref, nearby, ping) with host information
+- `result_syncref.log` - Syncref UE output (Mode 2)
+- `result_nearby.log` - Nearby UE output
 - `result_gNB.log` - gNB output (relay tests)
-- `result_nrUE_syncref.log` - Relay UE output (local host, Mode 1 SRAP tests)
-- `result_nrUE_syncref_remote.log` - Relay UE output (remote host, copied via SCP)
+- `result_nrUE_syncref.log` - Relay UE output (Mode 1 SRAP tests)
+- `result_nrUE.log` - nrUE output (Uu tests)
 - `ping_result_<test_name>_<timestamp>.txt` - Ping output per test
 
-**Remote Log Copying:**
-For multi-host tests, UE logs from remote hosts are automatically copied to the local test directory via SCP before PSSCH statistics extraction. The script uses `copy_syncref_ue_logs()` and `copy_nearby_ue_logs()` functions to:
-1. Copy logs from remote host based on the test mode (Mode 1 vs Mode 2)
-2. Clean up remote log files after successful copy
-3. Ensure statistics are computed from the correct log files
+**Remote Log Capture:**
+For multi-host tests, remote UE output is captured locally via `tee` in `run_cmd`. No SCP is needed — logs are streamed through SSH and saved to the local `$HOME` directory.
+
+**Command Logging:**
+All softmodem and ping commands are logged to `commands.txt` with the host where they execute. This is useful for debugging and reproducing test scenarios manually.
 
 ## Key Concepts
 
@@ -494,8 +510,8 @@ Host relay_ue
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 
-# Example: gNB Host
-Host gNB
+# Example: gNB Host and local host
+Host gNB local
     HostName 192.168.1.102
     User your_username
     IdentityFile ~/.ssh/id_ed25519
@@ -559,12 +575,14 @@ ssh remote_ue "sudo ufw status"
 
 ### Test Execution Issues
 
-**"No such device" for oaitun_ue1:**
-- UE not fully initialized → Increase sleep after UE launch (line 789: `sleep 5`)
+**"No such device" or "Device or resource busy" for oaitun_ue1:**
+- **Zombie processes on remote hosts:** The script now automatically cleans up zombie `nr-uesoftmodem`, `nr-softmodem`, and `nr-cuup` processes on all configured remote hosts at startup
+- UE not fully initialized → Increase sleep after UE launch (line 843: wait_for_tun_interface timeout)
 - Check UE logs for RRC connection errors
+- For two-host tests: Verify the UE is actually running on the remote host (not locally) by checking `commands.txt` in the test log directory
 
 **Ping fails (<60% success rate):**
-- Verify tunnel interfaces: `ip addr show oaitun_ue1`
+- Verify tunnel interfaces: `ifconfig | grep oaitun_ue1`
 - Check UE logs for sidelink synchronization
 - Increase test duration in `run_sl_test_config.sh`
 
@@ -575,7 +593,7 @@ ssh remote_ue "sudo ufw status"
 **PSSCH statistics show 0/0 or N/A:**
 - UEs not transmitting data → Check sidelink logs for resource allocation
 - Increase test duration to allow more data exchange
-- For two-host tests: Verify remote UE logs are being copied (check for `result_nearby_remote.log` in test directory)
+- For two-host tests: Verify remote UE logs are being captured (check for `result_nearby.log` in `$HOME`)
 - Check SSH connectivity to remote hosts: `ssh remote_ue hostname`
 
 ### Multi-Host Issues
@@ -584,12 +602,14 @@ ssh remote_ue "sudo ufw status"
 - Test SSH config: `ssh remote_ue hostname`
 - Verify passwordless auth: `ssh-copy-id remote_ue`
 
-**Remote UE config not updated:**
-- Check `REMOTE_USER` variable in script header
-- Verify file paths on remote host match local paths
+**Remote UE not running or running locally instead:**
+- Check `commands.txt` in the test log directory to verify which host each command was sent to
+- Verify SSH passwordless authentication works: `ssh nr_ue hostname`
+- The script properly quotes commands when sending via SSH to handle multi-line command strings
+- If remote execution still fails, check if the remote host has the OAI binary at the expected path
 
 **SRAP relay test fails:**
-- Verify 5G Core running: `docker ps | grep oai-amf`
+- Verify 5G Core running: `docker ps | grep oai-upf`
 - Check gNB logs for NG setup response
 - Verify Relay UE has both Uu and PC5 connections
 
@@ -700,4 +720,4 @@ elif [[ $test_profile == "custom" ]]; then
 
 ## License
 
-This test framework follows the OpenAirInterface license (OAI Public License V1.1).
+This test framework is developed by Applied Intuition and follows the OpenAirInterface license (OAI Public License V1.1).

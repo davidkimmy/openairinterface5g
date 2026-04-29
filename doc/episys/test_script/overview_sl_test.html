@@ -152,19 +152,19 @@ run_sl_test_config.sh     # Configuration
   remote_ue host: Remote UE (PC5)</div>
     </div>
     <div>
-      <h3>Required SSH Host Aliases</h3>
-      <table>
-        <tr><th>Alias</th><th>Role</th></tr>
-        <tr><td><code>remote_ue</code></td><td>Nearby UE in 2/3-hosts tests</td></tr>
-        <tr><td><code>nr_ue</code></td><td>nrUE in Uu interface tests</td></tr>
-        <tr><td><code>relay_ue</code></td><td>Relay UE in 3-hosts SRAP tests</td></tr>
-        <tr><td><code>gNB</code></td><td>gNB in 3-hosts rfsim SRAP tests</td></tr>
-        <tr><td><code>local</code></td><td>Local host IP &amp; user name, mandatory in all tests</td></tr>
+      <h3>Host Assignment per Test Mode</h3>
+      <table style="font-size: 0.6em;">
+        <tr><th>SL Mode</th><th>Type</th><th style="text-align:center;">Hosts</th><th>gNB</th><th>SyncRef UE</th><th>Nearby UE</th></tr>
+        <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">1</td><td>&mdash;</td><td><code>local</code></td><td><code>local</code></td></tr>
+        <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 2</td><td>USRP</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>RFSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td><code>local</code></td><td><code>local</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>RFSIM</td><td style="text-align:center;">3</td><td><code>gNB</code>, <code>local</code></td><td><code>relay_ue</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>USRP</td><td style="text-align:center;">3</td><td><code>local</code></td><td><code>relay_ue</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Uu</td><td>RFSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td>&mdash;</td><td><code>local</code> (nrUE)</td></tr>
+        <tr><td>Uu</td><td>RFSIM</td><td style="text-align:center;">2</td><td><code>local</code></td><td>&mdash;</td><td><code>nr_ue</code> (nrUE)</td></tr>
+        <tr><td>Uu</td><td>USRP</td><td style="text-align:center;">2</td><td><code>local</code></td><td>&mdash;</td><td><code>nr_ue</code> (nrUE)</td></tr>
       </table>
-      <div class="box-orange box" style="margin-top: 10px;">
-        Aliases are <strong>hardcoded</strong> in <code>run_sl_test.sh</code>.<br>
-        Passwordless SSH required: <code>ssh-copy-id &lt;alias&gt;</code>
-      </div>
     </div>
   </div>
 </section>
@@ -195,17 +195,21 @@ run_sl_test_config.sh     # Configuration
       <pre><code># Log output directory (default: script dir)
 base_log_dir="~/openairinterface5g"
 
+# Use gnome-terminal (0=bash, 1=gnome)
+use_gnome=1
+
 # USRP serial numbers (SL Mode 1 relay only)
 RELAY_UE_USRP_SN_FOR_UU=340EA03
 RELAY_UE_USRP_SN_FOR_SL=3271246</code></pre>
       <h3 style="margin-top: 15px;">Running Tests</h3>
-      <pre><code># use base_log_dir from config (or script dir)
+      <pre><code># use config settings (or defaults)
 ./run_sl_test.sh
-
-# override: logs saved under ~/openairinterface5g/
-./run_sl_test.sh -d ~/openairinterface5g</code></pre>
+# override log dir and gnome terminal
+./run_sl_test.sh -d ~/openairinterface5g
+./run_sl_test.sh -g 1
+./run_sl_test.sh -d ~/openairinterface5g -g 1</code></pre>
       <div class="box" style="margin-top: 10px; font-size: 0.75em;">
-        <strong>Log dir priority:</strong> <code>-d</code> flag &gt; <code>base_log_dir</code> in config &gt; script directory
+        <strong>Priority:</strong> CLI flags (<code>-d</code>, <code>-g</code>) &gt; config file &gt; defaults
       </div>
     </div>
   </div>
@@ -266,13 +270,15 @@ rfsim_slmode1_srap_ping_test_on_local_host     |    1 |     1 |   1 |    42s  | 
       <h3>Log Files (per test)</h3>
       <ul style="font-size: 0.75em;">
         <li><code>test_summary_*.csv</code> &mdash; summary table</li>
-        <li><code>result_syncref.log</code> &mdash; SyncRef UE output</li>
-        <li><code>result_nearby.log</code> &mdash; Nearby UE output</li>
+        <li><code>result_syncref.log</code> &mdash; SyncRef UE (Mode 2)</li>
+        <li><code>result_nearby.log</code> &mdash; Nearby UE</li>
         <li><code>result_nrUE_syncref.log</code> &mdash; Relay UE (Mode 1)</li>
+        <li><code>result_nrUE.log</code> &mdash; nrUE (Uu)</li>
         <li><code>result_gNB.log</code> &mdash; gNB output</li>
         <li><code>ping_result_*.txt</code> &mdash; ping output</li>
       </ul>
-      <div class="box" style="margin-top: 8px; font-size: 0.75em;">
+      <div class="box" style="margin-top: 8px; font-size: 0.7em;">
+        Remote logs captured locally via <code>tee</code> in <code>run_cmd</code>.<br>
         Results in <code>&lt;base_dir&gt;/latest/</code>
       </div>
     </div>

@@ -2,21 +2,27 @@
 #############################################################
 # Standalone shell script
 # Usage:
-#   Shell> ./run_sl_test.sh [-d <base_dir>]
+#   Shell> ./run_sl_test.sh [-d <base_dir>] [-g <0|1>]
 #############################################################
 
 timestamp=$(date +"%Y%m%d_%H%M%S")
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 
-# Priority: CLI -d > config base_log_dir > SCRIPT_DIR
+# Defaults
 base_dir="$SCRIPT_DIR"
+USE_GNOME=0
+
+# Override from config file
 source "$SCRIPT_DIR/run_sl_test_config.sh" 2>/dev/null
 [[ -n "$base_log_dir" ]] && base_dir="${base_log_dir/#\~/$HOME}"
+[[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
 
-while getopts "d:" opt; do
+# Override from command line (highest priority)
+while getopts "d:g:" opt; do
     case $opt in
         d) base_dir="$OPTARG" ;;
-        *) echo "Usage: $0 [-d <base_dir>]"; exit 1 ;;
+        g) USE_GNOME="$OPTARG" ;;
+        *) echo "Usage: $0 [-d <base_dir>] [-g <0|1>]"; exit 1 ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -67,12 +73,6 @@ set_atten() {
     curl http://169.254.10.10/:ATT?
 }
 
-run_cmd() {
-    for m in "$@"; do
-        gnome-terminal -- bash -c "source ~/.bashrc 2>/dev/null; $m"
-    done
-}
-
 check_same_str() {
     [[ $1 == $2 ]] && echo "Result:  Pass" || echo "Result:  Fail"
 }
@@ -96,11 +96,6 @@ sleep_time() {
 check_process() {
     pid=$(pgrep $1)
     [ -z "$pid" ] && echo "Program not running." || echo "Program running with $pid"
-}
-
-kill_process() {
-    printf "Attempting to terminate PIDs: %s\n" "$*"
-    echo "$@" | xargs -n 1 sudo kill -9
 }
 
 kill_process() {
@@ -355,28 +350,39 @@ find_user_name() {
     fi
 }
 
-copy_syncref_ue_logs() {
-    # Copy syncref UE logs from remote host to local log directory and clean up
-    local syncref_host=$1
-    local sl_mode=$2
-
-    local syncref_user=$(find_user_name "$syncref_host")
-    if [[ $sl_mode -eq 1 ]]; then
-        scp $syncref_host:/home/$syncref_user/result_nrUE_syncref.log $log_dir/result_nrUE_syncref_remote.log 2>/dev/null
-        ssh $syncref_host "rm -f /home/$syncref_user/result_nrUE_syncref.log" 2>/dev/null
-    elif [[ $sl_mode -eq 2 ]]; then
-        scp $syncref_host:/home/$syncref_user/result_syncref.log $log_dir/result_syncref_remote.log 2>/dev/null
-        ssh $syncref_host "rm -f /home/$syncref_user/result_syncref.log" 2>/dev/null
-    fi
+cleanup_old_logs() {
+    rm -f "$HOME"/result_syncref.log \
+          "$HOME"/result_nrUE_syncref.log \
+          "$HOME"/result_nearby.log \
+          "$HOME"/result_nrUE.log \
+          "$HOME"/result_gNB.log
+    GNOME_WIN_IDX=0
 }
 
-copy_nearby_ue_logs() {
-    # Copy nearby UE logs from remote host to local log directory and clean up
-    local nearby_host=$1
+GNOME_WIN_IDX=0
+GNOME_WIN_POS=("80x20+0+0" "80x20+960+0" "80x20+0+540" "80x20+960+540" "80x10+480+780")
 
-    local nearby_user=$(find_user_name "$nearby_host")
-    scp $nearby_host:/home/$nearby_user/result_nearby.log $log_dir/result_nearby_remote.log 2>/dev/null
-    ssh $nearby_host "rm -f /home/$nearby_user/result_nearby.log" 2>/dev/null
+run_cmd() {
+    [[ $# -ge 1 ]] && host_name=$1
+    [[ $# -ge 2 ]] && cmd=$2
+    [[ $# -ge 3 ]] && log_file=$3
+
+    local geom="${GNOME_WIN_POS[$((GNOME_WIN_IDX % ${#GNOME_WIN_POS[@]}))]}"
+    GNOME_WIN_IDX=$((GNOME_WIN_IDX + 1))
+
+    if [[ $host_name == "local" ]] || [[ $host_name == "" ]] ; then
+        if [ $USE_GNOME -ge 1 ]; then
+            gnome-terminal --geometry=$geom -- bash -c "source ~/.bashrc 2>/dev/null; $cmd 2>&1 | tee $log_file" &
+        else
+            bash -c "source ~/.bashrc 2>/dev/null; $cmd" 2>&1 | tee $log_file &
+        fi
+    else
+        if [ $USE_GNOME -ge 1 ]; then
+            gnome-terminal --geometry=$geom -- bash -c "ssh $host_name '$cmd' 2>&1 | tee $log_file" &
+        else
+            bash -c "ssh $host_name '$cmd'" 2>&1 | tee $log_file &
+        fi
+    fi
 }
 
 evaluate_ping_test() {
@@ -385,8 +391,6 @@ evaluate_ping_test() {
     [[ $# -ge 3 ]] && dest_ip=$3
     [[ $# -ge 4 ]] && local sl_mode=$4
     [[ $# -ge 5 ]] && local test_name=$5
-    [[ $# -ge 6 ]] && local syncref_host=$6
-    [[ $# -ge 7 ]] && local nearby_host=$7
 
     local user_name
     user_name=$(find_user_name "$host_name")
@@ -396,19 +400,31 @@ evaluate_ping_test() {
     if [[ $host_name == "local" ]]; then
         # Run ping locally
         ping_output="$log_dir/ping_result_${test_name}_${timestamp}.txt"
-        ping_cmd="ping -c 15 -I $src_if $dest_ip 2>&1 | tee $ping_output"
-        echo "Ping command: $ping_cmd"
-        run_cmd "$ping_cmd"
+        cmd="ping -c 15 -I $src_if $dest_ip"
+        echo "Ping command: $cmd"
+
+        # Save command to commands.txt
+        echo "=== Ping Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+        echo "$cmd" >> "$log_dir/commands.txt"
+        echo "" >> "$log_dir/commands.txt"
+
+        run_cmd $host_name "$cmd" $ping_output
     else
         # Run ping on remote host
         remote_log_dir="/home/$user_name/test_${timestamp}"
         ping_output="$remote_log_dir/ping_result_${test_name}_${timestamp}.txt"
         echo "Ping command (remote): ping -c 15 -I $src_if $dest_ip on $host_name"
-        local safe_filename="ping_result_${test_name}_${timestamp}.txt"
+        local safe_filename="$log_dir/ping_result_${test_name}_${timestamp}.txt"
 
         # Build remote command with proper variable expansion
-        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c 15 -I $src_if $dest_ip 2>&1 | tee $safe_filename"
-        gnome-terminal -- bash -c "ssh -t $host_name '$cmd'"
+        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c 15 -I $src_if $dest_ip"
+
+        # Save command to commands.txt
+        echo "=== Ping Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+        echo "ping -c 15 -I $src_if $dest_ip" >> "$log_dir/commands.txt"
+        echo "" >> "$log_dir/commands.txt"
+
+        run_cmd $host_name "$cmd" "$safe_filename"
     fi
 
     sleep $duration;
@@ -429,10 +445,6 @@ evaluate_ping_test() {
             ping_stats="0 0"
         fi
     else
-        # Copy ping result from remote host and clean up remote log directory
-        scp $host_name:$remote_log_dir/* $log_dir/ 2>/dev/null
-        ssh $host_name "rm -rf $remote_log_dir" 2>/dev/null
-
         local local_ping_output="$log_dir/ping_result_${test_name}_${timestamp}.txt"
         if [ -f "$local_ping_output" ]; then
             ping_stats=$(get_ping_stats_tuple "$local_ping_output")
@@ -446,14 +458,6 @@ evaluate_ping_test() {
     LAST_TX_PACKETS=$(echo $ping_stats | awk '{print $1}')
     LAST_RX_PACKETS=$(echo $ping_stats | awk '{print $2}')
 
-    # Copy UE logs from remote hosts before reading stats
-    if [[ -n "$syncref_host" && "$syncref_host" != "local" ]]; then
-        copy_syncref_ue_logs "$syncref_host" "$sl_mode"
-    fi
-    if [[ -n "$nearby_host" && "$nearby_host" != "local" ]]; then
-        copy_nearby_ue_logs "$nearby_host"
-    fi
-
     # Get PSSCH statistics from logs
     # sl_mode 1 uses result_nrUE_syncref.log, sl_mode 2 uses result_syncref.log
     # For PC5 two-host tests: syncref runs locally, nearby runs remotely
@@ -463,8 +467,8 @@ evaluate_ping_test() {
         # sl_mode 1: check local first, then remote
         if [ -f "$HOME/result_nrUE_syncref.log" ]; then
             local syncref_log="$HOME/result_nrUE_syncref.log"
-        elif [ -f "$log_dir/result_nrUE_syncref_remote.log" ]; then
-            local syncref_log="$log_dir/result_nrUE_syncref_remote.log"
+        elif [ -f "$log_dir/result_nrUE_syncref.log" ]; then
+            local syncref_log="$log_dir/result_nrUE_syncref.log"
         else
             local syncref_log=""
         fi
@@ -472,8 +476,8 @@ evaluate_ping_test() {
         # sl_mode 2: check local first, then remote
         if [ -f "$HOME/result_syncref.log" ]; then
             local syncref_log="$HOME/result_syncref.log"
-        elif [ -f "$log_dir/result_syncref_remote.log" ]; then
-            local syncref_log="$log_dir/result_syncref_remote.log"
+        elif [ -f "$log_dir/result_syncref.log" ]; then
+            local syncref_log="$log_dir/result_syncref.log"
         else
             local syncref_log=""
         fi
@@ -483,15 +487,15 @@ evaluate_ping_test() {
         if [[ $host_name == "local" ]]; then
             local nrue_log="$HOME/result_nrUE.log"
         else
-            local nrue_log="$log_dir/result_nrUE_remote.log"
+            local nrue_log="$log_dir/result_nrUE.log"
         fi
-        local nearby_log=""
+        local nrue_log=""
     else
         # For sidelink: check local first, then remote
         if [ -f "$HOME/result_nearby.log" ]; then
             local nearby_log="$HOME/result_nearby.log"
-        elif [ -f "$log_dir/result_nearby_remote.log" ]; then
-            local nearby_log="$log_dir/result_nearby_remote.log"
+        elif [ -f "$log_dir/result_nearby.log" ]; then
+            local nearby_log="$log_dir/result_nearby.log"
         else
             local nearby_log=""
         fi
@@ -559,26 +563,27 @@ run_gNB_cmd() {
         if [[ $host_name == 'local' ]]; then
             gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
                     -O $HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa --log_config.global_log_level info \
-                    $sl_relay_tag 2>&1 | tee $HOME/result_gNB.log"
+                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa --log_config.global_log_level info $sl_relay_tag"
         else
             gNB_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-softmodem \
                     -O /home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa --log_config.global_log_level info \
-                    $sl_relay_tag 2>&1 | tee /home/$user_name/result_gNB.log"
+                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa --log_config.global_log_level info $sl_relay_tag"
         fi
     elif [[ $test_type == "usrp" ]]; then
         gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
                 -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                -E --sa  --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN}  --device.name oai_usrpdevif $sl_relay_tag 2>&1 | tee /home/$user_name/result_gNB.log"
+                -E --sa  --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN}  --device.name oai_usrpdevif $sl_relay_tag"
     fi
+    log_file="$HOME/result_gNB.log"
     echo $gNB_cmd; echo
-    if [[ $host_name == "local" ]]; then
-        run_cmd "$gNB_cmd"; sleep 1
-    else
-        gnome-terminal -- bash -c "ssh $host_name '$gNB_cmd'"; sleep 1
-    fi
+
+    # Save command to commands.txt
+    echo "=== gNB Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$gNB_cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
+    run_cmd $host_name "$gNB_cmd" $log_file
 }
 
 run_nrUE_cmd() {
@@ -597,27 +602,30 @@ run_nrUE_cmd() {
                     ./nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 --rfsim --sa \
-                    --log_config.global_log_level info 2>&1 | tee $HOME/result_nrUE.log"
+                    --log_config.global_log_level info"
         else
             nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     --rfsimulator.serveraddr $LOCAL_HOST_IP --rfsimulator.serverport 4048 --rfsim --sa \
-                    --log_config.global_log_level info 2>&1 | tee /home/$user_name/result_nrUE.log"
+                    --log_config.global_log_level info"
         fi
     elif [[ $test_type == "usrp" ]]; then
         nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     -E --sa --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
-                    --log_config.global_log_level info 2>&1 | tee /home/$user_name/result_nrUE.log"
+                    --log_config.global_log_level info"
     fi
+    log_file="$HOME/result_nrUE.log"
     echo $nrUE_cmd; echo
-    if [[ $host_name == "local" ]]; then
-        run_cmd "$nrUE_cmd"; sleep 1
-    else
-        gnome-terminal -- bash -c "ssh $host_name '$nrUE_cmd'"; sleep 1
-    fi
+
+    # Save command to commands.txt
+    echo "=== nrUE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$nrUE_cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
+    run_cmd $host_name "$nrUE_cmd" $log_file
 }
 
 run_syncref_cmd() {
@@ -638,7 +646,7 @@ run_syncref_cmd() {
                             --rfsim --sa --sync-ref --sl-mode 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
-                            --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs  2>&1 | tee $HOME/result_nrUE_syncref.log"
+                            --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs"
             else
                 syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
@@ -647,7 +655,7 @@ run_syncref_cmd() {
                             --rfsim --sa  --sync-ref --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 \
-                            --log_config.global_log_level info $mcs  2>&1 | tee /home/$user_name/result_nrUE_syncref.log"
+                            --log_config.global_log_level info $mcs"
             fi
         elif [[ $test_type == "usrp" ]]; then
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
@@ -655,27 +663,32 @@ run_syncref_cmd() {
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                         -E --sa --sl-mode 1 --sync-ref --node-number 2 --ip-demo 1 --relay-type 1 --is-relay-ue 1 \
                         --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs 2>&1 | tee $HOME/result_nrUE_syncref.log"
+                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
         fi
+        log_file="$HOME/result_nrUE_syncref.log"
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                          $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf --sync-ref --sl-mode 2 --rfsim --sa \
-                        --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 --log_config.global_log_level info  $mcs 2>&1 | tee $HOME/result_syncref.log"
+                        --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 --log_config.global_log_level info  $mcs"
         elif [[ $test_type == "usrp" ]]; then
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                         $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf -E --sa --sl-mode 2 --sync-ref \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs 2>&1 | tee $HOME/result_syncref.log"
+                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
+        log_file="$HOME/result_syncref.log"
     fi
+
     echo $syncref_cmd; echo;
-    if [[ $host_name == "local" ]] || [[ $host_name == "" ]] ; then
-        run_cmd "$syncref_cmd"; sleep 1
-    else
-        gnome-terminal -- bash -c "ssh $host_name '$syncref_cmd'"; sleep 1
-    fi
+
+    # Save command to commands.txt
+    echo "=== Syncref UE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$syncref_cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
+    run_cmd $host_name "$syncref_cmd" $log_file
 }
 
 run_nearby_cmd() {
@@ -693,45 +706,48 @@ run_nearby_cmd() {
                 nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
                             -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
-                            --log_config.global_log_level info --relay-type 1  2>&1 | tee $HOME/result_nearby.log"
+                            --log_config.global_log_level info --relay-type 1"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                             -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
-                            --log_config.global_log_level info --relay-type 1  2>&1 | tee /home/$user_name/result_nearby.log"
+                            --log_config.global_log_level info --relay-type 1"
             fi
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E --sa --sl-mode 2 --relay-type 1 \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs 2>&1 | tee /home/$user_name/result_nearby.log"
+                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
-                        --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 --log_config.global_log_level info  2>&1 | tee $HOME/result_nearby.log"
+                        --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
-                        --rfsimulator.serveraddrsl $LOCAL_HOST_IP --rfsimulator.serverportsl 4148 --log_config.global_log_level info 2>&1 | tee /home/$user_name/result_nearby.log"
+                        --rfsimulator.serveraddrsl $LOCAL_HOST_IP --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E --sa --sl-mode 2 \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs 2>&1 | tee /home/$user_name/result_nearby.log"
+                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     fi
+    log_file="$HOME/result_nearby.log"
     echo $nearby_cmd; echo
-    if [[ $host_name == "local" ]] || [[ $host_name == "" ]] ; then
-        run_cmd "$nearby_cmd"; sleep 1
-    else
-        gnome-terminal -- bash -c "ssh $host_name '$nearby_cmd'"; sleep 1
-    fi
+
+    # Save command to commands.txt
+    echo "=== Nearby UE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$nearby_cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
+    run_cmd $host_name "$nearby_cmd" $log_file
 }
 
 #############################################################
@@ -754,15 +770,7 @@ slmode1_srap_ping_test() {
 
     # Validate test type for local host execution
     validate_test_type_for_local_host $test_type $test_name || return 1
-
-    # Clean up old log files to prevent accumulation of statistics
-    rm -f $HOME/result_syncref.log $HOME/result_nearby.log $HOME/result_nrUE_syncref.log 2>/dev/null
-    if [[ $syncref_host_name != "local" ]]; then
-        ssh $syncref_host_name "rm -f ~/result_syncref.log ~/result_nearby.log ~/result_nrUE_syncref.log" 2>/dev/null
-    fi
-    if [[ $nearby_host_name != "local" && $nearby_host_name != "$syncref_host_name" ]]; then
-        ssh $nearby_host_name "rm -f ~/result_syncref.log ~/result_nearby.log ~/result_nrUE_syncref.log" 2>/dev/null
-    fi
+    cleanup_old_logs
 
     local start_time=$(date +%s)
     local sl_mode=1
@@ -777,7 +785,7 @@ slmode1_srap_ping_test() {
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
     wait_for_tun_interface $src_if $nearby_host_name $duration
-    evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name $syncref_host_name $nearby_host_name
+    evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
 
     # Cleanup all processes (nearby_host_name was cleaned up in the evaluate_ping_test)
     kill_all $syncref_host_name nr-uesoftmodem
@@ -853,15 +861,7 @@ uu_ping_test() {
     if [[ $num_hosts -eq 1 ]]; then
         validate_test_type_for_local_host $test_type $test_name || return 1
     fi
-
-    # Clean up old log files to prevent accumulation of statistics
-    rm -f $HOME/result_gNB.log $HOME/result_nrUE.log 2>/dev/null
-    if [[ $gnb_host_name != "local" ]]; then
-        ssh $gnb_host_name "rm -f ~/result_gNB.log" 2>/dev/null
-    fi
-    if [[ $nrue_host_name != "local" ]]; then
-        ssh $nrue_host_name "rm -f ~/result_nrUE.log" 2>/dev/null
-    fi
+    cleanup_old_logs
 
     local start_time=$(date +%s)
     local sl_mode=0
@@ -947,14 +947,7 @@ pc5_ping_test() {
     if [[ $num_hosts -eq 1 ]]; then
         validate_test_type_for_local_host $test_type $test_name || return 1
     fi
-    # Clean up old log files to prevent accumulation of statistics
-    rm -f $HOME/result_syncref.log $HOME/result_nearby.log 2>/dev/null
-    if [[ $syncref_host_name != "local" ]]; then
-        ssh $syncref_host_name "rm -f ~/result_syncref.log ~/result_nearby.log" 2>/dev/null
-    fi
-    if [[ $nearby_host_name != "local" ]]; then
-        ssh $nearby_host_name "rm -f ~/result_syncref.log ~/result_nearby.log" 2>/dev/null
-    fi
+    cleanup_old_logs
 
     local start_time=$(date +%s)
     local sl_mode=2
@@ -966,7 +959,7 @@ pc5_ping_test() {
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
     wait_for_tun_interface $src_if $syncref_host_name $duration
-    evaluate_ping_test $syncref_host_name $src_if $dest_ip $sl_mode "${test_name}" $syncref_host_name $nearby_host_name
+    evaluate_ping_test $syncref_host_name $src_if $dest_ip $sl_mode "${test_name}"
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
@@ -1043,18 +1036,10 @@ pc5_csi_acquisition_psfch_period_test() {
     if [[ $nearby_host_name != "local" ]]; then
         local remote_user=$(find_user_name "$nearby_host_name")
     fi
+    cleanup_old_logs
 
     local start_time=$(date +%s)
     local sl_mode=2
-
-    # Clean up old log files to prevent stale statistics
-    rm -f $HOME/result_syncref.log $HOME/result_nearby.log 2>/dev/null
-    if [[ $syncref_host_name != "local" ]]; then
-        ssh $syncref_host_name "rm -f ~/result_syncref.log ~/result_nearby.log" 2>/dev/null
-    fi
-    if [[ $nearby_host_name != "local" ]]; then
-        ssh $nearby_host_name "rm -f ~/result_syncref.log ~/result_nearby.log" 2>/dev/null
-    fi
 
     # Check and restore default values if needed
     echo "Checking config file default values..."
@@ -1101,7 +1086,7 @@ pc5_csi_acquisition_psfch_period_test() {
     fi
 
     wait_for_tun_interface "oaitun_ue1" "$syncref_host_name" "$duration"
-    evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}" "local" $nearby_host_name
+    evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}"
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
@@ -1186,14 +1171,30 @@ cleanup_zombie_processes() {
     echo "=========================================="
     echo "Checking for zombie softmodem processes..."
     echo "=========================================="
+
+    # Cleanup local processes
     local found=0
     for proc in nr-softmodem nr-uesoftmodem nr-cuup; do
         if pgrep -x "$proc" > /dev/null 2>&1; then
-            echo "Found zombie process: $proc"
+            echo "Found zombie process on local: $proc"
             kill_all "local" "$proc"
             found=1
         fi
     done
+
+    # Cleanup remote host processes
+    for remote_host in "$NR_UE_HOST" "$REMOTE_UE_HOST"; do
+        if [[ -n "$remote_host" ]]; then
+            for proc in nr-softmodem nr-uesoftmodem nr-cuup; do
+                if ssh "$remote_host" "pgrep -x $proc > /dev/null 2>&1"; then
+                    echo "Found zombie process on $remote_host: $proc"
+                    kill_all "$remote_host" "$proc"
+                    found=1
+                fi
+            done
+        fi
+    done
+
     if [ $found -eq 1 ]; then
         echo "Zombie processes cleaned up."
     else
@@ -1218,6 +1219,7 @@ main() {
         # Override defaults with config values if set
         [[ -n "$tx_gain" ]] && TX_GAIN=$tx_gain
         [[ -n "$rx_gain" ]] && RX_GAIN=$rx_gain
+        [[ -n "$use_gnome" ]] && USE_GNOME=$use_gnome
     else
         echo "ERROR: Configuration file not found: $config_file"
         echo "Please create run_sl_test_config.sh in the same directory"

@@ -55,7 +55,7 @@ slmode1_basic_tests=(
 )
 enabled_tests=(
     # uu_basic_tests[0]
-    slmode2_basic_tests[2]
+    slmode2_basic_tests[1]
     # slmode2_csi_psfch_tests[1]
     # slmode1_basic_tests[k]
     # rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host:0:0
@@ -68,7 +68,7 @@ enabled_tests=(
 
 # Base directory for logs. The default will be this script folder.
 base_log_dir="~/openairinterface5g"
-
+use_gnome=0
 # Select active test profile among: pilot, regress, stress
 test_profile='pilot'
 #############################################################
@@ -77,7 +77,7 @@ test_profile='pilot'
 if [[ $test_profile == "pilot" ]]; then
     num_repeat=1
     mcs_array=(1)
-    duration=30
+    duration=40
     # RFSIM parameters (SNR values)
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
@@ -85,7 +85,6 @@ if [[ $test_profile == "pilot" ]]; then
     # USRP TX/RX gain
     tx_gain=20
     rx_gain=110
-
 elif [[ $test_profile == "regress" ]]; then
     num_repeat=1
     mcs_array=(1 9)
@@ -97,7 +96,6 @@ elif [[ $test_profile == "regress" ]]; then
     # USRP TX/RX gain
     tx_gain=20
     rx_gain=110
-
 elif [[ $test_profile == "stress" ]]; then
     num_repeat=3
     mcs_array=(9 16 28)
@@ -109,7 +107,6 @@ elif [[ $test_profile == "stress" ]]; then
     # USRP TX/RX gain
     tx_gain=20
     rx_gain=110
-
 else
     echo "ERROR: Unknown test profile '$test_profile'"
     echo "Available profiles: pilot, regress, stress"
@@ -129,6 +126,7 @@ echo "SNR Array (RFSIM)    : ${snr_array[@]}"
 echo "Atten Array (USRP)   : ${atten_array[@]}"
 echo "TX Gain (USRP)       : $tx_gain"
 echo "RX Gain (USRP)       : $rx_gain"
+echo "Use GNOME            : $use_gnome"
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""
 echo "Enabled Test Cases:"
