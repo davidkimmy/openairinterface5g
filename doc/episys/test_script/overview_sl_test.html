@@ -121,8 +121,7 @@ run_sl_test_config.sh     # Configuration
   latest -&gt; test_&lt;ts&gt;/    # Symlink
   test_&lt;timestamp&gt;/       # Results
     test_summary_*.csv
-    result_syncref.log
-    result_nearby.log
+    result_*_&lt;test&gt;_&lt;ts&gt;.log
     ping_result_*.txt</div>
       <div class="box" style="margin-top: 10px; font-size: 0.75em;">
         <strong>base_dir priority:</strong> <code>-d</code> flag &gt; <code>base_log_dir</code> in config &gt; script directory
@@ -153,7 +152,7 @@ run_sl_test_config.sh     # Configuration
     </div>
     <div>
       <h3>Host Assignment per Test Mode</h3>
-      <table style="font-size: 0.6em;">
+      <table style="font-size: 0.6em; margin: 0.5em 0;">
         <tr><th>SL Mode</th><th>Type</th><th style="text-align:center;">Hosts</th><th>gNB</th><th>SyncRef UE</th><th>Nearby UE</th></tr>
         <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">1</td><td>&mdash;</td><td><code>local</code></td><td><code>local</code></td></tr>
         <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
@@ -175,7 +174,7 @@ run_sl_test_config.sh     # Configuration
   <div class="two-col">
     <div>
       <h3>Test Profiles</h3>
-      <table>
+      <table style="margin: 0.5em 0;">
         <tr><th>Profile</th><th style="text-align:center;">Repeats</th><th style="text-align:center;">MCS</th><th style="text-align:center;">Duration</th><th style="text-align:center;">TX/RX Gain</th></tr>
         <tr><td><code>pilot</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td></tr>
         <tr><td><code>regress</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1, 9</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td></tr>
@@ -270,16 +269,12 @@ rfsim_slmode1_srap_ping_test_on_local_host     |    1 |     1 |   1 |    42s  | 
       <h3>Log Files (per test)</h3>
       <ul style="font-size: 0.75em;">
         <li><code>test_summary_*.csv</code> &mdash; summary table</li>
-        <li><code>result_syncref.log</code> &mdash; SyncRef UE (Mode 2)</li>
-        <li><code>result_nearby.log</code> &mdash; Nearby UE</li>
-        <li><code>result_nrUE_syncref.log</code> &mdash; Relay UE (Mode 1)</li>
-        <li><code>result_nrUE.log</code> &mdash; nrUE (Uu)</li>
-        <li><code>result_gNB.log</code> &mdash; gNB output</li>
+        <li><code>result_&lt;component&gt;_&lt;test_name&gt;_&lt;ts&gt;.log</code> &mdash; softmodem output (gNB, nrUE, syncref, nearby, nrUE_syncref)</li>
         <li><code>ping_result_*.txt</code> &mdash; ping output</li>
       </ul>
       <div class="box" style="margin-top: 8px; font-size: 0.7em;">
-        Remote logs captured locally via <code>tee</code> in <code>run_cmd</code>.<br>
-        Results in <code>&lt;base_dir&gt;/latest/</code>
+        Remote logs captured via <code>tee</code>, then moved to log folder.<br>
+        Log file list defined in <code>softmodem_log_files</code> in config.
       </div>
     </div>
   </div>

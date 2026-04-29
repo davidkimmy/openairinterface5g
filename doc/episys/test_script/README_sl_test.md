@@ -387,15 +387,13 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |  
 All logs saved to `<base_dir>/test_<timestamp>/`, where base_dir is determined by (highest priority first): `-d` flag > `base_log_dir` in config > script directory. A `latest` symlink points to the most recent test folder.
 - `test_summary_<timestamp>.csv` - Summary table
 - `commands.txt` - All executed commands (gNB, nrUE, syncref, nearby, ping) with host information
-- `result_syncref.log` - Syncref UE output (Mode 2)
-- `result_nearby.log` - Nearby UE output
-- `result_gNB.log` - gNB output (relay tests)
-- `result_nrUE_syncref.log` - Relay UE output (Mode 1 SRAP tests)
-- `result_nrUE.log` - nrUE output (Uu tests)
+- `result_<component>_<test_name>_<timestamp>.log` - Softmodem output per test, where component is one of: gNB, nrUE, syncref, nearby, nrUE_syncref (e.g., `result_gNB_rfsim_uu_ping_test_on_two_hosts_20260429_112101.log`)
 - `ping_result_<test_name>_<timestamp>.txt` - Ping output per test
 
+The list of softmodem log files is defined in `softmodem_log_files` in `run_sl_test_config.sh`.
+
 **Remote Log Capture:**
-For multi-host tests, remote UE output is captured locally via `tee` in `run_cmd`. No SCP is needed — logs are streamed through SSH and saved to the local `$HOME` directory.
+For multi-host tests, remote UE output is captured locally via `tee` in `run_cmd`. No SCP is needed — logs are streamed through SSH and saved to the local `$HOME` directory, then moved to the test log folder after each test completes.
 
 **Command Logging:**
 All softmodem and ping commands are logged to `commands.txt` with the host where they execute. This is useful for debugging and reproducing test scenarios manually.
@@ -593,7 +591,7 @@ ssh remote_ue "sudo ufw status"
 **PSSCH statistics show 0/0 or N/A:**
 - UEs not transmitting data → Check sidelink logs for resource allocation
 - Increase test duration to allow more data exchange
-- For two-host tests: Verify remote UE logs are being captured (check for `result_nearby.log` in `$HOME`)
+- For two-host tests: Verify remote UE logs are being captured (check for `result_*_<test_name>_*.log` in the test log folder)
 - Check SSH connectivity to remote hosts: `ssh remote_ue hostname`
 
 ### Multi-Host Issues

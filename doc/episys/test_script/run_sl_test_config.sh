@@ -113,6 +113,15 @@ else
     exit 1
 fi
 
+# Softmodem log file names (used for cleanup and saving to log folder)
+softmodem_log_files=(
+    result_gNB.log
+    result_nrUE.log
+    result_syncref.log
+    result_nearby.log
+    result_nrUE_syncref.log
+)
+
 #############################################################
 # Display loaded configuration
 #############################################################

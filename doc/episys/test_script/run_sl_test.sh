@@ -351,12 +351,21 @@ find_user_name() {
 }
 
 cleanup_old_logs() {
-    rm -f "$HOME"/result_syncref.log \
-          "$HOME"/result_nrUE_syncref.log \
-          "$HOME"/result_nearby.log \
-          "$HOME"/result_nrUE.log \
-          "$HOME"/result_gNB.log
+    for f in "${softmodem_log_files[@]}"; do
+        rm -f "$HOME/$f"
+    done
     GNOME_WIN_IDX=0
+}
+
+save_softmodem_logs() {
+    local test_name=$1
+    local ts=$(date +"%Y%m%d_%H%M%S")
+    for f in "${softmodem_log_files[@]}"; do
+        if [[ -f "$HOME/$f" ]]; then
+            local basename=$(basename "$f" .log)
+            mv "$HOME/$f" "$log_dir/${basename}_${test_name}_${ts}.log"
+        fi
+    done
 }
 
 GNOME_WIN_IDX=0
@@ -790,6 +799,7 @@ slmode1_srap_ping_test() {
     # Cleanup all processes (nearby_host_name was cleaned up in the evaluate_ping_test)
     kill_all $syncref_host_name nr-uesoftmodem
     kill_all $gnb_host_name nr-softmodem
+    save_softmodem_logs "${test_name}"
 
     local end_time=$(date +%s)
     local elapsed=$((end_time - start_time))
@@ -879,6 +889,7 @@ uu_ping_test() {
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $gnb_host_name nr-softmodem
+    save_softmodem_logs "${test_name}"
 
     local end_time=$(date +%s)
     local elapsed=$((end_time - start_time))
@@ -963,6 +974,7 @@ pc5_ping_test() {
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
+    save_softmodem_logs "${test_name}"
 
     local end_time=$(date +%s)
     local elapsed=$((end_time - start_time))
