@@ -353,7 +353,19 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
     uint16_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
     frameslot_t fs = {frameP, slotP};
     uint64_t tx_abs_slot = normalize(&fs, mu);
-    psfch_overhead_indicator = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+    // Get min_time_gap: index 0→2 slots, index 1→3 slots
+    const uint8_t psfch_time_gaps[] = {2, 3};
+    uint8_t min_time_gap = 3; // default sl3
+    if (sl_tx_rsrc_pool->respool && sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16 &&
+        sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup &&
+        sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16) {
+      long gap_index = *sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16;
+      min_time_gap = (gap_index < 2) ? psfch_time_gaps[gap_index] : 3;
+    }
+
+    // Calculate the slot where PSFCH would be transmitted
+    uint64_t psfch_abs_slot = tx_abs_slot + min_time_gap;
+    psfch_overhead_indicator = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, psfch_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
   }
   sci_pdu->psfch_overhead.val = ((psfch_period == 2 || psfch_period == 4) && psfch_overhead_indicator) ? 1 : 0;
 

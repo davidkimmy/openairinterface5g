@@ -3982,7 +3982,6 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
       }
 
       if (buflen_remain > 0) {
-        LOG_D(NR_MAC, "In %s filling remainder %d bytes to the UL PDU \n", __FUNCTION__, buflen_remain);
         ((NR_MAC_SUBHEADER_FIXED *) pdu)->R = 0;
         ((NR_MAC_SUBHEADER_FIXED *) pdu)->LCID = SL_SCH_LCID_SL_PADDING;
         pdu++;
@@ -4183,9 +4182,19 @@ sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
     if (psfch_period == 1) {
       num_psfch_symbols = 3;
     } else if (psfch_period == 2 || psfch_period == 4) {
-      // Check if PSFCH symbols are present in the TRANSMISSION slot
-      // Per 38.214 Section 8.4.1.2: symbol reservation is for the TX slot
-      sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+      // Period 2/4: Check if feedback slot has PSFCH
+      // Calculate min_time_gap to determine PSFCH feedback slot
+      uint8_t psfch_time_gaps[] = {2, 3};
+      uint8_t min_time_gap = 3; // default
+      if (sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16 &&
+          sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup &&
+          sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16) {
+        long gap_index = *sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16;
+        min_time_gap = (gap_index < 2) ? psfch_time_gaps[gap_index] : 3;
+      }
+      // Check if PSFCH exists in the FEEDBACK slot (tx_abs_slot + min_time_gap), not the transmission slot
+      uint64_t psfch_feedback_slot = tx_abs_slot + min_time_gap;
+      sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, psfch_feedback_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
       if (sl_has_psfch) {
         num_psfch_symbols = 3;
       }
@@ -4725,19 +4734,10 @@ bool slot_has_psfch(NR_UE_MAC_INST_t *mac, BIT_STRING_t *phy_sl_bitmap, uint64_t
   // Period 4: PSFCH in slot 9 (last UL slot only)
   int slot_in_period = fs0.slot % nr_slots_period;
   int first_ul_slot = tdd ? get_first_ul_slot(tdd->pattern1.nrofDownlinkSlots, tdd->pattern1.nrofDownlinkSymbols, tdd->pattern1.nrofUplinkSymbols) : 0;
-  int num_ul_slots = tdd ? tdd->pattern1.nrofUplinkSlots : nr_slots_period;
-
-  // Check if current slot matches any PSFCH slot position
-  bool has_psfch = false;
-  if (sl_slot && psfch_period > 0) {
-    for (int k = 1; k * psfch_period <= num_ul_slots; k++) {
-      int psfch_slot_offset = (first_ul_slot + k * psfch_period - 1) % nr_slots_period;
-      if (slot_in_period == psfch_slot_offset) {
-        has_psfch = true;
-        break;
-      }
-    }
-  }
+  int psfch_slot_offset = (first_ul_slot + psfch_period - 1) % nr_slots_period;
+  bool has_psfch = sl_slot && (slot_in_period == psfch_slot_offset);
+  LOG_D(NR_MAC, "slot %d (in_period %d) has_psfch %d, psfch_offset %d, first_ul %d, abs slot %ld\n",
+        fs0.slot, slot_in_period, has_psfch, psfch_slot_offset, first_ul_slot, abs_index_cur_slot);
   return has_psfch;
 }
 

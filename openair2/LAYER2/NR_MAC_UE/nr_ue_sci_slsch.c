@@ -276,7 +276,7 @@ void fill_pssch_pscch_pdu(sl_nr_ue_mac_params_t *sl_mac_params,
     }
   }
   // Always calculate dynamically based on current psfch_overhead bit to handle retransmissions on different slots
-  nr_sl_pssch_pscch_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
+  nr_sl_pssch_pscch_pdu->pssch_numsym = resource ? resource->sl_pssch_sym_len : 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
   nr_sl_pssch_pscch_pdu->pssch_startsym = resource ? resource->sl_pssch_sym_start : *sl_bwp_generic->sl_StartSymbol_r16;
 
   nr_sl_pssch_pscch_pdu->sci2_beta_offset = *sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16->list.array[sci_pdu->beta_offset_indicator];
@@ -523,8 +523,17 @@ void config_pscch_pdu_rx(sl_nr_rx_config_pscch_pdu_t *nr_sl_pscch_pdu,
   //number of symbols for Sidelink transmission on PSSCH/PSCCH
   //(Total Sidelink symbols available - number of psfch symbols configured - 2)
   int num_psfch_symbols = 0;
-  if (sl_has_psfch) {
-    num_psfch_symbols = 3;
+  long psfch_period = 0;
+  if (sl_has_psfch && sl_res_pool->sl_PSFCH_Config_r16 && sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
+    // Convert index to actual period value
+    const uint8_t psfch_periods[] = {0,1,2,4};
+    uint8_t period_index = *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+    psfch_period = (period_index < 4) ? psfch_periods[period_index] : 0;
+    // Per 38.214 8.1.3.2: Only period 1 always reserves PSFCH symbols
+    // For periods 2/4, psfch_overhead bit in SCI determines reservation dynamically
+    if (psfch_period == 1 || psfch_period == 2 || psfch_period == 4) {
+      num_psfch_symbols = 3;
+    }
   }
 
   nr_sl_pscch_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
