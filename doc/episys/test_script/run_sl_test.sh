@@ -101,8 +101,8 @@ check_process() {
 kill_process() {
     printf "Removing %s\n" "$*"
     for process_name in "$@"; do
-        sudo killall -KILL "$process_name" 2>/dev/null
-        sleep 1
+        sudo killall -INT "$process_name" 2>/dev/null
+        sleep 2
         pids=$(pgrep "$process_name")
         if [ -n "$pids" ]; then
             for pid in $pids; do
@@ -1129,7 +1129,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
     [[ $# -ge 3 ]] && duration=$3
     [[ $# -ge 4 ]] && mcs=$4
-    [[ $# -ge 4 ]] && iteration=$4
+    [[ $# -ge 5 ]] && iteration=$5
     local test_type="rfsim"
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
@@ -1145,7 +1145,7 @@ usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
     [[ $# -ge 3 ]] && duration=$3
     [[ $# -ge 4 ]] && mcs=$4
-    [[ $# -ge 4 ]] && iteration=$4
+    [[ $# -ge 5 ]] && iteration=$5
     local test_type="usrp"
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
@@ -1161,7 +1161,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
     [[ $# -ge 3 ]] && duration=$3
     [[ $# -ge 4 ]] && mcs=$4
-    [[ $# -ge 4 ]] && iteration=$4
+    [[ $# -ge 5 ]] && iteration=$5
     local test_type="rfsim"
     local syncref_host_name="local"
     local nearby_host_name="local"
