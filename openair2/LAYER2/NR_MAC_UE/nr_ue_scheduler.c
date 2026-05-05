@@ -3569,8 +3569,18 @@ static bool get_control_info(NR_UE_MAC_INST_t *mac,
   bool csi_acq = !mac->SL_MAC_PARAMS->sl_CSI_Acquisition;
   bool is_harq_feedback = configured_PSFCH ? is_fdbk_scheduled : false;
   NR_TDD_UL_DL_Pattern_t *tdd = &sl_mac->sl_TDD_config->pattern1;
+
+  // Get PSFCH period for CSI-RS scheduling
+  uint8_t psfch_period = 0;
+  const uint8_t psfch_periods[] = {0,1,2,4};
+  if (mac->sl_tx_res_pool && mac->sl_tx_res_pool->sl_PSFCH_Config_r16 &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
+    psfch_period = psfch_periods[*mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16];
+  }
+
   // Determine current slot is csi report schedule slot
-  SL_CSI_Report_t *sl_csi_report = set_nr_ue_sl_csi_meas_periodicity(tdd, sched_ctrl, mac, dest_id, false);
+  SL_CSI_Report_t *sl_csi_report = set_nr_ue_sl_csi_meas_periodicity(tdd, sched_ctrl, mac, dest_id, false, psfch_period);
   nr_ue_sl_csi_period_offset(sl_csi_report,
                               &period,
                               &offset);
@@ -3948,7 +3958,7 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
         }
       }
       uint8_t sizeof_csi_report = (sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t));
-      LOG_D(NR_MAC, "%4d.%2d buflen_remain %d ative %d, report slots: %4d.%2d size %d\n",
+      LOG_D(NR_MAC, "%4d.%2d Building PDU: buflen_remain=%d, CSI_Report: active=%d, sched_for=%4d.%2d, size=%d\n",
             frame,
             slot,
             buflen_remain,
@@ -3969,16 +3979,37 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
           ((nr_sl_csi_report_t *) pdu)->RI = sched_ctrl->sched_csi_report.ri;
           ((nr_sl_csi_report_t *) pdu)->CQI = sched_ctrl->sched_csi_report.cqi;
           ((nr_sl_csi_report_t *) pdu)->R = 0;
-          if (!get_nrUE_params()->sync_ref)
-            LOG_D(NR_MAC, "%4d.%2d Sending sl_csi_report with CQI %i, RI %i\n",
-                 frame,
-                 slot,
-                 ((nr_sl_csi_report_t *) pdu)->CQI,
-                 ((nr_sl_csi_report_t *) pdu)->RI);
+          LOG_D(NR_MAC, "Tx CSI Report %4d.%2d: CQI=%i, RI=%i\n",
+                frame,
+                slot,
+                ((nr_sl_csi_report_t *) pdu)->CQI,
+                ((nr_sl_csi_report_t *) pdu)->RI);
           pdu++;
           buflen_remain -= sizeof(nr_sl_csi_report_t);
         }
         sched_ctrl->sched_csi_report.active = false;
+      } else if (sched_ctrl->sched_csi_report.active) {
+        // Check if scheduled slot has passed
+        bool slot_passed = false;
+        if (sched_ctrl->sched_csi_report.frame < frame) {
+          slot_passed = true;
+        } else if (sched_ctrl->sched_csi_report.frame == frame &&
+                   sched_ctrl->sched_csi_report.slot < slot) {
+          slot_passed = true;
+        }
+
+        if (slot_passed) {
+          LOG_W(NR_MAC, "%4d.%2d CSI Report EXPIRED: was scheduled for %4d.%2d - clearing active flag\n",
+                frame, slot, sched_ctrl->sched_csi_report.frame, sched_ctrl->sched_csi_report.slot);
+          sched_ctrl->sched_csi_report.active = false;
+        } else {
+          LOG_D(NR_MAC, "%4d.%2d CSI Report SKIPPED: scheduled_for=%4d.%2d (frame_match=%d, slot_match=%d)\n",
+                frame, slot,
+                sched_ctrl->sched_csi_report.frame,
+                sched_ctrl->sched_csi_report.slot,
+                (sched_ctrl->sched_csi_report.frame == frame),
+                (sched_ctrl->sched_csi_report.slot == slot));
+        }
       }
 
       if (buflen_remain > 0) {

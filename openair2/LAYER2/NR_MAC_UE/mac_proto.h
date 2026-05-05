@@ -561,7 +561,8 @@ SL_CSI_Report_t* set_nr_ue_sl_csi_meas_periodicity(const NR_TDD_UL_DL_Pattern_t 
                                                    NR_SL_UE_sched_ctrl_t *sched_ctrl,
                                                    NR_UE_MAC_INST_t *mac,
                                                    int uid,
-                                                   bool is_rsrp);
+                                                   bool is_rsrp,
+                                                   uint8_t psfch_period);
 
 void nr_ue_sl_csi_period_offset(SL_CSI_Report_t *sl_csi_report,
                                 int *period,

@@ -261,7 +261,7 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   NR_TDD_UL_DL_Pattern_t *tdd = &sl_mac->sl_TDD_config->pattern1;
   int period = 0, offset = 0;
   bool csi_acq = !mac->SL_MAC_PARAMS->sl_CSI_Acquisition;
-  SL_CSI_Report_t *sl_csi_report = set_nr_ue_sl_csi_meas_periodicity(tdd, sched_ctrl, mac, dest_id, false);
+  SL_CSI_Report_t *sl_csi_report = set_nr_ue_sl_csi_meas_periodicity(tdd, sched_ctrl, mac, dest_id, false, psfch_period);
   nr_ue_sl_csi_period_offset(sl_csi_report,
                              &period,
                              &offset);
@@ -406,18 +406,48 @@ SL_CSI_Report_t* set_nr_ue_sl_csi_meas_periodicity(const NR_TDD_UL_DL_Pattern_t 
                                                    NR_SL_UE_sched_ctrl_t *sched_ctrl,
                                                    NR_UE_MAC_INST_t *mac,
                                                    int uid,
-                                                   bool is_rsrp) {
+                                                   bool is_rsrp,
+                                                   uint8_t psfch_period) {
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
   sl_nr_phy_config_request_t *sl_cfg = &sl_mac->sl_phy_config.sl_config_req;
   uint8_t mu = sl_cfg->sl_bwp_config.sl_scs;
   uint8_t n_slots_frame = nr_slots_per_frame[mu];
+
   const int n_ul_slots_period = tdd ? tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0) : n_slots_frame;
   const int nr_slots_period = tdd ? n_slots_frame / get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity) : n_slots_frame;
-  const int ideal_period = (CUR_SL_UE_CONNECTIONS * nr_slots_period) / n_ul_slots_period;
+
+  // UL slots repeat every nr_slots_period (10 slots in this case)
+  // We want CSI-RS to occur within the UL slot range, so use n_ul_slots_period as base
+  const int ideal_period = n_ul_slots_period;  // Match UL slot availability
+
   const int first_ul_slot_period = tdd ? get_first_ul_slot(tdd->nrofDownlinkSlots, tdd->nrofDownlinkSymbols, tdd->nrofUplinkSymbols) : 0;
-  const int idx = (uid << 1) + is_rsrp;
+
   SL_CSI_Report_t *csi_report = &sched_ctrl->sched_csi_report;
-  const int offset = first_ul_slot_period + idx % n_ul_slots_period + (idx / n_ul_slots_period) * nr_slots_period;
+
+  // In Mode 2, each UE is assigned to a specific TDD period for transmission
+  // Use uid (destination UE ID) to determine which period to use (inverted assignment observed in logs)
+  // uid=0 → period 1 (slot 16), uid=1 → period 0 (slot 6)
+  const int nb_periods_per_frame = get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity);
+  const int period_index = (nb_periods_per_frame - 1 - (uid % nb_periods_per_frame));
+  int offset = first_ul_slot_period + (period_index * nr_slots_period);
+
+  // Verify CSI-RS offset doesn't conflict with PSFCH slots (period 2 or 4)
+  // PSFCH slots are at: (first_ul_slot + k*psfch_period - 1) for k=1,2,3...
+  // By using first UL slot of each period, we automatically avoid PSFCH slots
+  // For period 2: PSFCH at slots 7,9 (not 6), 17,19 (not 16)
+  // For period 4: PSFCH at slot 9 (not 6), 19 (not 16)
+  if (psfch_period == 2 || psfch_period == 4) {
+    int slot_in_period = offset % nr_slots_period;
+    for (int k = 1; k * psfch_period <= n_ul_slots_period; k++) {
+      int psfch_slot_offset = (first_ul_slot_period + k * psfch_period - 1) % nr_slots_period;
+      if (slot_in_period == psfch_slot_offset) {
+        LOG_E(NR_MAC, "ERROR: CSI-RS offset=%d conflicts with PSFCH slot (psfch_period=%d)! This should not happen.\n",
+              offset, psfch_period);
+        break;
+      }
+    }
+  }
+
   AssertFatal(offset < 320, "Not enough UL slots to accomodate all possible UEs. Need to rework the implementation\n");
   csi_report->slot_offset = offset;
   if (ideal_period < 5) {
