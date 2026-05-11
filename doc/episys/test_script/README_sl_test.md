@@ -151,9 +151,9 @@ Edit `run_sl_test_config.sh`:
 # Select test profile
 test_profile='pilot'    # Quick validation (1 repeat, MCS=1, 30s)
 
-# List tests to run (in order)
-# You can mix group names, group subsets, and individual test cases
-enabled_tests=(
+# Each profile has its own test list (pilot_tests, regress_tests, stress_tests).
+# The active profile's list is assigned to enabled_tests automatically.
+pilot_tests=(
     slmode2_basic_tests[0]
     rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host:0:1
 )
@@ -184,7 +184,7 @@ RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
 
 ### Test Profiles
 
-Three built-in profiles in `run_sl_test_config.sh`:
+Three built-in profiles in `run_sl_test_config.sh`. Each profile has its own test list (`pilot_tests`, `regress_tests`, `stress_tests`) that is automatically assigned to `enabled_tests`:
 
 | Profile   | Repeats | MCS Values | Duration | SNR/Atten   | TX/RX Gain | Max LDPC Iter | Use Case |
 |-----------|---------|------------|----------|-------------|------------|---------------|----------|
@@ -194,7 +194,7 @@ Three built-in profiles in `run_sl_test_config.sh`:
 
 ### Test Selection Syntax
 
-The `enabled_tests` array supports three types of entries: **group names**, **group subsets**, and **individual test cases**. These can be freely mixed in any order. Group names are resolved recursively, so a group can contain other group names.
+Each per-profile test array (`pilot_tests`, `regress_tests`, `stress_tests`) supports three types of entries: **group names**, **group subsets**, and **individual test cases**. These can be freely mixed in any order. Group names are resolved recursively, so a group can contain other group names.
 
 #### Predefined Test Groups
 
@@ -231,7 +231,7 @@ regress_tests=(
 #### Selection Examples
 
 ```bash
-enabled_tests=(
+pilot_tests=(
     # Entire group — runs all 4 tests in the group
     slmode2_basic_tests
 
@@ -690,18 +690,24 @@ usrp_B210_my_custom_test_on_local_host
 AVAILABLE_TESTS
 ```
 
-**4. Enable in `enabled_tests` array:**
+**4. Enable in a profile's test array:**
 ```bash
-enabled_tests=(
+pilot_tests=(
     rfsim_my_custom_test_on_local_host
 )
 ```
 
 ### Modifying Test Profiles
 
-Edit `run_sl_test_config.sh` to add custom profiles:
+Edit `run_sl_test_config.sh` to add custom profiles. Define a test array and assign it to `enabled_tests` in the profile block:
 ```bash
+custom_tests=(
+    slmode2_basic_tests
+    slmode2_csi_psfch_tests
+)
+
 elif [[ $test_profile == "custom" ]]; then
+    enabled_tests=("${custom_tests[@]}")
     num_repeat=2
     mcs_array=(1 5 9)
     duration=60

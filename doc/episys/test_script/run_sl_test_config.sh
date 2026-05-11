@@ -18,8 +18,10 @@
 #   rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts:1:    (runs csi=1 for all psfch: 0,1,2,3)
 #   rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts::2    (runs psfch=2 for all csi: 0,1)
 #
+# Each profile has its own test list: pilot_tests, regress_tests, stress_tests.
+# The active profile's list is assigned to enabled_tests automatically.
 # You can optionally specify test cases or test range as following example:
-# enabled_tests=(
+# pilot_tests=(
 #     slmode2_basic_tests            # entire group
 #     slmode2_basic_tests[0:2]       # range: indices 0,1,2 (inclusive)
 #     slmode2_basic_tests[0,2]       # pick: indices 0 and 2
@@ -53,31 +55,32 @@ slmode1_basic_tests=(
     rfsim_slmode1_srap_ping_test_on_three_hosts
     usrp_B210_slmode1_srap_ping_test_on_three_hosts
 )
-enabled_tests=(
-    # uu_basic_tests[0]
-    slmode2_basic_tests[1:2]
-    # slmode2_csi_psfch_tests[1]
-    # slmode1_basic_tests[k]
-    # rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host:0:0
-    # usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts:0:0
-    ######   Enable the following lines for the regression test. ######
-    # uu_basic_tests
-    # slmode1_basic_tests
-    # slmode2_csi_psfch_tests
+regress_tests=(
+    uu_basic_tests
+    slmode1_basic_tests[0]
+    slmode2_basic_tests
+    slmode2_csi_psfch_tests
 )
-
+stress_tests=(
+    slmode2_basic_tests[1:2]
+)
+pilot_tests=(
+    slmode2_basic_tests[1:2]
+)
 # Base directory for logs. The default will be this script folder.
 base_log_dir="~/openairinterface5g"
 use_gnome=0
+use_sa=1
 # Select active test profile among: pilot, regress, stress
 test_profile='pilot'
 #############################################################
 # Test Profile Configuration
 #############################################################
 if [[ $test_profile == "pilot" ]]; then
+    enabled_tests=("${pilot_tests[@]}")
     num_repeat=1
-    mcs_array=(14)
-    duration=15
+    mcs_array=(13)
+    duration=20
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     snr_array=($(seq 0 1 0))  # [start, step, end]
@@ -87,8 +90,9 @@ if [[ $test_profile == "pilot" ]]; then
     tx_gain=20
     rx_gain=110
 elif [[ $test_profile == "regress" ]]; then
+    enabled_tests=("${regress_tests[@]}")
     num_repeat=1
-    mcs_array=(1 9)
+    mcs_array=(9 13)
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
@@ -99,8 +103,9 @@ elif [[ $test_profile == "regress" ]]; then
     tx_gain=20
     rx_gain=110
 elif [[ $test_profile == "stress" ]]; then
+    enabled_tests=("${stress_tests[@]}")
     num_repeat=3
-    mcs_array=(9 16 28)
+    mcs_array=(9 13)
     duration=300
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
@@ -139,6 +144,7 @@ echo "Atten Array (USRP)   : ${atten_array[@]}"
 echo "TX Gain (USRP)       : $tx_gain"
 echo "RX Gain (USRP)       : $rx_gain"
 echo "Max LDPC Iterations  : $max_ldpc_iterations"
+echo "Use --sa flag        : $use_sa"
 echo "Use GNOME            : $use_gnome"
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""

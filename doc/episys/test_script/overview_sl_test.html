@@ -180,7 +180,8 @@ run_sl_test_config.sh     # Configuration
         <tr><td><code>regress</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1, 9</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
         <tr><td><code>stress</code></td><td style="text-align:center;">3</td><td style="text-align:center;">9, 16, 28</td><td style="text-align:center;">300s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
       </table>
-      <h3 style="margin-top: 15px;">Selection Syntax</h3>
+      <h3 style="margin-top: 15px;">Per-Profile Test Lists</h3>
+      <p style="font-size: 0.7em;">Each profile has its own test array (<code>pilot_tests</code>, <code>regress_tests</code>, <code>stress_tests</code>) assigned to <code>enabled_tests</code> automatically.</p>
       <ul style="font-size: 0.75em;">
         <li><code>slmode2_basic_tests</code> &mdash; entire group</li>
         <li><code>slmode2_basic_tests[0:2]</code> &mdash; range</li>

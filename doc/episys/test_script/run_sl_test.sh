@@ -11,11 +11,13 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 # Defaults
 base_dir="$SCRIPT_DIR"
 USE_GNOME=0
+sa_flag=""
 
 # Override from config file
 source "$SCRIPT_DIR/run_sl_test_config.sh" 2>/dev/null
 [[ -n "$base_log_dir" ]] && base_dir="${base_log_dir/#\~/$HOME}"
 [[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
+[[ "$use_sa" == "1" ]] && sa_flag="--sa"
 
 # Override from command line (highest priority)
 while getopts "d:g:" opt; do
@@ -572,17 +574,17 @@ run_gNB_cmd() {
         if [[ $host_name == 'local' ]]; then
             gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
                     -O $HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa --log_config.global_log_level info $sl_relay_tag"
+                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim $sa_flag --log_config.global_log_level info $sl_relay_tag"
         else
             gNB_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-softmodem \
                     -O /home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa --log_config.global_log_level info $sl_relay_tag"
+                    --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim $sa_flag --log_config.global_log_level info $sl_relay_tag"
         fi
     elif [[ $test_type == "usrp" ]]; then
         gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
                 -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                -E --sa --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
+                -E $sa_flag --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
     fi
     log_file="$HOME/result_gNB.log"
     echo $gNB_cmd; echo
@@ -610,20 +612,20 @@ run_nrUE_cmd() {
             nrUE_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                     ./nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                    --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 --rfsim --sa \
+                    --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         else
             nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                    --rfsimulator.serveraddr $LOCAL_HOST_IP --rfsimulator.serverport 4048 --rfsim --sa \
+                    --rfsimulator.serveraddr $LOCAL_HOST_IP --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         fi
     elif [[ $test_type == "usrp" ]]; then
         nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                    -E --sa --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
+                    -E $sa_flag --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
                     --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
     fi
     log_file="$HOME/result_nrUE.log"
@@ -652,7 +654,7 @@ run_syncref_cmd() {
                 syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
                             -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            --rfsim --sa --sync-ref --sl-mode 1 \
+                            --rfsim $sa_flag --sync-ref --sl-mode 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs"
@@ -661,7 +663,7 @@ run_syncref_cmd() {
                             sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                             -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            --rfsim --sa  --sync-ref --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
+                            --rfsim $sa_flag --sync-ref --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info $mcs"
@@ -670,7 +672,7 @@ run_syncref_cmd() {
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                        -E --sa --sl-mode 1 --sync-ref --node-number 2 --ip-demo 1 --relay-type 1 --is-relay-ue 1 \
+                        -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --ip-demo 1 --relay-type 1 --is-relay-ue 1 \
                         --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
         fi
@@ -679,12 +681,12 @@ run_syncref_cmd() {
         if [[ $test_type == "rfsim" ]]; then
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                          $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf --sync-ref --sl-mode 2 --rfsim --sa \
+                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf --sync-ref --sl-mode 2 --rfsim $sa_flag \
                         --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 --log_config.global_log_level info  $mcs"
         elif [[ $test_type == "usrp" ]]; then
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                         $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf -E --sa --sl-mode 2 --sync-ref \
+                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf -E $sa_flag --sl-mode 2 --sync-ref \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
         log_file="$HOME/result_syncref.log"
@@ -713,38 +715,38 @@ run_nearby_cmd() {
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                            -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
+                            -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info --relay-type 1"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                            -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
+                            -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info --relay-type 1"
             fi
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E --sa --sl-mode 2 --relay-type 1 \
+                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E $sa_flag --sl-mode 2 --relay-type 1 \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
+                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
                         --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim --sa --sl-mode 2 $mcs \
+                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
                         --rfsimulator.serveraddrsl $LOCAL_HOST_IP --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E --sa --sl-mode 2 \
+                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E $sa_flag --sl-mode 2 \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     fi
