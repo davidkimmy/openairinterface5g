@@ -186,11 +186,11 @@ RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
 
 Three built-in profiles in `run_sl_test_config.sh`:
 
-| Profile   | Repeats | MCS Values | Duration | SNR/Atten   | TX/RX Gain | Use Case |
-|-----------|---------|------------|----------|-------------|------------|----------|
-| `pilot`   | 1       | 1          | 30s      | 0 / 20dB    | 20 / 110   | Quick smoke test |
-| `regress` | 1       | 1, 9       | 30s      | 0 / 20dB    | 20 / 110   | Regression validation |
-| `stress`  | 3       | 9, 16, 28  | 300s     | 0 / 20-60dB | 20 / 110   | Long-term stability |
+| Profile   | Repeats | MCS Values | Duration | SNR/Atten   | TX/RX Gain | Max LDPC Iter | Use Case |
+|-----------|---------|------------|----------|-------------|------------|---------------|----------|
+| `pilot`   | 1       | 1          | 30s      | 0 / 20dB    | 20 / 110   | 30            | Quick smoke test |
+| `regress` | 1       | 1, 9       | 30s      | 0 / 20dB    | 20 / 110   | 30            | Regression validation |
+| `stress`  | 3       | 9, 16, 28  | 300s     | 0 / 20-60dB | 20 / 110   | 30            | Long-term stability |
 
 ### Test Selection Syntax
 
@@ -705,6 +705,7 @@ elif [[ $test_profile == "custom" ]]; then
     num_repeat=2
     mcs_array=(1 5 9)
     duration=60
+    max_ldpc_iterations=30
     snr_array=($(seq 0 2 10))  # 0, 2, 4, 6, 8, 10
     atten_array=(20 30 40)
 ```

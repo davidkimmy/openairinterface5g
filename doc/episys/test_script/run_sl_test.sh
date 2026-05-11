@@ -582,7 +582,7 @@ run_gNB_cmd() {
     elif [[ $test_type == "usrp" ]]; then
         gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
                 -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
-                -E --sa  --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN}  --device.name oai_usrpdevif $sl_relay_tag"
+                -E --sa --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
     fi
     log_file="$HOME/result_gNB.log"
     echo $gNB_cmd; echo
@@ -624,7 +624,7 @@ run_nrUE_cmd() {
                     sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     -E --sa --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
-                    --log_config.global_log_level info"
+                    --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
     fi
     log_file="$HOME/result_nrUE.log"
     echo $nrUE_cmd; echo
@@ -672,7 +672,7 @@ run_syncref_cmd() {
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                         -E --sa --sl-mode 1 --sync-ref --node-number 2 --ip-demo 1 --relay-type 1 --is-relay-ue 1 \
                         --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
+                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
         fi
         log_file="$HOME/result_nrUE_syncref.log"
     elif [[ $sl_mode -eq 2 ]]; then
@@ -685,7 +685,7 @@ run_syncref_cmd() {
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                         $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf -E --sa --sl-mode 2 --sync-ref \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
         log_file="$HOME/result_syncref.log"
     fi
@@ -727,7 +727,7 @@ run_nearby_cmd() {
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E --sa --sl-mode 2 --relay-type 1 \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
@@ -745,7 +745,7 @@ run_nearby_cmd() {
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E --sa --sl-mode 2 \
-                        --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     fi
     log_file="$HOME/result_nearby.log"

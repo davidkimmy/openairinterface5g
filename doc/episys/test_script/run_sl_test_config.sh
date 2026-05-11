@@ -55,7 +55,7 @@ slmode1_basic_tests=(
 )
 enabled_tests=(
     # uu_basic_tests[0]
-    slmode2_basic_tests[1]
+    slmode2_basic_tests[1:2]
     # slmode2_csi_psfch_tests[1]
     # slmode1_basic_tests[k]
     # rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host:0:0
@@ -76,8 +76,9 @@ test_profile='pilot'
 #############################################################
 if [[ $test_profile == "pilot" ]]; then
     num_repeat=1
-    mcs_array=(1)
-    duration=40
+    mcs_array=(14)
+    duration=15
+    max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
@@ -89,6 +90,7 @@ elif [[ $test_profile == "regress" ]]; then
     num_repeat=1
     mcs_array=(1 9)
     duration=30
+    max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
@@ -100,6 +102,7 @@ elif [[ $test_profile == "stress" ]]; then
     num_repeat=3
     mcs_array=(9 16 28)
     duration=300
+    max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
@@ -135,6 +138,7 @@ echo "SNR Array (RFSIM)    : ${snr_array[@]}"
 echo "Atten Array (USRP)   : ${atten_array[@]}"
 echo "TX Gain (USRP)       : $tx_gain"
 echo "RX Gain (USRP)       : $rx_gain"
+echo "Max LDPC Iterations  : $max_ldpc_iterations"
 echo "Use GNOME            : $use_gnome"
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""
