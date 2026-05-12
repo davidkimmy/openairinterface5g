@@ -3999,7 +3999,7 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
         }
 
         if (slot_passed) {
-          LOG_W(NR_MAC, "%4d.%2d CSI Report EXPIRED: was scheduled for %4d.%2d - clearing active flag\n",
+          LOG_D(NR_MAC, "%4d.%2d CSI Report EXPIRED: was scheduled for %4d.%2d - clearing active flag\n",
                 frame, slot, sched_ctrl->sched_csi_report.frame, sched_ctrl->sched_csi_report.slot);
           sched_ctrl->sched_csi_report.active = false;
         } else {
@@ -4214,18 +4214,8 @@ sl_resource_info_t* get_resource_config_grant_type1(NR_UE_MAC_INST_t *mac,
       num_psfch_symbols = 3;
     } else if (psfch_period == 2 || psfch_period == 4) {
       // Period 2/4: Check if feedback slot has PSFCH
-      // Calculate min_time_gap to determine PSFCH feedback slot
-      uint8_t psfch_time_gaps[] = {2, 3};
-      uint8_t min_time_gap = 3; // default
-      if (sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16 &&
-          sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup &&
-          sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16) {
-        long gap_index = *sl_tx_rsrc_pool->respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16;
-        min_time_gap = (gap_index < 2) ? psfch_time_gaps[gap_index] : 3;
-      }
-      // Check if PSFCH exists in the FEEDBACK slot (tx_abs_slot + min_time_gap), not the transmission slot
-      uint64_t psfch_feedback_slot = tx_abs_slot + min_time_gap;
-      sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, psfch_feedback_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+      // Check if THIS transmission slot has PSFCH symbols (which reduce PSSCH symbols)
+      sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
       if (sl_has_psfch) {
         num_psfch_symbols = 3;
       }
@@ -4904,16 +4894,8 @@ List_t get_nr_sl_comm_opportunities(NR_UE_MAC_INST_t *mac,
       if (psfch_period == 1) {
         num_psfch_symbols = 3;
       } else if (psfch_period == 2 || psfch_period == 4) {
-        uint8_t psfch_time_gaps[] = {2, 3};
-        uint8_t min_time_gap = 3;
-        if (resource_pool->sl_PSFCH_Config_r16 &&
-            resource_pool->sl_PSFCH_Config_r16->choice.setup &&
-            resource_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16) {
-          long gap_index = *resource_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16;
-          min_time_gap = (gap_index < 2) ? psfch_time_gaps[gap_index] : 3;
-        }
-        uint64_t psfch_feedback_slot = i + min_time_gap;
-        sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, psfch_feedback_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+        // Check if THIS slot (i) has PSFCH symbols
+        sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, i, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
         if (sl_has_psfch) {
           num_psfch_symbols = 3;
         }

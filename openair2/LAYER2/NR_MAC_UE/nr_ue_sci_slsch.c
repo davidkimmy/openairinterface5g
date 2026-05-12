@@ -276,7 +276,9 @@ void fill_pssch_pscch_pdu(sl_nr_ue_mac_params_t *sl_mac_params,
     }
   }
   // Always calculate dynamically based on current psfch_overhead bit to handle retransmissions on different slots
-  nr_sl_pssch_pscch_pdu->pssch_numsym = resource ? resource->sl_pssch_sym_len : 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
+  // Do NOT use resource->sl_pssch_sym_len directly as it was calculated at allocation time and doesn't account for dynamic HARQ feedback
+  int base_pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - 2;  // Total symbols minus PSCCH
+  nr_sl_pssch_pscch_pdu->pssch_numsym = base_pssch_numsym - num_psfch_symbols;
   nr_sl_pssch_pscch_pdu->pssch_startsym = resource ? resource->sl_pssch_sym_start : *sl_bwp_generic->sl_StartSymbol_r16;
 
   nr_sl_pssch_pscch_pdu->sci2_beta_offset = *sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16->list.array[sci_pdu->beta_offset_indicator];
