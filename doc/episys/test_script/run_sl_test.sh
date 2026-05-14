@@ -12,10 +12,12 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 base_dir="$SCRIPT_DIR"
 USE_GNOME=0
 sa_flag=""
+ext_clock_flag=""
 
 # Override from config file
 source "$SCRIPT_DIR/run_sl_test_config.sh" 2>/dev/null
 [[ -n "$base_log_dir" ]] && base_dir="${base_log_dir/#\~/$HOME}"
+[[ "$use_external_clock" == "1" ]] && ext_clock_flag=" --clock-source 1 --time-source 1"
 [[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
 [[ "$use_sa" == "1" ]] && sa_flag="--sa"
 
@@ -674,6 +676,7 @@ run_syncref_cmd() {
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                         -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --ip-demo 1 --relay-type 1 --is-relay-ue 1 \
                         --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
+                        $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
         fi
         log_file="$HOME/result_nrUE_syncref.log"
@@ -687,6 +690,7 @@ run_syncref_cmd() {
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
                         $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf -E $sa_flag --sl-mode 2 --sync-ref \
+                        $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
         log_file="$HOME/result_syncref.log"
@@ -729,6 +733,7 @@ run_nearby_cmd() {
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E $sa_flag --sl-mode 2 --relay-type 1 \
+                        $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
@@ -747,6 +752,7 @@ run_nearby_cmd() {
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                         -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E $sa_flag --sl-mode 2 \
+                        $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     fi

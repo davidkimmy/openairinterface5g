@@ -165,6 +165,12 @@ Additional settings in `run_sl_test_config.sh`:
 # Base directory for log output (default: script directory)
 base_log_dir="~/openairinterface5g"
 
+# Use external clock source for USRP (0=internal, 1=external)
+use_external_clock=1
+
+# Use standalone mode (0=disabled, 1=enabled)
+use_sa=1
+
 # USRP serial numbers (required for SL Mode 1 relay tests only)
 RELAY_UE_USRP_SN_FOR_UU=340EA03    # USRP for Uu interface
 RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface

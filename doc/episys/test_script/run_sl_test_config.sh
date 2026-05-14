@@ -69,6 +69,7 @@ pilot_tests=(
 )
 # Base directory for logs. The default will be this script folder.
 base_log_dir="~/openairinterface5g"
+use_external_clock=0
 use_gnome=0
 use_sa=1
 # Select active test profile among: pilot, regress, stress
@@ -92,7 +93,7 @@ if [[ $test_profile == "pilot" ]]; then
 elif [[ $test_profile == "regress" ]]; then
     enabled_tests=("${regress_tests[@]}")
     num_repeat=1
-    mcs_array=(9 13)
+    mcs_array=(9 10 11 12 13)
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
@@ -145,6 +146,7 @@ echo "TX Gain (USRP)       : $tx_gain"
 echo "RX Gain (USRP)       : $rx_gain"
 echo "Max LDPC Iterations  : $max_ldpc_iterations"
 echo "Use --sa flag        : $use_sa"
+echo "Use External Clock   : $use_external_clock"
 echo "Use GNOME            : $use_gnome"
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""
