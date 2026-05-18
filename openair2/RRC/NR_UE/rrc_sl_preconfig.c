@@ -190,7 +190,7 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
 
 
   // 64QAM table is default. in case other MCS tables needs tobe used.
-  sl_res_pool->sl_Additional_MCS_Table_r16 = NULL;
+  sl_res_pool->sl_Additional_MCS_Table_r16 = calloc(1, sizeof(long));
 
   sl_res_pool->sl_ThreshS_RSSI_CBR_r16 = NULL;
   sl_res_pool->sl_TimeWindowSizeCBR_r16 = NULL;

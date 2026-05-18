@@ -162,6 +162,7 @@ typedef struct sl_nr_rx_config_pssch_sci_pdu {
   uint16_t targetCodeRate;
   uint8_t mod_order;
   uint8_t num_layers;
+  uint8_t mcs_table;
 
   //DMRS SYMBOL MASK. If bit set to 1 indicates it is a DMRS symbol. LSB is symbol 0
   // Table from SPEC 38.211, Table 8.4.1.1.2-1

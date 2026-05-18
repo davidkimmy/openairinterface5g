@@ -73,6 +73,7 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, int frame_rx, int slot_rx, int SLSCH
 
   uint32_t rb_size                   = pssch_pdu->num_subch*pssch_pdu->subchannel_size;
   int sci1_dmrs_overlap = pssch_pdu->dmrs_symbol_position & dmrs_pscch_mask[pssch_pdu->pscch_numsym-2];
+  const int mcs_table_index = slsch_pdu->mcs_table;
   int sci2_re = get_NREsci2_2(pssch_pdu->sci2_alpha_times_100,
                               pssch_pdu->sci2_len,
                               pssch_pdu->sci2_beta_offset,
@@ -82,7 +83,7 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, int frame_rx, int slot_rx, int SLSCH
                               pssch_pdu->l_subch,
                               pssch_pdu->subchannel_size,
                               pssch_pdu->targetCodeRate,
-                              0);
+                              mcs_table_index);
 
   uint8_t nr_rbs_w_csi_rs = nr_of_rbs / freq_density;
   uint8_t subcarriers_used = get_nrUE_params()->nb_antennas_tx > 2 ? 2 : get_nrUE_params()->nb_antennas_tx;
@@ -432,6 +433,7 @@ void psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue,
     LOG_D(NR_PHY,"sense_pssch = %d\n",phy_data->nr_sl_pssch_sci_pdu.sense_pssch);
     ue->slsch->harq_process->pssch_pdu = &phy_data->nr_sl_pssch_sci_pdu;
     // compute number of REs containing SCI2
+    const int mcs_table_index = phy_data->nr_sl_pssch_pdu.mcs_table;
     int sci2_re = get_NREsci2_2(phy_data->nr_sl_pssch_sci_pdu.sci2_alpha_times_100,
                                 phy_data->nr_sl_pssch_sci_pdu.sci2_len,
                                 phy_data->nr_sl_pssch_sci_pdu.sci2_beta_offset,
@@ -441,7 +443,7 @@ void psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue,
                                 phy_data->nr_sl_pssch_sci_pdu.l_subch,
                                 phy_data->nr_sl_pssch_sci_pdu.subchannel_size,
                                 phy_data->nr_sl_pssch_sci_pdu.targetCodeRate,
-                                0);
+                                mcs_table_index);
     LOG_D(NR_PHY,"Starting slot FEP for SLSCH (symbol %d to %d) pscch_numsym %d pssch_numsym %d REs with SCI2 %d\n",
           1 + phy_data->nr_sl_pssch_sci_pdu.pscch_numsym, phy_data->nr_sl_pssch_sci_pdu.pssch_numsym,
           phy_data->nr_sl_pssch_sci_pdu.pscch_numsym, phy_data->nr_sl_pssch_sci_pdu.pssch_numsym, sci2_re);

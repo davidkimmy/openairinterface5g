@@ -74,6 +74,7 @@
 #define SL_CONFIG_STRING_RESPOOL_SUBCH_START_RB               "sl_StartRB_Subchannel"
 #define SL_CONFIG_STRING_RESPOOL_NUM_RBS                      "sl_RB_Number"
 #define SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS                   "sl_NumSubchannel"
+#define SL_CONFIG_STRING_RESPOOL_ADDITIONAL_MCS_TABLE         "sl_Additional_MCS_Table"
 #define SL_CONFIG_STRING_RESPOOL_PSFCH_PERIOD                 "sl_PSFCH_Period"
 #define SL_CONFIG_STRING_RESPOOL_PSFCH_RB_SET                 "sl_PSFCH_RB_Set"
 #define SL_CONFIG_STRING_RESPOOL_PSFCH_NUMMUXCS_PAIR          "sl_NumMuxCS_Pair"
@@ -173,6 +174,7 @@
 {SL_CONFIG_STRING_RESPOOL_SUBCH_START_RB,NULL,0,.i64ptr=sl_res_pool->sl_StartRB_Subchannel_r16,.defint64val=0,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_NUM_RBS,NULL,0,.i64ptr=sl_res_pool->sl_RB_Number_r16,.defint64val=106,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS,NULL,0,.i64ptr=sl_res_pool->sl_NumSubchannel_r16,.defint64val=10,TYPE_INT64,0},\
+{SL_CONFIG_STRING_RESPOOL_ADDITIONAL_MCS_TABLE,NULL,0,.i64ptr=sl_res_pool->sl_Additional_MCS_Table_r16,.defint64val=2,TYPE_INT64,0}, \
 {SL_CONFIG_STRING_RESPOOL_PSFCH_PERIOD,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16,.defint64val=3,TYPE_INT64,0}, \
 {SL_CONFIG_STRING_RESPOOL_PSFCH_NUMMUXCS_PAIR,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_NumMuxCS_Pair_r16,.defint64val=1,TYPE_INT64,0}, \
 {SL_CONFIG_STRING_RESPOOL_PSFCH_MINTIMEGAP,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16,.defint64val=1,TYPE_INT64,0}, \

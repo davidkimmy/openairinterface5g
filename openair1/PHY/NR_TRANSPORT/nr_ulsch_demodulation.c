@@ -1992,7 +1992,8 @@ void nr_rx_pusch(PHY_VARS_gNB *gNB,
   uint32_t num_dmrs_cdm_grps_no_data = pssch_pdu ? 1                                                     : rel15_ul->num_dmrs_cdm_grps_no_data;
   uint32_t ul_dmrs_symb_pos          = pssch_pdu ? pssch_pdu->dmrs_symbol_position                       : rel15_ul->ul_dmrs_symb_pos;
   uint32_t dmrs_ports                = pssch_pdu ? pssch_pdu->num_layers                                 : rel15_ul->dmrs_ports;
-  int sci1_re_per_symb = pssch_pdu ? (pssch_pdu->pscch_numrbs*NR_NB_SC_PER_RB) : 0; 
+  int sci1_re_per_symb = pssch_pdu ? (pssch_pdu->pscch_numrbs*NR_NB_SC_PER_RB) : 0;
+  const int mcs_table_index = pssch_pdu ? pssch_pdu->mcs_table : 0;
   int sci2_re = pssch_pdu ? get_NREsci2_2(pssch_pdu->sci2_alpha_times_100,
                                           pssch_pdu->sci2_len,
                                           pssch_pdu->sci2_beta_offset,
@@ -2002,7 +2003,7 @@ void nr_rx_pusch(PHY_VARS_gNB *gNB,
                                           pssch_pdu->l_subch,
                                           pssch_pdu->subchannel_size,
                                           pssch_pdu->targetCodeRate,
-                                          0) : 0;
+                                          mcs_table_index) : 0;
   int16_t sci2_llrs[(sci2_re*2)] __attribute__((aligned(16)));
   int16_t unscrambled_sci2_llrs[(sci2_re*2)] __attribute__((aligned(16)));
   int sci2_cnt=0;

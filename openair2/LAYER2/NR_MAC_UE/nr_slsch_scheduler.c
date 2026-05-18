@@ -273,7 +273,11 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   uint8_t cqi = sched_ctrl->rx_csi_report.CQI;
   sched_pssch->mcs = sched_ctrl->sl_max_mcs;
 
+  // Get MCS table index from resource pool configuration
   int mcs_tb_ind = 0;
+  if (mac->sl_tx_res_pool->sl_Additional_MCS_Table_r16)
+    mcs_tb_ind = (int)*mac->sl_tx_res_pool->sl_Additional_MCS_Table_r16;
+
   // we are using as a flag to indicate if csi report was received
   if (cqi) {
     if (sci_pdu->additional_mcs.nbits > 0)
@@ -334,7 +338,19 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   // we are using as a flag to indicate if csi report was received
   uint8_t fixed_mcs = get_nrUE_params()->mcs;
   sci_pdu->mcs = (fixed_mcs == 0) ? sched_pssch->mcs : fixed_mcs;
-  sci_pdu->additional_mcs.val = 0;
+
+  // Set additional_mcs.nbits and val based on resource pool configuration
+  if (mac->sl_tx_res_pool->sl_Additional_MCS_Table_r16) {
+    long table_idx = *mac->sl_tx_res_pool->sl_Additional_MCS_Table_r16;
+    sci_pdu->additional_mcs.nbits = (table_idx < 2) ? 1 : 2;
+    sci_pdu->additional_mcs.val = (uint8_t)table_idx;
+    LOG_D(NR_MAC, "[TX] sl_Additional_MCS_Table_r16=%ld, val=%d, nbits=%d\n",
+          table_idx, sci_pdu->additional_mcs.val, sci_pdu->additional_mcs.nbits);
+  } else {
+    sci_pdu->additional_mcs.nbits = 0;
+    sci_pdu->additional_mcs.val = 0;
+    LOG_D(NR_MAC, "[TX] sl_Additional_MCS_Table_r16 is NULL, using val=0, nbits=0\n");
+  }
   if (frameP % 5 == 0)
     LOG_D(NR_MAC, "cqi ---> %d Tx %4d.%2d dest: %d mcs %i\n",
           cqi, frameP, slotP, dest_id, sci_pdu->mcs);

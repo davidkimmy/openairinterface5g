@@ -842,6 +842,7 @@ int config_pssch_sci_pdu_rx(sl_nr_rx_config_pssch_sci_pdu_t *nr_sl_pssch_sci_pdu
   nr_sl_pssch_sci_pdu->targetCodeRate = nr_get_code_rate_ul(sci_pdu->mcs,mcs_tb_ind);
   nr_sl_pssch_sci_pdu->mod_order      = nr_get_Qm_ul(sci_pdu->mcs,mcs_tb_ind);
   nr_sl_pssch_sci_pdu->num_layers     = 1+sci_pdu->number_of_dmrs_port;
+  nr_sl_pssch_sci_pdu->mcs_table      = mcs_tb_ind;
 
   // Derived from PSCCH CRC Refer 38.211 section 8.3.1.1
   // to be used for PSSCH DMRS and PSSCH 38.211 Scrambling
