@@ -42,7 +42,7 @@ use_extended_delays=0
 
 # USRP serial numbers for the SL mode 1 relay test.
 RELAY_UE_USRP_SN_FOR_UU=340EA03
-RELAY_UE_USRP_SN_FOR_SL=3271246
+RELAY_UE_USRP_SN_FOR_SL=340E9AE
 #RELAY_UE_USRP_SN_FOR_SL=340E9F3
 #RELAY_UE_USRP_SN_FOR_SL=340EA3B
 
@@ -76,23 +76,26 @@ stress_tests=(
     slmode2_basic_tests[1:2]
 )
 pilot_tests=(
-    slmode2_basic_tests[1:2]
+    #slmode1_basic_tests[2]
+    slmode2_basic_tests[2]
+    #slmode2_csi_psfch_tests[2]
 )
 # Base directory for logs. The default will be this script folder.
 base_log_dir="~/openairinterface5g"
 use_external_clock=0
 use_gnome=0
 use_sa=1
+ensure_ping_test_time=1
 # Select active test profile among: pilot, regress, stress, bler
-test_profile='bler'
+test_profile='pilot'
 #############################################################
 # Test Profile Configuration
 #############################################################
 if [[ $test_profile == "pilot" ]]; then
     enabled_tests=("${pilot_tests[@]}")
     num_repeat=1
-    mcs_array=(2)  # Test MCS 2 for quick test
-    duration=70
+    mcs_array=(15)
+    duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     snr_array=($(seq 0 1 0))  # [start, step, end]
@@ -107,7 +110,7 @@ if [[ $test_profile == "pilot" ]]; then
 elif [[ $test_profile == "regress" ]]; then
     enabled_tests=("${regress_tests[@]}")
     num_repeat=1
-    mcs_array=(9 10 11 12 13)
+    mcs_array=($(seq 9 6 15))  # [start, step, end] # (9 15)
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
@@ -201,6 +204,7 @@ echo "Max LDPC Iterations  : $max_ldpc_iterations"
 echo "Use --sa flag        : $use_sa"
 echo "Use External Clock   : $use_external_clock"
 echo "Use GNOME            : $use_gnome"
+echo "Ensure Ping Test Time: $ensure_ping_test_time"
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""
 echo "Enabled Test Cases:"

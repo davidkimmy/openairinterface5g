@@ -105,11 +105,16 @@
    a. Clean up old logs
    b. Launch UEs (local / remote SSH)
    c. Wait for tunnel interface
-   d. Execute ping test
-   e. Collect stats (ping + PSSCH)
-   f. Kill processes &amp; cleanup
-   g. Generate summary row
-4. Display final summary table</div>
+   d. Wait for PC5 sync (PSBCH decode)
+   e. Execute ping test
+   f. Collect stats (ping + PSSCH)
+   g. Kill processes &amp; cleanup
+   h. Generate summary row
+4. Display final summary table
+
+Duration budget mode (ensure_ping_test_time):
+  =1: flexible, ping always runs (min 16s)
+  =0: strict, test ends after duration</div>
     </div>
     <div>
       <h3>File Structure</h3>
@@ -201,6 +206,8 @@ use_external_clock=1
 use_sa=1
 # Use gnome-terminal (0=bash, 1=gnome)
 use_gnome=1
+# Ensure ping test time (0=strict, 1=flexible)
+ensure_ping_test_time=1
 
 # USRP serial numbers (SL Mode 1 relay only)
 RELAY_UE_USRP_SN_FOR_UU=340EA03

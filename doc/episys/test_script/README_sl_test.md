@@ -35,13 +35,46 @@ run_sl_test_config.sh            # User configuration (tests, profiles, paramete
 1. Load configuration from run_sl_test_config.sh
 2. Validate enabled tests and parameters
 3. For each test in enabled_tests array:
-   - Launch UEs (local/remote via SSH)
-   - Execute test scenario (ping, SRAP, etc.)
-   - Collect statistics (ping, PSSCH TX/RX)
-   - Kill processes and cleanup
-   - Generate result summary row
+   a. Launch UEs (local/remote via SSH)
+   b. Wait for tunnel interface (oaitun_ueX)
+   c. Wait for PC5 sync (nearby UE decodes PSBCH from syncref)
+   d. Run ping test with remaining duration budget
+   e. Collect statistics (ping, PSSCH TX/RX)
+   f. Kill processes and cleanup
+   g. Generate result summary row
 4. Display final summary table
 ```
+
+#### Duration Budget
+
+The `duration` parameter (set per profile in `run_sl_test_config.sh`) is a **shared time budget** for the entire test sequence: tunnel interface wait, PC5 sync wait, and ping test. The behavior depends on the `ensure_ping_test_time` setting:
+
+**`ensure_ping_test_time=1`** (flexible duration, ensures ping completes):
+
+```
+|<----------------------- duration ----------------------->|  + overflow
+| wait_for_tun_interface | wait_for_pc5_sync | ping test   |
+|       (variable)       |  (remaining,      | (remaining, |
+|                        |   min 5s)         |  min 16s)   |
+```
+
+- **Tunnel interface wait** uses up to `duration` seconds (typically fast, a few seconds)
+- **PC5 sync wait** uses the remaining budget (min 5s floor)
+- **Ping test** gets whatever time is left (min 16s floor to ensure `ping -c 15` completes)
+- The ping test always runs even if the budget is exhausted — the minimum floors guarantee it
+
+**`ensure_ping_test_time=0`** (strict duration, test ends after `duration`):
+
+```
+|<----------------------- duration ----------------------->|
+| wait_for_tun_interface | wait_for_pc5_sync | ping test   |
+|       (variable)       | (remaining, skip  | (remaining) |
+|                        |  if no time left) |             |
+```
+
+- **Tunnel interface wait** uses up to `duration` seconds
+- **PC5 sync wait** runs only if time remains (`remaining > 0`), skipped otherwise
+- **Ping test** uses the remaining time after waits — total test time stays close to `duration`
 
 ### Multi-Host Testing
 
@@ -115,7 +148,7 @@ Host gNB local
 ```
 
 > **Important:** The test script requires these exact host alias names in `~/.ssh/config`:
-> - `remote_ue` — Used for nearby UE in two-host and three-hosts tests
+> - `remote_ue` — Used for nearby UE in two-hosts and three-hosts tests
 > - `nr_ue` — Used for nrUE in Uu interface tests
 > - `relay_ue` — Used for relay UE (syncref) in three-hosts SRAP tests
 > - `gNB` — Used for gNB in three-hosts rfsim SRAP tests
@@ -125,17 +158,17 @@ Host gNB local
 
 **Host Assignment per Test Mode:**
 
-| SL Mode | Type | Hosts | gNB | SyncRef UE | Nearby UE |
-|---------|------|-------|-----|------------|-----------|
-| Mode 2 | RFSIM | 1 | — | `local` | `local` |
-| Mode 2 | RFSIM | 2 | — | `local` | `remote_ue` |
-| Mode 2 | USRP | 2 | — | `local` | `remote_ue` |
-| Mode 1 (SRAP) | RFSIM | 1 | `local` | `local` | `local` |
-| Mode 1 (SRAP) | RFSIM | 3 | `gNB`, `local` | `relay_ue` | `remote_ue` |
-| Mode 1 (SRAP) | USRP | 3 | `local` | `relay_ue` | `remote_ue` |
-| Uu | RFSIM | 1 | `local` | — | `local` (nrUE) |
-| Uu | RFSIM | 2 | `local` | — | `nr_ue` (nrUE) |
-| Uu | USRP | 2 | `local` | — | `nr_ue` (nrUE) |
+|    SL Mode     | Type  | Hosts |       gNB        | SyncRef UE |   Nearby UE     |
+|:--------------:|:-----:|:-----:|:----------------:|:----------:|:---------------:|
+|    Mode 2      | RFSIM |   1   |        —         |  `local`   |    `local`      |
+|    Mode 2      | RFSIM |   2   |        —         |  `local`   |  `remote_ue`    |
+|    Mode 2      | USRP  |   2   |        —         |  `local`   |  `remote_ue`    |
+| Mode 1 (SRAP)  | RFSIM |   1   |     `local`      |  `local`   |    `local`      |
+| Mode 1 (SRAP)  | RFSIM |   3   | `gNB`, `local`   | `relay_ue` |  `remote_ue`    |
+| Mode 1 (SRAP)  | USRP  |   3   |     `local`      | `relay_ue` |  `remote_ue`    |
+|       Uu       | RFSIM |   1   |     `local`      |     —      | `local` (nrUE)  |
+|       Uu       | RFSIM |   2   |     `local`      |     —      | `nr_ue` (nrUE)  |
+|       Uu       | USRP  |   2   |     `local`      |     —      | `nr_ue` (nrUE)  |
 
 **Setup passwordless SSH:**
 ```bash
@@ -183,6 +216,9 @@ use_external_clock=1
 # Use standalone mode (0=disabled, 1=enabled)
 use_sa=1
 
+# Ensure ping test has enough time to complete (0=strict duration, 1=flexible)
+ensure_ping_test_time=1
+
 # USRP serial numbers (required for SL Mode 1 relay tests only)
 RELAY_UE_USRP_SN_FOR_UU=340EA03    # USRP for Uu interface
 RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
@@ -204,11 +240,11 @@ RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
 
 Three built-in profiles in `run_sl_test_config.sh`. Each profile has its own test list (`pilot_tests`, `regress_tests`, `stress_tests`) that is automatically assigned to `enabled_tests`:
 
-| Profile   | Repeats | MCS Values | Duration | SNR/Atten   | TX/RX Gain | Max LDPC Iter | Use Case |
-|-----------|---------|------------|----------|-------------|------------|---------------|----------|
-| `pilot`   | 1       | 1          | 30s      | 0 / 20dB    | 20 / 110   | 30            | Quick smoke test |
-| `regress` | 1       | 1, 9       | 30s      | 0 / 20dB    | 20 / 110   | 30            | Regression validation |
-| `stress`  | 3       | 9, 16, 28  | 300s     | 0 / 20-60dB | 20 / 110   | 30            | Long-term stability |
+| Profile   | Repeats | MCS Values | Duration | SNR/Atten   | TX/RX Gain | Max LDPC Iter | Use Case                |
+|-----------|---------|------------|----------|-------------|------------|---------------|-------------------------|
+| `pilot`   | 1       | 1          | 30s      | 0 / 20dB    | 20 / 110   | 30            | Quick smoke test        |
+| `regress` | 1       | 1, 9       | 30s      | 0 / 20dB    | 20 / 110   | 30            | Regression validation   |
+| `stress`  | 3       | 9, 16, 28  | 300s     | 0 / 20-60dB | 20 / 110   | 30            | Long-term stability     |
 
 ### Test Selection Syntax
 
@@ -697,10 +733,17 @@ my_custom_test() {
     run_syncref_cmd $test_type $mcs $sl_mode "local"
     run_nearby_cmd  $test_type $mcs $sl_mode "local"
 
-    # Wait for initialization
-    sleep 5
+    # Wait for initialization (shared duration budget)
+    local wait_start=$(date +%s)
+    wait_for_tun_interface "oaitun_ue1" "local" $duration
+    local remaining=$(( duration - $(date +%s) + wait_start ))
+    [[ $remaining -lt 5 ]] && remaining=5
+    wait_for_pc5_sync $remaining
+    remaining=$(( duration - $(date +%s) + wait_start ))
+    [[ $remaining -lt 16 ]] && remaining=16
+    duration=$remaining
 
-    # Run test (e.g., ping)
+    # Run test (e.g., ping) with remaining duration budget
     evaluate_ping_test "local" "oaitun_ue1" "10.0.0.100" $sl_mode "${FUNCNAME[0]}"
 
     # Cleanup
