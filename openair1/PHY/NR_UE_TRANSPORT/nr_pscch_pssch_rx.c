@@ -212,6 +212,15 @@ void nr_postDecode_slsch(PHY_VARS_NR_UE *UE, notifiedFIFO_elt_t *req,UE_nr_rxtx_
       //      dumpsig=1;
     }
     slsch->last_iteration_cnt = rdata->decodeIterations;
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    // Log LDPC iterations with MCS (SNR derived from noise power in test)
+    uint8_t mcs = slsch_harq->slsch_pdu ? slsch_harq->slsch_pdu->mcs : 0;
+    LOG_I(NR_PHY, "[LDPC_STATS] %d.%d PC5_LDPC_ITERATIONS mcs=%u iterations=%u max=%u success=%d\n",
+          proc->frame_rx, proc->nr_slot_rx,
+          mcs, rdata->decodeIterations, rdata->decoderParms.numMaxIter, decodeSuccess);
+#endif
+
     sl_rx_indication.sfn = proc->frame_rx;
     sl_rx_indication.slot = proc->nr_slot_rx;
     sl_rx_indication.rx_indication_body[0].rx_slsch_pdu.ack_nack_rcvd = calloc(num_acks, sizeof(uint8_t));

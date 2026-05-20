@@ -68,9 +68,21 @@ For two-host or three-host tests:
 ```
 ~/openairinterface5g/
   ├── cmake_targets/ran_build/build/      # Executables
-  └── targets/PROJECTS/NR-SIDELINK/CONF/  # Config files
-~/ci_test/                                # Test logs (auto-created)
+  ├── targets/PROJECTS/NR-SIDELINK/CONF/  # Config files
+  ├── test_<timestamp>/                   # Test logs (auto-created, timestamped)
+  ├── bler_results_<timestamp>/           # BLER analysis results (auto-created)
+  └── latest -> test_<timestamp>/         # Symlink to most recent test
+~/ci_script/
+  ├── run_sl_test.sh                      # Main test execution script
+  ├── run_sl_test_config.sh               # User configuration (defines bler_hosts array)
+  ├── bler_scripts/
+  │   ├── check_test_status.sh            # Monitor distributed test progress
+  │   ├── process_and_fetch_results.sh    # Results collection and plotting
+  │   └── *.py                            # Python processing scripts
+  └── run_sl_test_config_host*.sh         # Auto-generated per-host configs (parallel mode)
 ```
+
+**Note:** Test logs default to `~/openairinterface5g/test_<timestamp>/` but can be overridden with `-d` flag or `base_log_dir` config.
 
 ## Quick Start
 
@@ -364,6 +376,44 @@ Replace `rfsim` prefix with `usrp_B210` for hardware tests:
 - USRP B210 radios on all participating hosts
 - RF attenuator at `http://169.254.10.10/` (controlled via `set_atten`)
 
+## BLER Testing Framework
+
+The BLER (Block Error Rate) testing framework provides automated performance characterization across the full MCS range (0-28) and SNR sweep. It supports both local execution and distributed parallel testing across multiple machines.
+
+**Quick Overview:**
+- Full MCS coverage (0-28) with SNR sweep (-12 to 4 dB)
+- Distributed parallel execution (2-hour completion with 4 machines)
+- Comprehensive logging: MAC BLER, LDPC iterations, HARQ rounds
+- Automated data collection, processing, and plotting
+- Real-time progress monitoring
+
+**📖 Complete Guide:** See [README_BLER_test.md](bler_scripts/README_BLER_test.md) for:
+- Prerequisites and BLER instrumentation build
+- Local and distributed test execution
+- Progress monitoring with `check_test_status.sh`
+- Results collection with `process_and_fetch_results.sh`
+- Plot interpretation and data analysis
+- Troubleshooting and configuration options
+
+**Quick Start:**
+```bash
+# 1. Build with BLER instrumentation on all machines
+cd ~/openairinterface5g
+./build_oai --nrUE -w SIMU --ninja -c --bler-instrumentation
+
+# 2. Configure and run test
+cd ~/ci_script
+./run_sl_test.sh  # Uses settings from run_sl_test_config.sh
+
+# 3. Monitor progress
+./check_test_status.sh
+
+# 4. Collect results and generate plots
+./process_and_fetch_results.sh
+```
+
+For detailed instructions, see [README_BLER_test.md](README_BLER_test.md).
+
 ## Test Results
 
 ### Summary Table
@@ -393,7 +443,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |  
 All logs saved to `<base_dir>/test_<timestamp>/`, where base_dir is determined by (highest priority first): `-d` flag > `base_log_dir` in config > script directory. A `latest` symlink points to the most recent test folder.
 - `test_summary_<timestamp>.csv` - Summary table
 - `commands.txt` - All executed commands (gNB, nrUE, syncref, nearby, ping) with host information
-- `result_<component>_<test_name>_<timestamp>.log` - Softmodem output per test, where component is one of: gNB, nrUE, syncref, nearby, nrUE_syncref (e.g., `result_gNB_rfsim_uu_ping_test_on_two_hosts_20260429_112101.log`)
+- `result_<component>_<test_name>_<timestamp>.log` - Softmodem output per test, where component is one of: gNB, nrUE, syncref, nearby, nrUE_syncref (e.g., `result_gNB_rfsim_uu_ping_test_on_two_hosts_<timestamp>.log`)
 - `ping_result_<test_name>_<timestamp>.txt` - Ping output per test
 
 The list of softmodem log files is defined in `softmodem_log_files` in `run_sl_test_config.sh`.

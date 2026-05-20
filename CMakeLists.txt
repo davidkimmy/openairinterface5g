@@ -32,6 +32,17 @@ set (OPENAIR_DIR     ${CMAKE_SOURCE_DIR})
 include("cmake_targets/macros.cmake")
 
 ##############################
+### BLER Instrumentation
+##############################
+option(ENABLE_BLER_INSTRUMENTATION "Enable BLER/HARQ/LDPC logging for sidelink testing" OFF)
+if(ENABLE_BLER_INSTRUMENTATION)
+    add_definitions(-DENABLE_BLER_INSTRUMENTATION)
+    message(STATUS "BLER instrumentation: ENABLED")
+else()
+    message(STATUS "BLER instrumentation: DISABLED")
+endif()
+
+##############################
 ### CCache: reduce compilation time
 ##############################
 #use ccache if available

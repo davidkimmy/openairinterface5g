@@ -141,6 +141,8 @@ Options:
    Build eclipse project files.
 --build-lib <libraries>
    Build optional shared library, <libraries> can be one or several of $OPTIONAL_LIBRARIES or \"all\"
+--bler-instrumentation
+   Enable BLER/HARQ/LDPC logging instrumentation for sidelink testing
 --noavx512
    Disable AVX512 intrinsics whatever processor capability is
 --noavx2
@@ -375,11 +377,11 @@ function main() {
             CMAKE_CMD="$CMAKE_CMD"' -DCMAKE_ECLIPSE_GENERATE_SOURCE_PROJECT=TRUE -G"Eclipse CDT4 - Unix Makefiles"'
             echo_info "Enabling build eclipse project support"
             shift 1;;
-       --build-lib) 
+       --build-lib)
             if [  "$2" == "all" ] ; then
               TARGET_LIST="$TARGET_LIST $OPTIONAL_LIBRARIES"
               for lib in $OPTIONAL_LIBRARIES; do CMAKE_CMD="$CMAKE_CMD -DENABLE_${lib^^}=ON"; done
-              echo_info "Enabling build of all optional shared libraries ($OPTIONAL_LIBRARIES)" 
+              echo_info "Enabling build of all optional shared libraries ($OPTIONAL_LIBRARIES)"
             else
               for reqlib in $2; do
                 lib=$(echo $OPTIONAL_LIBRARIES | tr ' ' '\n' | grep -w $reqlib) # search given parameter in list
@@ -389,7 +391,11 @@ function main() {
                 echo_info "Enabling build of optional shared library $lib"
               done
             fi
-            shift 2;;		
+            shift 2;;
+        --bler-instrumentation)
+            CMAKE_CMD="$CMAKE_CMD -DENABLE_BLER_INSTRUMENTATION=ON"
+            echo_info "Enabling BLER/HARQ/LDPC instrumentation for sidelink testing"
+            shift 1;;
         --noavx512)
             CMAKE_CMD="$CMAKE_CMD -DAVX512=OFF"
             echo_info "Disabling AVX512 instructions"

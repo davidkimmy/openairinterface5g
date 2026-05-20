@@ -195,6 +195,17 @@ void handle_nr_ue_sl_harq(module_id_t mod_id,
     harq->is_waiting = false;
     if (!ack_nack) {
       UE->mac_sl_stats.cumul_round[harq->round]++;
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+      UE->mac_sl_stats.sl.rounds[harq->round]++;
+      LOG_I(NR_MAC, "[HARQ_STATS] %u.%u PC5_HARQ_SUCCESS src_id=%d round=%d cumul_r0=%u r1=%u r2=%u r3=%u\n",
+            frame, slot, src_id, harq->round,
+            UE->mac_sl_stats.sl.rounds[0],
+            UE->mac_sl_stats.sl.rounds[1],
+            UE->mac_sl_stats.sl.rounds[2],
+            UE->mac_sl_stats.sl.rounds[3]);
+#endif
+
       harq->round = 0;
       LOG_D(NR_MAC,
             "%4u.%2u Slharq id %d crc passed for src id %4d\n",

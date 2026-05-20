@@ -27,6 +27,12 @@
 
 #define SL_DEBUG
 
+#ifdef ENABLE_BLER_INSTRUMENTATION
+// PC5 BLER tracking counters (cumulative per session)
+static uint32_t pc5_rx_blocks_total = 0;
+static uint32_t pc5_rx_blocks_error = 0;
+#endif
+
 static const int sequence_cyclic_shift_harq_ack_or_ack_or_only_nack[2]
 /* Sequence cyclic shift */ = {  0, 6 };
 
@@ -1025,8 +1031,52 @@ void nr_ue_process_mac_sl_pdu(int module_idP,
 
   LOG_D(NR_MAC, "%4d.%2d ack_nack %d pdu_type %d mac->sci_pdu_rx.csi_req %d\n",
         frame, slot, rx_slsch_pdu->ack_nack, pdu_type, mac->sci_pdu_rx.csi_req);
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  /* ===== PC5 BLER INSTRUMENTATION START ===== */
+
+  // Track every PSSCH reception attempt
+  pc5_rx_blocks_total++;
+
+  // Check CRC result (ack_nack == 0 means CRC failed)
+  bool crc_failed = (rx_slsch_pdu->ack_nack == 0);
+
+  if (crc_failed) {
+    pc5_rx_blocks_error++;
+
+    // Log individual block error
+    LOG_D(NR_MAC, "[BLER_STATS] %d.%d PC5_RX_BLOCK_ERROR total=%u errors=%u\n",
+          frame, slot, pc5_rx_blocks_total, pc5_rx_blocks_error);
+  }
+
+  // Periodic summary every 100 blocks, up to 1000 max
+  // Logs at: 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000 packets
+  static bool reset_done_at_1000 = false;
+
+  if (pc5_rx_blocks_total % 100 == 0 && pc5_rx_blocks_total > 0 && pc5_rx_blocks_total <= 1000) {
+    float bler = (float)pc5_rx_blocks_error / (float)pc5_rx_blocks_total;
+
+    LOG_I(NR_MAC, "[BLER_STATS] %d.%d PC5_RX_SUMMARY total=%u errors=%u BLER=%.4f\n",
+          frame, slot, pc5_rx_blocks_total, pc5_rx_blocks_error, bler);
+  }
+
+  // Reset counters after reaching 1000 (only once)
+  if (pc5_rx_blocks_total >= 1000 && !reset_done_at_1000) {
+    reset_done_at_1000 = true;
+    pc5_rx_blocks_total = 0;
+    pc5_rx_blocks_error = 0;
+  }
+
+  // Early exit on CRC failure (after logging stats)
+  if (crc_failed) {
+    return;
+  }
+
+  /* ===== PC5 BLER INSTRUMENTATION END ===== */
+#else
   if (rx_slsch_pdu->ack_nack == 0)
     return;
+#endif
 
   NR_SL_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
   if (mac->sci_pdu_rx.csi_req) {
