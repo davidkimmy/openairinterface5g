@@ -1215,7 +1215,13 @@ slmode1_srap_ping_test() {
         [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
     fi
-[[ "$use_extended_delays" == "1" ]]
+
+    # Additional wait time for sidelink synchronization to complete
+    if [[ "$use_extended_delays" == "1" ]]; then
+        echo "Waiting additional ${sleep_timing[sync_stab_45s_v1]} seconds for sidelink sync to stabilize..."
+        sleep $((0 + ${sleep_timing[sync_stab_45s_v1]}))
+    fi
+
     evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
 
     # Cleanup all processes (nearby_host_name was cleaned up in the evaluate_ping_test)
@@ -1603,9 +1609,11 @@ uu_ping_test() {
     run_nrUE_cmd $test_type $mcs $sl_mode $nrue_host_name
     wait_for_tun_interface $src_if $nrue_host_name $duration
 
-    # Additional wait time for sidelink synchronization to complete
-    echo "Waiting additional 30 seconds for sidelink sync to stabilize..."
-    [[ "$use_extended_delays" == "1" ]] && sleep $((0 + ${sleep_timing[sync_stab_30s]}))  # Configurable: default 30s
+    # Additional wait time for synchronization to complete
+    if [[ "$use_extended_delays" == "1" ]]; then
+        echo "Waiting additional 30 seconds for sidelink sync to stabilize..."
+        sleep $((0 + ${sleep_timing[sync_stab_30s]}))  # Configurable: default 30s
+    fi
 
     evaluate_ping_test $nrue_host_name $src_if $dest_ip $sl_mode "${test_name}"
 
@@ -1700,10 +1708,6 @@ pc5_ping_test() {
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
 
-    # Additional wait time for sidelink synchronization to complete
-    echo "Waiting additional ${sleep_timing[sync_stab_45s_v1]} seconds for sidelink sync to stabilize..."
-    [[ "$use_extended_delays" == "1" ]] && sleep $((0 + ${sleep_timing[sync_stab_45s_v1]}))
-
     local wait_start=$(date +%s)
     wait_for_tun_interface $src_if $syncref_host_name $duration
     local remaining=$(( duration - $(date +%s) + wait_start ))
@@ -1716,6 +1720,12 @@ pc5_ping_test() {
     else
         [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
+    fi
+
+    # Additional wait time for sidelink synchronization to complete
+    if [[ "$use_extended_delays" == "1" ]]; then
+        echo "Waiting additional ${sleep_timing[sync_stab_45s_v1]} seconds for sidelink sync to stabilize..."
+        sleep $((0 + ${sleep_timing[sync_stab_45s_v1]}))
     fi
 
     evaluate_ping_test $syncref_host_name $src_if $dest_ip $sl_mode "${test_name}"
@@ -1836,10 +1846,6 @@ pc5_csi_acquisition_psfch_period_test() {
         run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
     fi
 
-    # Additional wait time for sidelink synchronization to complete
-    echo "Waiting additional ${sleep_timing[sync_stab_45s_v2]} seconds for sidelink sync to stabilize..."
-    [[ "$use_extended_delays" == "1" ]] && sleep $((0 + ${sleep_timing[sync_stab_45s_v2]}))
-
     local wait_start=$(date +%s)
     wait_for_tun_interface "oaitun_ue1" "$syncref_host_name" "$duration"
     local remaining=$(( duration - $(date +%s) + wait_start ))
@@ -1852,6 +1858,12 @@ pc5_csi_acquisition_psfch_period_test() {
     else
         [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
+    fi
+
+    # Additional wait time for sidelink synchronization to complete
+    if [[ "$use_extended_delays" == "1" ]]; then
+        echo "Waiting additional ${sleep_timing[sync_stab_45s_v2]} seconds for sidelink sync to stabilize..."
+        sleep $((0 + ${sleep_timing[sync_stab_45s_v2]}))
     fi
 
     evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}"
