@@ -387,17 +387,59 @@ docker exec -it oai-upf bash -c 'iperf3 -u -c <Remote UE IP address> -B <UPF IP 
 docker exec -it oai-upf bash -c 'iperf3 -u -c 10.0.0.100 -B 192.168.70.134 -p 5001 -i 1 -b 1M' | tee iperf_output.log
 ```
 
-#### 6.7.3 **Running Video Stream:**
+### 6.8 **Running Video Stream:**
 
-Receiver: UPF
+In the following, we assume that UPF IP address = 192.168.70.134 and Remote UE IP address (`oaitun_ue2`) = 10.0.0.100.
+
+#### 6.8.1 Receiver (UPF in Core Network)
+
+Apply the following environment setting for video.
 ```
-ffplay -flags low_delay -i udp://192.168.70.134:1234
+xhost +local:docker
 ```
 
-Transmitter: Remote UE
+Add a port to expose of oai-upf service in docker-compose.yaml file:
+```
+ - 8090/udp
+```
+
+Launch docker compose as following:
+```
+docker compose up -d
+```
+
+After the docker process activated, launch ffplay using one of the two options.
+
+Option 1 (In the host shell)
+```
+docker exec -it oai-upf bash -c 'ffplay -fflags nobuffer -flags low_delay udp://0.0.0.0:8090'
+```
+
+Option 2 (Insider of docker)
+```
+ffplay -flags low_delay -i udp://192.168.70.134:8090
+```
+
+After video streaming was done, apply the following.
+```
+xhost -local:docker
+```
+
+#### 6.8.2 Transmitter (Remote UE)
+
+In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+There are two options for streaming in tramsmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+
+Option 1. Video file streaming in default setting
 ```
 ffmpeg -re -stream_loop -1 -i ~/Videos/file_name.mp4 -f mpegts \
-       "udp://192.168.70.134:1234?localaddr=10.0.0.100&pkt_size=1316"
+       "udp://192.168.70.134:8090?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316"
+```
+
+Option 2. USB camera streaming in 500 Kbps bandwidth
+```
+ffmpeg -f v4l2 -i /dev/video2 -b:v 500k -vcodec libx264 -preset ultrafast -tune zerolatency -f mpegts \
+       "udp://192.168.70.134:8090?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316
 ```
 
 ## 7. EpiSci's 5G Sidelink Mode 2
@@ -661,17 +703,29 @@ iperf3 -u -c <Nearby UE IP address> -B  <SyncRef UE IP address> -p 5001 -i 1 -b 
 iperf3 -u -c 10.0.0.100 -B 10.0.0.1 -p 5001 -i 1 -b 1M
 ```
 
-#### 7.4.3 **Running Video Stream:**
+### 7.5 **Running Video Stream:**
 
-In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+We assume that SyncRef UE IP address (`oaitun_ue1`) = 10.0.0.1 and Nearby UE IP address (`oaitun_ue2`) = 10.0.0.100.
 
-Receiver: SyncRef UE
+#### 7.5.1 Receiver (SyncRef UE)
+
 ```
 ffplay -flags low_delay -i udp://10.0.0.1:1234
 ```
 
-Transmitter: Nearby UE
+#### 7.5.2 Transmitter (Nearby UE)
+
+In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+There are two options for streaming in tramsmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+
+Option 1. Video file streaming in default setting
 ```
 ffmpeg -re -stream_loop -1 -i ~/Videos/file_name.mp4 -f mpegts \
-       "udp://10.0.0.1:1234?localaddr=10.0.0.100&pkt_size=1316"
+       "udp://10.0.0.1:1234?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316"
+```
+
+Option 2. USB camera streaming in 500 Kbps bandwidth
+```
+ffmpeg -f v4l2 -i /dev/video2 -b:v 500k -vcodec libx264 -preset ultrafast -tune zerolatency -f mpegts \
+       "udp://10.0.0.1:1234?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316
 ```
