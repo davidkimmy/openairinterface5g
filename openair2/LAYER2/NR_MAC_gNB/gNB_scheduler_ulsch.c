@@ -40,6 +40,13 @@
 
 //#define SRS_IND_DEBUG
 
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // gNB UL BLER tracking counters (UE → gNB uplink)
+  static uint32_t gnb_ul_blocks_total = 0;
+  static uint32_t gnb_ul_blocks_error = 0;
+  static bool gnb_ul_reset_done_at_1000 = false;
+#endif
+
 const int get_ul_tda(gNB_MAC_INST *nrmac, const NR_ServingCellConfigCommon_t *scc, int frame, int slot)
 {
   /* we assume that this function is mutex-protected from outside */
@@ -547,7 +554,16 @@ void handle_nr_ul_harq(const int CC_idP,
     remove_front_nr_list(&sched_ctrl->feedback_ul_harq);
     sched_ctrl->ul_harq_processes[harq_pid].is_waiting = false;
 
-    if(sched_ctrl->ul_harq_processes[harq_pid].round >= RC.nrmac[mod_id]->ul_bler.harq_round_max - 1) {
+    /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds) */
+    const int ul_harq_max = RC.nrmac[mod_id]->ul_bler.harq_round_max;
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    const int effective_ul_harq_max = (ul_harq_max == 1) ? 4 : ul_harq_max;
+#else
+    const int effective_ul_harq_max = ul_harq_max;
+#endif
+
+    // Common HARQ processing logic
+    if(sched_ctrl->ul_harq_processes[harq_pid].round >= effective_ul_harq_max - 1) {
       abort_nr_ul_harq(UE, harq_pid);
     } else {
       sched_ctrl->ul_harq_processes[harq_pid].round++;
@@ -560,6 +576,46 @@ void handle_nr_ul_harq(const int CC_idP,
   DevAssert(harq->is_waiting);
   harq->feedback_slot = -1;
   harq->is_waiting = false;
+
+  /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds) */
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  const int effective_ul_harq_max = (RC.nrmac[mod_id]->ul_bler.harq_round_max == 1) ? 4 : RC.nrmac[mod_id]->ul_bler.harq_round_max;
+
+  // Log UL HARQ feedback with MCS (gNB perspective)
+  uint8_t mcs = harq->sched_pusch.mcs;
+  if (!crc_pdu->tb_crc_status) {
+    LOG_I(NR_MAC, "[BLER_STATS] GNB_UL_HARQ_ACK rnti=%04x pid=%d round=%d mcs=%u\n",
+          crc_pdu->rnti, harq_pid, harq->round, mcs);
+  } else {
+    LOG_I(NR_MAC, "[BLER_STATS] GNB_UL_HARQ_NACK rnti=%04x pid=%d round=%d mcs=%u\n",
+          crc_pdu->rnti, harq_pid, harq->round, mcs);
+  }
+
+  // Track gNB UL BLER (similar to PC5 UE RX tracking)
+  gnb_ul_blocks_total++;
+
+  if (crc_pdu->tb_crc_status) {  // CRC failed (non-zero means failure)
+    gnb_ul_blocks_error++;
+  }
+
+  // Periodic summary every 100 blocks, up to 1000 max
+  if (gnb_ul_blocks_total % 100 == 0 && gnb_ul_blocks_total > 0 && gnb_ul_blocks_total <= 1000) {
+    float bler = (float)gnb_ul_blocks_error / (float)gnb_ul_blocks_total;
+    LOG_I(NR_MAC, "[BLER_STATS] GNB_UL_SUMMARY rnti=%04x mcs=%u total=%u errors=%u BLER=%.4f\n",
+          crc_pdu->rnti, mcs, gnb_ul_blocks_total, gnb_ul_blocks_error, bler);
+  }
+
+  // Reset counters after reaching 1000 (only once)
+  if (gnb_ul_blocks_total >= 1000 && !gnb_ul_reset_done_at_1000) {
+    gnb_ul_reset_done_at_1000 = true;
+    gnb_ul_blocks_total = 0;
+    gnb_ul_blocks_error = 0;
+  }
+#else
+  const int effective_ul_harq_max = RC.nrmac[mod_id]->ul_bler.harq_round_max;
+#endif
+
+  // Common HARQ processing logic
   if (!crc_pdu->tb_crc_status) {
     harq->ndi ^= 1;
     harq->round = 0;
@@ -568,7 +624,7 @@ void handle_nr_ul_harq(const int CC_idP,
           harq_pid,
           crc_pdu->rnti);
     add_tail_nr_list(&sched_ctrl->available_ul_harq, harq_pid);
-  } else if (harq->round >= RC.nrmac[mod_id]->ul_bler.harq_round_max  - 1) {
+  } else if (harq->round >= effective_ul_harq_max - 1) {
     abort_nr_ul_harq(UE, harq_pid);
     LOG_D(NR_MAC,
           "RNTI %04x: Ulharq id %d crc failed in all rounds\n",
@@ -848,7 +904,16 @@ static void _nr_rx_sdu(const module_id_t gnb_mod_idP,
         return;
       }
 
-      if (ra->msg3_round >= gNB_mac->ul_bler.harq_round_max - 1) {
+      /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds) */
+      const int msg3_harq_max = gNB_mac->ul_bler.harq_round_max;
+#ifdef ENABLE_BLER_INSTRUMENTATION
+      const int effective_msg3_harq_max = (msg3_harq_max == 1) ? 4 : msg3_harq_max;
+#else
+      const int effective_msg3_harq_max = msg3_harq_max;
+#endif
+
+      // Common MSG3 HARQ check
+      if (ra->msg3_round >= effective_msg3_harq_max - 1) {
         LOG_W(NR_MAC, "Random Access %i failed at state %i (Reached msg3 max harq rounds)\n", i, ra->state);
         nr_clear_ra_proc(gnb_mod_idP, CC_idP, frameP, ra);
         return;
@@ -1716,12 +1781,36 @@ static void pf_ul(module_id_t module_id,
     }
 
     const NR_bler_options_t *bo = &nrmac->ul_bler;
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    /* BLER testing: Use exact fixed MCS from config (ul_max_mcs) which can be overridden by command-line
+     * No min() constraint - use the exact value specified for testing */
+    const int max_mcs = bo->max_mcs;
+
+    /* Use fixed MCS when harq_round_max=1 (BLER testing mode)
+     * In BLER testing, we need consistent MCS for all transmissions once session is established
+     * Check if DRB is active (LCID 4+) - if yes, use fixed MCS for everything including SRB retransmissions */
+    bool has_drb_active = false;
+    for (int lcid = 4; lcid <= NR_MAX_NUM_LCID; lcid++) {
+      if (sched_ctrl->rlc_status[lcid].bytes_in_buffer > 0) {
+        has_drb_active = true;
+        break;
+      }
+    }
+
+    /* Use fixed MCS when harq_round_max=1 AND DRB is active, otherwise use adaptive MCS for session establishment */
+    if (bo->harq_round_max == 1 && has_drb_active)
+      sched_pusch->mcs = max_mcs;
+    else
+      sched_pusch->mcs = get_mcs_from_bler(bo, stats, &sched_ctrl->ul_bler_stats, max_mcs, frame);
+#else
+    /* Normal operation: constrain to MCS table maximum */
     const int max_mcs_table = (current_BWP->mcs_table == 0 || current_BWP->mcs_table == 2) ? 28 : 27;
     const int max_mcs = min(bo->max_mcs, max_mcs_table); /* no per-user maximum MCS yet */
     if (bo->harq_round_max == 1)
       sched_pusch->mcs = max_mcs;
     else
       sched_pusch->mcs = get_mcs_from_bler(bo, stats, &sched_ctrl->ul_bler_stats, max_mcs, frame);
+#endif
 
     /* Schedule UE on SR or UL inactivity and no data (otherwise, will be scheduled
      * based on data to transmit) */
@@ -2180,7 +2269,14 @@ void nr_schedule_ulsch(module_id_t module_id, frame_t frame, sub_frame_t slot, n
     int rnti_types[2] = { NR_RNTI_C, 0 };
 
     /* Statistics */
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds)
+     * harq_round_max==1 is used as a flag for fixed MCS, not to limit HARQ attempts */
+    const int effective_harq_max = (nr_mac->ul_bler.harq_round_max == 1) ? 4 : nr_mac->ul_bler.harq_round_max;
+    AssertFatal(cur_harq->round < effective_harq_max, "Indexing ulsch_rounds[%d] is out of bounds (max %d)\n", cur_harq->round, effective_harq_max);
+#else
     AssertFatal(cur_harq->round < nr_mac->ul_bler.harq_round_max, "Indexing ulsch_rounds[%d] is out of bounds\n", cur_harq->round);
+#endif
     UE->mac_stats.ul.rounds[cur_harq->round]++;
     if (cur_harq->round == 0) {
       UE->mac_stats.ulsch_total_bytes_scheduled += sched_pusch->tb_size;
@@ -2329,7 +2425,15 @@ void nr_schedule_ulsch(module_id_t module_id, frame_t frame, sub_frame_t slot, n
     pusch_pdu->nr_of_symbols = sched_pusch->tda_info.nrOfSymbols;
 
     /* PUSCH PDU */
-    AssertFatal(cur_harq->round < nr_mac->ul_bler.harq_round_max, "Indexing nr_rv_round_map[%d] is out of bounds\n", cur_harq->round%4);
+    /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds) */
+    const int ul_harq_max = nr_mac->ul_bler.harq_round_max;
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    const int effective_ul_harq_max = (ul_harq_max == 1) ? 4 : ul_harq_max;
+#else
+    const int effective_ul_harq_max = ul_harq_max;
+#endif
+    // Common assertion
+    AssertFatal(cur_harq->round < effective_ul_harq_max, "Indexing nr_rv_round_map[%d] is out of bounds (max %d)\n", cur_harq->round%4, effective_ul_harq_max);
     pusch_pdu->pusch_data.rv_index = nr_rv_round_map[cur_harq->round%4];
     pusch_pdu->pusch_data.harq_process_id = harq_id;
     pusch_pdu->pusch_data.new_data_indicator = (cur_harq->round == 0) ? 1 : 0;  // not NDI but indicator for new transmission

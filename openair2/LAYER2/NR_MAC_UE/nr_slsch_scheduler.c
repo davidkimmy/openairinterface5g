@@ -198,7 +198,7 @@ void handle_nr_ue_sl_harq(module_id_t mod_id,
 
 #ifdef ENABLE_BLER_INSTRUMENTATION
       UE->mac_sl_stats.sl.rounds[harq->round]++;
-      LOG_I(NR_MAC, "[HARQ_STATS] %u.%u PC5_HARQ_SUCCESS src_id=%d round=%d cumul_r0=%u r1=%u r2=%u r3=%u\n",
+      LOG_I(NR_MAC, "[HARQ_STATS] %u.%u PC5_HARQ_SUCCESS src_id=%d round=%d cumul_r0=%lu r1=%lu r2=%lu r3=%lu\n",
             frame, slot, src_id, harq->round,
             UE->mac_sl_stats.sl.rounds[0],
             UE->mac_sl_stats.sl.rounds[1],
@@ -312,8 +312,14 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   if (get_softmodem_params()->sl_mode == 2 && get_softmodem_params()->relay_type == 0)
     sl_bo->max_mcs = MAX_MCS;
 
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // BLER testing: Use exact fixed MCS from command line (0-28)
+  int max_mcs = get_nrUE_params()->mcs;
+#else
+  // Normal operation: constrain to sl_max_mcs limit
   const int max_mcs_table = mcs_tb_ind == 1 ? 27 : 28;
   int max_mcs = min(sched_ctrl->sl_max_mcs, max_mcs_table);
+#endif
   if (sl_bo->harq_round_max == 1)
     sched_pssch->mcs = max_mcs;
   else {
@@ -346,9 +352,15 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   sci_pdu->dmrs_pattern.val = 0;
   sci_pdu->second_stage_sci_format = 0;
   sci_pdu->number_of_dmrs_port = ri;
-  // we are using as a flag to indicate if csi report was received
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // BLER testing: always use fixed MCS from command line (0-28)
+  uint8_t fixed_mcs = get_nrUE_params()->mcs;
+  sci_pdu->mcs = fixed_mcs;
+#else
+  // Normal operation: use adaptive MCS when fixed_mcs == 0
   uint8_t fixed_mcs = get_nrUE_params()->mcs;
   sci_pdu->mcs = (fixed_mcs == 0) ? sched_pssch->mcs : fixed_mcs;
+#endif
 
   // Set additional_mcs.nbits and val based on resource pool configuration
   if (mac->sl_tx_res_pool->sl_Additional_MCS_Table_r16) {

@@ -626,12 +626,37 @@ static void pf_dl(module_id_t module_id,
 
       /* Calculate coeff */
       const NR_bler_options_t *bo = &mac->dl_bler;
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+      /* BLER testing: Use exact fixed MCS from config (dl_max_mcs) which can be overridden by command-line
+       * No min() constraint - use the exact value specified for testing */
+      const int max_mcs = bo->max_mcs;
+
+      /* Use fixed MCS when harq_round_max=1 (BLER testing mode)
+       * In BLER testing, we need consistent MCS for all transmissions once session is established
+       * Check if DRB is active (LCID 4+) - if yes, use fixed MCS for everything including SRB retransmissions */
+      bool has_drb_active = false;
+      for (int lcid = 4; lcid <= NR_MAX_NUM_LCID; lcid++) {
+        if (sched_ctrl->rlc_status[lcid].bytes_in_buffer > 0) {
+          has_drb_active = true;
+          break;
+        }
+      }
+
+      /* Use fixed MCS when harq_round_max=1 AND DRB is active, otherwise use adaptive MCS for session establishment */
+      if (bo->harq_round_max == 1 && has_drb_active)
+        sched_pdsch->mcs = max_mcs;
+      else
+        sched_pdsch->mcs = get_mcs_from_bler(bo, stats, &sched_ctrl->dl_bler_stats, max_mcs, frame);
+#else
+      /* Normal operation: Use per-UE adaptive MCS limit */
       const int max_mcs_table = current_BWP->mcsTableIdx == 1 ? 27 : 28;
       const int max_mcs = min(sched_ctrl->dl_max_mcs, max_mcs_table);
       if (bo->harq_round_max == 1)
         sched_pdsch->mcs = max_mcs;
       else
         sched_pdsch->mcs = get_mcs_from_bler(bo, stats, &sched_ctrl->dl_bler_stats, max_mcs, frame);
+#endif
       sched_pdsch->nrOfLayers = get_dl_nrOfLayers(sched_ctrl, current_BWP->dci_format);
       sched_pdsch->pm_index = mac->identity_pm ? 0 : get_pm_index(UE, sched_pdsch->nrOfLayers, mac->xp_pdsch_antenna_ports);
       const uint8_t Qm = nr_get_Qm_dl(sched_pdsch->mcs, current_BWP->mcsTableIdx);
@@ -1032,7 +1057,14 @@ void nr_schedule_ue_spec(module_id_t module_id,
     pdsch_pdu->mcsIndex[0] = sched_pdsch->mcs;
     pdsch_pdu->mcsTable[0] = current_BWP->mcsTableIdx;
     AssertFatal(harq!=NULL,"harq is null\n");
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds)
+     * harq_round_max==1 is used as a flag for fixed MCS, not to limit HARQ attempts */
+    const int effective_harq_max = (gNB_mac->dl_bler.harq_round_max == 1) ? 4 : gNB_mac->dl_bler.harq_round_max;
+    AssertFatal(harq->round<effective_harq_max,"harq round %d >= max %d",harq->round, effective_harq_max);
+#else
     AssertFatal(harq->round<gNB_mac->dl_bler.harq_round_max,"%d",harq->round);
+#endif
     pdsch_pdu->rvIndex[0] = nr_rv_round_map[harq->round%4];
     pdsch_pdu->TBSize[0] = TBS;
     pdsch_pdu->dataScramblingId = *scc->physCellId;

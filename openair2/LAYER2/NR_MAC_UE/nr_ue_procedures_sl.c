@@ -1038,15 +1038,18 @@ void nr_ue_process_mac_sl_pdu(int module_idP,
   // Track every PSSCH reception attempt
   pc5_rx_blocks_total++;
 
+  // Get MCS from received SCI
+  uint8_t rx_mcs = mac->sci_pdu_rx.mcs;
+
   // Check CRC result (ack_nack == 0 means CRC failed)
   bool crc_failed = (rx_slsch_pdu->ack_nack == 0);
 
   if (crc_failed) {
     pc5_rx_blocks_error++;
 
-    // Log individual block error
-    LOG_D(NR_MAC, "[BLER_STATS] %d.%d PC5_RX_BLOCK_ERROR total=%u errors=%u\n",
-          frame, slot, pc5_rx_blocks_total, pc5_rx_blocks_error);
+    // Log individual block error with MCS
+    LOG_D(NR_MAC, "[BLER_STATS] %d.%d PC5_RX_BLOCK_ERROR mcs=%u total=%u errors=%u\n",
+          frame, slot, rx_mcs, pc5_rx_blocks_total, pc5_rx_blocks_error);
   }
 
   // Periodic summary every 100 blocks, up to 1000 max
@@ -1056,8 +1059,8 @@ void nr_ue_process_mac_sl_pdu(int module_idP,
   if (pc5_rx_blocks_total % 100 == 0 && pc5_rx_blocks_total > 0 && pc5_rx_blocks_total <= 1000) {
     float bler = (float)pc5_rx_blocks_error / (float)pc5_rx_blocks_total;
 
-    LOG_I(NR_MAC, "[BLER_STATS] %d.%d PC5_RX_SUMMARY total=%u errors=%u BLER=%.4f\n",
-          frame, slot, pc5_rx_blocks_total, pc5_rx_blocks_error, bler);
+    LOG_I(NR_MAC, "[BLER_STATS] %d.%d PC5_RX_SUMMARY mcs=%u total=%u errors=%u BLER=%.4f\n",
+          frame, slot, rx_mcs, pc5_rx_blocks_total, pc5_rx_blocks_error, bler);
   }
 
   // Reset counters after reaching 1000 (only once)

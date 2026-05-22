@@ -39,6 +39,12 @@
 
 extern RAN_CONTEXT_t RC;
 
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // gNB DL BLER tracking counters (gNB → UE downlink)
+  static uint32_t gnb_dl_blocks_total = 0;
+  static uint32_t gnb_dl_blocks_error = 0;
+  static bool gnb_dl_reset_done_at_1000 = false;
+#endif
 
 
 static void nr_fill_nfapi_pucch(gNB_MAC_INST *nrmac,
@@ -377,11 +383,54 @@ static void handle_dl_harq(NR_UE_info_t * UE,
   NR_UE_harq_t *harq = &UE->UE_sched_ctrl.harq_processes[harq_pid];
   harq->feedback_slot = -1;
   harq->is_waiting = false;
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // Log DL HARQ feedback with MCS (gNB perspective)
+  uint8_t mcs = harq->sched_pdsch.mcs;
+  if (success) {
+    LOG_I(NR_MAC, "[BLER_STATS] GNB_DL_HARQ_ACK rnti=%04x pid=%d round=%d mcs=%u\n",
+          UE->rnti, harq_pid, harq->round, mcs);
+  } else {
+    LOG_I(NR_MAC, "[BLER_STATS] GNB_DL_HARQ_NACK rnti=%04x pid=%d round=%d mcs=%u\n",
+          UE->rnti, harq_pid, harq->round, mcs);
+  }
+
+  // Track gNB DL BLER (similar to PC5 UE RX tracking)
+  gnb_dl_blocks_total++;
+
+  if (!success) {
+    gnb_dl_blocks_error++;
+  }
+
+  // Periodic summary every 100 blocks, up to 1000 max
+  if (gnb_dl_blocks_total % 100 == 0 && gnb_dl_blocks_total > 0 && gnb_dl_blocks_total <= 1000) {
+    float bler = (float)gnb_dl_blocks_error / (float)gnb_dl_blocks_total;
+    LOG_I(NR_MAC, "[BLER_STATS] GNB_DL_SUMMARY rnti=%04x mcs=%u total=%u errors=%u BLER=%.4f\n",
+          UE->rnti, mcs, gnb_dl_blocks_total, gnb_dl_blocks_error, bler);
+  }
+
+  // Reset counters after reaching 1000 (only once)
+  if (gnb_dl_blocks_total >= 1000 && !gnb_dl_reset_done_at_1000) {
+    gnb_dl_reset_done_at_1000 = true;
+    gnb_dl_blocks_total = 0;
+    gnb_dl_blocks_error = 0;
+  }
+#endif
+
+  /* In fixed MCS mode (harq_round_max==1), allow normal HARQ retransmissions (up to 4 rounds)
+   * harq_round_max==1 is used as a flag for fixed MCS, not to limit HARQ attempts */
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  const int effective_harq_max = (harq_round_max == 1) ? 4 : harq_round_max;
+#else
+  const int effective_harq_max = harq_round_max;
+#endif
+
+  // Common DL HARQ processing logic
   if (success) {
     add_tail_nr_list(&UE->UE_sched_ctrl.available_dl_harq, harq_pid);
     harq->round = 0;
     harq->ndi ^= 1;
-  } else if (harq->round >= harq_round_max - 1) {
+  } else if (harq->round >= effective_harq_max - 1) {
     abort_nr_dl_harq(UE, harq_pid);
     LOG_D(NR_MAC, "retransmission error for UE %04x (total %"PRIu64")\n", UE->rnti, UE->mac_stats.dl.errors);
   } else {

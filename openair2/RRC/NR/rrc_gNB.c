@@ -2915,6 +2915,17 @@ void nr_gNB_process_sl_harq_report_ind(const protocol_ctxt_t *const ctxt_pP, Mes
     ue_p->sl_harq_ack_count  = 0;
     ue_p->sl_harq_nack_count = 0;
 
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    /* Skip SL MCS adaptation if Uu fixed MCS mode is active (for BLER testing)
+     * harq_round_max=1 indicates fixed MCS mode for Uu interface
+     * Continuous RRCReconfigurations keep LCID 1 active, preventing fixed MCS scheduler logic */
+    const NR_bler_options_t *bo = &RC.nrmac[instance]->dl_bler;
+    if (bo->harq_round_max == 1) {
+      LOG_I(NR_RRC, "SL MCS adaptation skipped: Uu fixed MCS testing active (harq_round_max=1)\n");
+      return;
+    }
+#endif
+
     uint8_t old_max_mcs = ue_p->sl_max_mcs_pssch_r16;
     uint8_t new_max_mcs = old_max_mcs;
 

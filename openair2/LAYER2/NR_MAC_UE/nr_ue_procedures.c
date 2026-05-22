@@ -112,6 +112,13 @@ int get_pucch0_mcs(const int O_ACK, const int O_SR, const int ack_payload, const
   return mcs;
 }
 
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // Uu interface BLER tracking counters
+  static uint32_t uu_rx_blocks_total = 0;
+  static uint32_t uu_rx_blocks_error = 0;
+  static bool uu_reset_done_at_1000 = false;
+#endif
+
 /* TS 38.211 Table 6.4.1.3.3.2-1: DM-RS positions for PUCCH format 3 and 4 */
 static const int nb_symbols_excluding_dmrs[11][2][2]
 = {
@@ -3583,6 +3590,32 @@ void nr_ue_process_mac_pdu(nr_downlink_indication_t *dl_info,
   if (!pduP){
     return;
   }
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+  // Track Uu interface BLER (PDSCH reception)
+  uint8_t ack_nack = dl_info->rx_ind->rx_indication_body[pdu_id].pdsch_pdu.ack_nack;
+  uu_rx_blocks_total++;
+
+  if (ack_nack == 0) {
+    uu_rx_blocks_error++;
+    LOG_D(NR_MAC, "[BLER_STATS] %d.%d UU_RX_ERROR total=%u errors=%u\n",
+          frameP, slot, uu_rx_blocks_total, uu_rx_blocks_error);
+  }
+
+  // Report BLER summary every 100 blocks (up to 1000)
+  if (uu_rx_blocks_total % 100 == 0 && uu_rx_blocks_total > 0 && uu_rx_blocks_total <= 1000) {
+    float bler = (float)uu_rx_blocks_error / (float)uu_rx_blocks_total;
+    LOG_I(NR_MAC, "[BLER_STATS] %d.%d UU_RX_SUMMARY total=%u errors=%u BLER=%.4f\n",
+          frameP, slot, uu_rx_blocks_total, uu_rx_blocks_error, bler);
+  }
+
+  // Reset counters after reaching 1000 (only once)
+  if (uu_rx_blocks_total >= 1000 && !uu_reset_done_at_1000) {
+    uu_reset_done_at_1000 = true;
+    uu_rx_blocks_total = 0;
+    uu_rx_blocks_error = 0;
+  }
+#endif
 
   LOG_D(MAC, "In %s [%d.%d]: processing PDU %d (with length %d) of %d total number of PDUs...\n", __FUNCTION__, frameP, slot, pdu_id, pdu_len, dl_info->rx_ind->number_pdus);
 

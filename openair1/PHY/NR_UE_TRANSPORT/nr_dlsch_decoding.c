@@ -118,6 +118,11 @@ static bool nr_ue_postDecode(PHY_VARS_NR_UE *phy_vars_ue,
           dlsch->last_iteration_cnt = dlsch->max_ldpc_iterations + 1;
           LOG_E(PHY, " Frame %d.%d LDPC global CRC fails, but individual LDPC CRC succeeded. %d segs\n", proc->frame_rx, proc->nr_slot_rx, harq_process->C);
           LOG_D(PHY, "DLSCH received nok \n");
+#ifdef ENABLE_BLER_INSTRUMENTATION
+          // Log HARQ failure on Uu (global CRC failure)
+          LOG_I(NR_PHY, "[HARQ_STATS] %d.%d UU_HARQ_FAIL round=%u mcs=%u\n",
+                proc->frame_rx, proc->nr_slot_rx, harq_process->DLround, dlsch->dlsch_config.mcs);
+#endif
           return true; //stop
         }
       }
@@ -134,11 +139,21 @@ static bool nr_ue_postDecode(PHY_VARS_NR_UE *phy_vars_ue,
       //}
       dlsch->last_iteration_cnt = rdata->decodeIterations;
       LOG_D(PHY, "DLSCH received ok \n");
+#ifdef ENABLE_BLER_INSTRUMENTATION
+      // Log HARQ success on Uu
+      LOG_I(NR_PHY, "[HARQ_STATS] %d.%d UU_HARQ_SUCCESS round=%u mcs=%u\n",
+            proc->frame_rx, proc->nr_slot_rx, harq_process->DLround, dlsch->dlsch_config.mcs);
+#endif
     } else {
       kpiStructure.nb_nack++;
       //LOG_D(PHY,"[UE %d] DLSCH: Setting NAK for SFN/SF %d/%d (pid %d, status %d, round %d, TBS %d, mcs %d) Kr %d r %d harq_process->round %d\n",
       //      phy_vars_ue->Mod_id, frame, nr_slot_rx, harq_pid,harq_process->status, harq_process->round,harq_process->TBS,harq_process->mcs,Kr,r,harq_process->round);
       harq_process->ack = 0;
+#ifdef ENABLE_BLER_INSTRUMENTATION
+      // Log HARQ failure on Uu (segment decoding failure)
+      LOG_I(NR_PHY, "[HARQ_STATS] %d.%d UU_HARQ_FAIL round=%u mcs=%u\n",
+            proc->frame_rx, proc->nr_slot_rx, harq_process->DLround, dlsch->dlsch_config.mcs);
+#endif
 
       //if(is_crnti) {
       //  LOG_D(PHY,"[UE %d] DLSCH: Setting NACK for nr_slot_rx %d (pid %d, pid status %d, round %d/Max %d, TBS %d)\n",
@@ -277,6 +292,15 @@ static void nr_processDLSegment(void *arg)
     p_decoderParms->crc_type = crc_type;
     rdata->decodeIterations = nrLDPC_decoder(p_decoderParms, (int8_t *)&pl[0], LDPCoutput, &procTime, &harq_process->abort_decode);
     //VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_DLSCH_LDPC, VCD_FUNCTION_OUT);
+
+#ifdef ENABLE_BLER_INSTRUMENTATION
+    // Log LDPC iterations for Uu interface (PDSCH)
+    uint8_t mcs = dlsch->dlsch_config.mcs;
+    bool decodeSuccess = (rdata->decodeIterations <= dlsch->max_ldpc_iterations);
+    LOG_I(NR_PHY, "[LDPC_STATS] %d.%d UU_LDPC_ITERATIONS mcs=%u iterations=%u max=%u success=%d\n",
+          rdata->proc->frame_rx, rdata->proc->nr_slot_rx,
+          mcs, rdata->decodeIterations, dlsch->max_ldpc_iterations, decodeSuccess ? 1 : 0);
+#endif
 
     if (rdata->decodeIterations <= dlsch->max_ldpc_iterations)
       memcpy(harq_process->c[r], LDPCoutput, Kr >> 3);
