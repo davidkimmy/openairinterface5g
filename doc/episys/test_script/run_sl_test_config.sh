@@ -42,9 +42,7 @@ use_extended_delays=0
 
 # USRP serial numbers for the SL mode 1 relay test.
 RELAY_UE_USRP_SN_FOR_UU=340EA03
-RELAY_UE_USRP_SN_FOR_SL=340E9AE
-#RELAY_UE_USRP_SN_FOR_SL=340E9F3
-#RELAY_UE_USRP_SN_FOR_SL=340EA3B
+RELAY_UE_USRP_SN_FOR_SL=340EA3B
 
 uu_basic_tests=(
     rfsim_uu_ping_test_on_local_host
@@ -85,7 +83,7 @@ base_log_dir="~/openairinterface5g"
 use_external_clock=0
 use_gnome=0
 use_sa=1
-ensure_ping_test_time=1
+ensure_ping_test_time=1 # Adding 16 seconds to ensure ping test if needed.
 # Select active test profile among: pilot, regress, stress, bler
 test_profile='pilot'
 #############################################################
@@ -98,8 +96,10 @@ if [[ $test_profile == "pilot" ]]; then
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
+    # Ignore snr_array unless you have any specific snr values to test
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
+    # Ignore atten_array unless you have any specific attenuation values to test
     atten_array=(20)  # Removed all attenuation for max link budget
     # USRP TX/RX gain
     tx_gain=20  # 20, 30
@@ -114,8 +114,10 @@ elif [[ $test_profile == "regress" ]]; then
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
+    # Ignore snr_array unless you have any specific snr values to test
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
+    # Ignore atten_array unless you have any specific attenuation values to test
     atten_array=(20)
     # USRP TX/RX gain
     tx_gain=20  # 20, 30
@@ -127,9 +129,11 @@ elif [[ $test_profile == "stress" ]]; then
     duration=300
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
+    # Ignore snr_array unless you have any specific snr values to test
     snr_array=($(seq 0 1 0))  # [start, step, end]
     # USRP parameters (attenuation values in dB)
-    atten_array=(20 30 40 50 55 60)
+    # Ignore atten_array unless you have any specific attenuation values to test
+    atten_array=(20) # (20 30 40 50 55 60)
     # USRP TX/RX gain
     tx_gain=20  # 20, 30
     rx_gain=110  # 110, 70

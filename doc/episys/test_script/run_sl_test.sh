@@ -61,6 +61,13 @@ declare -A sleep_timing
 
 # Apply extended delays for slower systems or specific environments
 # Only called if use_extended_delays=1 in config file
+apply_default_delays() {
+    sleep_timing["tun_wait_1st"]=0
+    sleep_timing["tun_wait_2nd"]=0
+    sleep_timing["sync_stab_30s"]=0
+    sleep_timing["sync_stab_45s_v1"]=0
+    sleep_timing["sync_stab_45s_v2"]=0
+}
 apply_extended_delays() {
     sleep_timing["tun_wait_1st"]=3
     sleep_timing["tun_wait_2nd"]=3
@@ -72,6 +79,8 @@ apply_extended_delays() {
 # Apply extended delays if enabled in config
 if [[ "$use_extended_delays" == "1" ]]; then
     apply_extended_delays
+else
+    apply_default_delays
 fi
 
 # Parallel mode: auto-generate host-specific configs and launch
@@ -1214,12 +1223,13 @@ slmode1_srap_ping_test() {
     else
         [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
+        [[ $duration -lt 0 ]] && duration=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
     if [[ "$use_extended_delays" == "1" ]]; then
         echo "Waiting additional ${sleep_timing[sync_stab_45s_v1]} seconds for sidelink sync to stabilize..."
-        sleep $((0 + ${sleep_timing[sync_stab_45s_v1]}))
+        sleep ${sleep_timing[sync_stab_45s_v1]}
     fi
 
     evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
@@ -1612,7 +1622,7 @@ uu_ping_test() {
     # Additional wait time for synchronization to complete
     if [[ "$use_extended_delays" == "1" ]]; then
         echo "Waiting additional 30 seconds for sidelink sync to stabilize..."
-        sleep $((0 + ${sleep_timing[sync_stab_30s]}))  # Configurable: default 30s
+        sleep ${sleep_timing[sync_stab_30s]}  # Configurable: default 30s
     fi
 
     evaluate_ping_test $nrue_host_name $src_if $dest_ip $sl_mode "${test_name}"
@@ -1720,12 +1730,13 @@ pc5_ping_test() {
     else
         [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
+        [[ $duration -lt 0 ]] && duration=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
     if [[ "$use_extended_delays" == "1" ]]; then
         echo "Waiting additional ${sleep_timing[sync_stab_45s_v1]} seconds for sidelink sync to stabilize..."
-        sleep $((0 + ${sleep_timing[sync_stab_45s_v1]}))
+        sleep ${sleep_timing[sync_stab_45s_v1]}
     fi
 
     evaluate_ping_test $syncref_host_name $src_if $dest_ip $sl_mode "${test_name}"
@@ -1858,12 +1869,13 @@ pc5_csi_acquisition_psfch_period_test() {
     else
         [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
+        [[ $duration -lt 0 ]] && duration=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
     if [[ "$use_extended_delays" == "1" ]]; then
         echo "Waiting additional ${sleep_timing[sync_stab_45s_v2]} seconds for sidelink sync to stabilize..."
-        sleep $((0 + ${sleep_timing[sync_stab_45s_v2]}))
+        sleep ${sleep_timing[sync_stab_45s_v2]}
     fi
 
     evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}"
