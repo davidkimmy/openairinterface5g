@@ -66,7 +66,7 @@ slmode1_basic_tests=(
 )
 regress_tests=(
     uu_basic_tests
-    slmode1_basic_tests[0]
+    slmode1_basic_tests
     slmode2_basic_tests
     slmode2_csi_psfch_tests
 )
@@ -74,8 +74,8 @@ stress_tests=(
     slmode2_basic_tests[1:2]
 )
 pilot_tests=(
-    #slmode1_basic_tests[2]
-    slmode2_basic_tests[2]
+    slmode1_basic_tests[2]
+    #slmode2_basic_tests[2]
     #slmode2_csi_psfch_tests[2]
 )
 # Base directory for logs. The default will be this script folder.
@@ -92,7 +92,7 @@ test_profile='pilot'
 if [[ $test_profile == "pilot" ]]; then
     enabled_tests=("${pilot_tests[@]}")
     num_repeat=1
-    mcs_array=(15)
+    mcs_array=(9)
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
@@ -110,7 +110,7 @@ if [[ $test_profile == "pilot" ]]; then
 elif [[ $test_profile == "regress" ]]; then
     enabled_tests=("${regress_tests[@]}")
     num_repeat=1
-    mcs_array=($(seq 9 6 15))  # [start, step, end] # (9 15)
+    mcs_array=($(seq 14 6 14))  # [start, step, end] # (9 15)
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)

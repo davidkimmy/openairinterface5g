@@ -1056,7 +1056,7 @@ run_syncref_cmd() {
                 syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
                             -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            --rfsim $sa_flag --sync-ref --sl-mode 1 \
+                            --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs"
@@ -1065,7 +1065,7 @@ run_syncref_cmd() {
                             sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
                             -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            --rfsim $sa_flag --sync-ref --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
+                            --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info $mcs"
@@ -1074,7 +1074,7 @@ run_syncref_cmd() {
             syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
                         -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                        -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --ip-demo 1 --relay-type 1 --is-relay-ue 1 \
+                        -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
                         --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
                         $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
@@ -1119,22 +1119,24 @@ run_nearby_cmd() {
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                            -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
+                            -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+                            --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
-                            --log_config.global_log_level info --relay-type 1"
+                            --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                            -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
+                            -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+                            --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
-                            --log_config.global_log_level info --relay-type 1"
+                            --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
                         sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E $sa_flag --sl-mode 2 --relay-type 1 \
-                        $ext_clock_flag \
-                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+                        -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 $ext_clock_flag $mcs \
+                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
@@ -1183,8 +1185,6 @@ slmode1_srap_ping_test() {
     [[ $# -ge 8 ]] && num_hosts=$8
     [[ $# -ge 9 ]] && test_name=$9 || test_name="${FUNCNAME[0]}"
 
-    echo "====================  Testing ${test_name}  ===================="
-
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
         validate_test_type_for_local_host $test_type $test_name || return 1
@@ -1208,7 +1208,9 @@ slmode1_srap_ping_test() {
     fi
 
     run_gNB_cmd $test_type $sl_mode $gnb_host_name
+    sleep 1
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+    sleep 1
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
 
     local wait_start=$(date +%s)
@@ -1440,7 +1442,7 @@ run_syncref_cmd_with_noise() {
                  --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
                  --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
                  --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
-                 --relay-type 1 --is-relay-ue 1 --ip-demo 1 --mcs ${mcs} --node-number 2"
+                 --relay-type 1 --is-relay-ue 1 --mcs ${mcs} --node-number 2"
 
     log_file="$HOME/result_nrUE_syncref.log"
 
@@ -1479,7 +1481,7 @@ run_nearby_cmd_with_noise() {
                 --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
                 --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
                 --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
-                --mcs ${mcs} --ip-demo 1 --node-number 3 --relay-type 1"
+                --mcs ${mcs} --node-number 3 --relay-type 1"
 
     log_file="$HOME/result_nearby.log"
 
@@ -1505,8 +1507,6 @@ bler_test() {
     [[ $# -ge 8 ]] && nearby_host_name=$8
     [[ $# -ge 9 ]] && num_hosts=$9
     [[ $# -ge 10 ]] && test_name=${10} || test_name="${FUNCNAME[0]}"
-
-    echo "====================  Testing ${test_name}  ===================="
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -1602,8 +1602,6 @@ uu_ping_test() {
     [[ $# -ge 7 ]] && num_hosts=$7
     [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}"
 
-    echo "====================  Testing ${test_name}  ===================="
-
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
         validate_test_type_for_local_host $test_type $test_name || return 1
@@ -1616,6 +1614,7 @@ uu_ping_test() {
     local dest_ip="8.8.8.8"
 
     run_gNB_cmd $test_type $sl_mode $gnb_host_name
+    sleep 1
     run_nrUE_cmd $test_type $mcs $sl_mode $nrue_host_name
     wait_for_tun_interface $src_if $nrue_host_name $duration
 
@@ -1692,8 +1691,6 @@ pc5_ping_test() {
     [[ $# -ge 7 ]] && num_hosts=$7
     [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}"
 
-    echo "====================  Testing ${test_name}  ===================="
-
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
         validate_test_type_for_local_host $test_type $test_name || return 1
@@ -1716,6 +1713,7 @@ pc5_ping_test() {
     fi
 
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+    sleep 1
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
 
     local wait_start=$(date +%s)
@@ -1808,8 +1806,6 @@ pc5_csi_acquisition_psfch_period_test() {
     [[ $# -ge 9 ]] && num_hosts=$9
     [[ $# -ge 10 ]] && test_name=${10} || test_name="${FUNCNAME[0]}"
 
-    echo "====================  Testing ${test_name}  ===================="
-
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
         validate_test_type_for_local_host "$test_type" "${FUNCNAME[0]}" || return 1
@@ -1851,9 +1847,11 @@ pc5_csi_acquisition_psfch_period_test() {
     # For SL mode 2 two-host tests: syncref runs locally, nearby runs remotely
     if [[ $nearby_host_name == "local" ]]; then
         run_syncref_cmd $test_type $mcs $sl_mode "local"
+        sleep 1
         run_nearby_cmd  $test_type $mcs $sl_mode "local"
     else
         run_syncref_cmd $test_type $mcs $sl_mode "local"
+        sleep 1
         run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
     fi
 
