@@ -5,16 +5,6 @@
 #############################################################
 
 #############################################################
-# System-Specific Configuration
-#############################################################
-# Extended delays for slower systems or specific test environments
-# Set to 1 if your system needs additional time for:
-#   - TUN interface initialization
-#   - Sidelink synchronization stabilization
-# Most users should keep this at 0 (default: disabled)
-use_extended_delays=0
-
-#############################################################
 # Test Case Selection
 #############################################################
 # List tests to run in the order you want them executed.
@@ -78,6 +68,12 @@ pilot_tests=(
     #slmode2_basic_tests[2]
     #slmode2_csi_psfch_tests[2]
 )
+
+# Set to 1 if your system needs additional time for:
+#   - TUN interface initialization
+#   - Sidelink synchronization stabilization
+use_extended_delays=0 # (0 default: disabled)
+
 # Base directory for logs. The default will be this script folder.
 base_log_dir="~/openairinterface5g"
 use_external_clock=0
@@ -110,7 +106,7 @@ if [[ $test_profile == "pilot" ]]; then
 elif [[ $test_profile == "regress" ]]; then
     enabled_tests=("${regress_tests[@]}")
     num_repeat=1
-    mcs_array=($(seq 14 6 14))  # [start, step, end] # (9 15)
+    mcs_array=(10) # ($(seq 0 1 10)) # [start, step, end]
     duration=30
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
