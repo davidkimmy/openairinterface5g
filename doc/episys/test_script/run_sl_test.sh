@@ -1374,6 +1374,69 @@ save_logs_for_mcs() {
 }
 
 #############################################################
+create_bler_config() {
+#############################################################
+    # Create BLER-specific config with fixed MCS settings
+    # Only called during BLER tests
+    # Arguments: sl_mode, host_name
+
+    local sl_mode=$1
+    local host_name=$2
+
+    [[ $sl_mode -eq 1 ]] && conf_tag="_relay_ue" || conf_tag=""
+
+    # Determine user name and config path based on host
+    local user_name=$(find_user_name "$host_name")
+    local base_conf=""
+    local bler_conf=""
+
+    if [[ $host_name == 'local' ]]; then
+        base_conf="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}.conf"
+        bler_conf="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}_bler.conf"
+    else
+        base_conf="/home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}.conf"
+        bler_conf="/home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}_bler.conf"
+    fi
+
+    # Check if BLER config already exists
+    if [[ $host_name == 'local' ]]; then
+        if [[ -f "$bler_conf" ]]; then
+            return 0
+        fi
+
+        # Copy base config and add BLER-specific parameters
+        cp "$base_conf" "$bler_conf"
+
+        # Add fixed MCS configuration after ul_max_mcs line
+        sed -i '/ul_max_mcs[[:space:]]*=[[:space:]]*28;/a\
+\
+  # Fixed MCS configuration for BLER testing\
+  # Setting harq_round_max=1 disables adaptive MCS (no CQI/HARQ-based adaptation)\
+  # The scheduler will use dl_max_mcs/ul_max_mcs as fixed values\
+  dl_max_mcs                  = 28;          # Downlink MCS (0-28, adjust for test)\
+  dl_harq_round_max           = 1;           # Set to 1 for fixed MCS, >1 for adaptive\
+  ul_harq_round_max           = 1;           # Set to 1 for fixed MCS, >1 for adaptive\
+  min_grant_mcs               = 28;          # MUST match ul_max_mcs for high MCS testing (fixes UL MCS >9)' "$bler_conf"
+    else
+        # Remote host - check and create via SSH
+        if safe_ssh "$host_name" "test -f $bler_conf" 2>/dev/null; then
+            return 0
+        fi
+
+        # Copy and modify on remote host
+        safe_ssh "$host_name" "cp $base_conf $bler_conf && sed -i '/ul_max_mcs[[:space:]]*=[[:space:]]*28;/a\\
+\\
+  # Fixed MCS configuration for BLER testing\\
+  # Setting harq_round_max=1 disables adaptive MCS (no CQI/HARQ-based adaptation)\\
+  # The scheduler will use dl_max_mcs/ul_max_mcs as fixed values\\
+  dl_max_mcs                  = 28;          # Downlink MCS (0-28, adjust for test)\\
+  dl_harq_round_max           = 1;           # Set to 1 for fixed MCS, >1 for adaptive\\
+  ul_harq_round_max           = 1;           # Set to 1 for fixed MCS, >1 for adaptive\\
+  min_grant_mcs               = 28;          # MUST match ul_max_mcs for high MCS testing (fixes UL MCS >9)' $bler_conf" 2>/dev/null
+    fi
+}
+
+#############################################################
 run_gNB_cmd_with_noise() {
 #############################################################
     # Launch gNB with channel model and noise injection
@@ -1393,9 +1456,22 @@ run_gNB_cmd_with_noise() {
     [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --ip-demo 1 --sl-mode 1" || sl_relay_tag=""
     [[ $sl_mode -eq 1 ]] && conf_tag="_relay_ue" || conf_tag=""
 
+    # Create BLER config with fixed MCS settings
+    create_bler_config $sl_mode $host_name
+
+    # Determine user name and use BLER-specific config
+    local user_name=$(find_user_name "$host_name")
+    local bler_conf_tag="${conf_tag}_bler"
+
+    if [[ $host_name == 'local' ]]; then
+        local config_path="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${bler_conf_tag}.conf"
+    else
+        local config_path="/home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${bler_conf_tag}.conf"
+    fi
+
     gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; \
              sudo -E LD_LIBRARY_PATH=\$PWD ./nr-softmodem \
-             -O $HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}.conf \
+             -O $config_path \
              --gNBs.[0].min_rxtxtime 6 \
              --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa \
              --log_config.global_log_level info --log_config.global_log_options time \
@@ -1408,7 +1484,7 @@ run_gNB_cmd_with_noise() {
 
     log_file="$HOME/result_gNB.log"
 
-    echo "=== gNB Command (noise=${noise_power}dB, ploss=${ploss}dB) ===" >> "$log_dir/commands.txt"
+    echo "=== gNB Command (noise=${noise_power}dB, ploss=${ploss}dB, config=${bler_conf_tag}) ===" >> "$log_dir/commands.txt"
     echo "$gNB_cmd" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
