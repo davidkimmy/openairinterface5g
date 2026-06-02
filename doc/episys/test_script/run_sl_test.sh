@@ -30,6 +30,74 @@ safe_ssh() {
     fi
 }
 
+#############################################################
+# SSH Host Configuration
+#############################################################
+# Host names must match entries in ~/.ssh/config
+# For BLER tests (local execution), these are overridden to "local"
+REMOTE_UE_HOST="remote_ue"
+LOCAL_HOST="local"
+RELAY_UE_HOST="relay_ue"
+NR_UE_HOST="nr_ue"
+GNB_HOST="gNB"
+
+#############################################################
+# Host Initialization Function
+#############################################################
+# Usage: init_host_variables <mode>
+#   resolve_ssh - use remote_ue, relay_ue, etc. as defaults
+#   skip_ssh    - use localhost as default
+init_host_variables() {
+    local mode=${1:-resolve_ssh}
+
+    if [[ "$mode" == "resolve_ssh" ]]; then
+        REMOTE_UE_HOST="${REMOTE_UE_HOST:-remote_ue}"
+        REMOTE_HOST_IP=$(ssh -G $REMOTE_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "Remote UE Host IP address = $REMOTE_HOST_IP"
+
+        LOCAL_HOST="${LOCAL_HOST:-local}"
+        LOCAL_HOST_IP=$(ssh -G $LOCAL_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "Local Host IP address = $LOCAL_HOST_IP"
+
+        RELAY_UE_HOST="${RELAY_UE_HOST:-relay_ue}"
+        RELAY_UE_HOST_IP=$(ssh -G $RELAY_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "Relay UE Host IP address = $RELAY_UE_HOST_IP"
+
+        NR_UE_HOST="${NR_UE_HOST:-nr_ue}"
+        NR_UE_HOST_IP=$(ssh -G $NR_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "nrUE Host IP address = $NR_UE_HOST_IP"
+
+        GNB_HOST="${GNB_HOST:-gNB}"
+        GNB_HOST_IP=$(ssh -G $GNB_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "gNB Host IP address = $GNB_HOST_IP"
+    else
+        REMOTE_UE_HOST="${REMOTE_UE_HOST:-localhost}"
+        REMOTE_HOST_IP=$(ssh -G $REMOTE_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "Remote UE Host IP address = $REMOTE_HOST_IP"
+
+        LOCAL_HOST="${LOCAL_HOST:-localhost}"
+        LOCAL_HOST_IP=$(ssh -G $LOCAL_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "Local Host IP address = $LOCAL_HOST_IP"
+
+        RELAY_UE_HOST="${RELAY_UE_HOST:-localhost}"
+        RELAY_UE_HOST_IP=$(ssh -G $RELAY_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "Relay UE Host IP address = $RELAY_UE_HOST_IP"
+
+        NR_UE_HOST="${NR_UE_HOST:-localhost}"
+        NR_UE_HOST_IP=$(ssh -G $NR_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "nrUE Host IP address = $NR_UE_HOST_IP"
+
+        GNB_HOST="${GNB_HOST:-localhost}"
+        GNB_HOST_IP=$(ssh -G $GNB_HOST 2>/dev/null | awk '/^hostname / {print $2}')
+        echo "gNB Host IP address = $GNB_HOST_IP"
+    fi
+
+    # Export variables so they're available to the main script
+    export REMOTE_UE_HOST REMOTE_HOST_IP LOCAL_HOST LOCAL_HOST_IP
+    export RELAY_UE_HOST RELAY_UE_HOST_IP NR_UE_HOST NR_UE_HOST_IP
+    export GNB_HOST GNB_HOST_IP
+}
+
 # Override from config file
 # Support custom config file via BLER_CONFIG_FILE env variable (for distributed testing)
 if [[ -n "$BLER_CONFIG_FILE" ]]; then
@@ -43,20 +111,7 @@ else
     SL_TEST_CONFIG_FILE="$SCRIPT_DIR/run_sl_test_config.sh"
 fi
 
-echo "DEBUG: Sourcing config from: $SL_TEST_CONFIG_FILE"
-if [[ ! -f "$SL_TEST_CONFIG_FILE" ]]; then
-    echo "ERROR: Config file not found: $SL_TEST_CONFIG_FILE"
-    exit 1
-fi
-source "$SL_TEST_CONFIG_FILE"
-echo "DEBUG: After sourcing config - enabled_tests: ${enabled_tests[@]}"
-echo "DEBUG: After sourcing config - test_profile: $test_profile"
-[[ -n "$base_log_dir" ]] && base_dir="${base_log_dir/#\~/$HOME}"
-[[ "$use_external_clock" == "1" ]] && ext_clock_flag=" --clock-source 1 --time-source 1"
-[[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
-[[ "$use_sa" == "1" ]] && sa_flag="--sa"
-
-# Initialize default sleep timings (can be overridden by config)
+# Initialize default sleep timings and test_extra_duration (before sourcing config)
 declare -A sleep_timing
 
 # Apply extended delays for slower systems or specific environments
@@ -67,6 +122,8 @@ apply_default_delays() {
     sleep_timing["sync_stab_30s"]=0
     sleep_timing["sync_stab_45s_v1"]=0
     sleep_timing["sync_stab_45s_v2"]=0
+    sleep_timing["cn_shutdown"]=3
+    sleep_timing["cn_init"]=3
 }
 apply_extended_delays() {
     sleep_timing["tun_wait_1st"]=3
@@ -74,7 +131,31 @@ apply_extended_delays() {
     sleep_timing["sync_stab_30s"]=30
     sleep_timing["sync_stab_45s_v1"]=45
     sleep_timing["sync_stab_45s_v2"]=45
+    sleep_timing["cn_shutdown"]=5
+    sleep_timing["cn_init"]=5
 }
+
+echo "DEBUG: Sourcing config from: $SL_TEST_CONFIG_FILE"
+if [[ ! -f "$SL_TEST_CONFIG_FILE" ]]; then
+    echo "ERROR: Config file not found: $SL_TEST_CONFIG_FILE"
+    exit 1
+fi
+source "$SL_TEST_CONFIG_FILE"
+
+# Source utility functions
+SL_TEST_UTILS_FILE="$SCRIPT_DIR/run_sl_test_utils.sh"
+if [[ -f "$SL_TEST_UTILS_FILE" ]]; then
+    source "$SL_TEST_UTILS_FILE"
+else
+    echo "WARNING: Utilities file not found: $SL_TEST_UTILS_FILE"
+fi
+
+echo "Tests: ${enabled_tests[@]}"
+echo "Test_profile: $test_profile"
+[[ -n "$base_log_dir" ]] && base_dir="${base_log_dir/#\~/$HOME}"
+[[ "$use_external_clock" == "1" ]] && ext_clock_flag=" --clock-source 1 --time-source 1"
+[[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
+[[ "$use_sa" == "1" ]] && sa_flag="--sa"
 
 # Apply extended delays if enabled in config
 if [[ "$use_extended_delays" == "1" ]]; then
@@ -106,90 +187,8 @@ if [[ "$parallel_mode" == "true" ]]; then
     iterations_per_host=$((total_iterations / num_hosts))
     remainder=$((total_iterations % num_hosts))
 
-    echo "Generating configs and launching tests..."
-    echo "Total iterations: $total_iterations"
-    echo "Per host: $iterations_per_host"
-    echo ""
-
-    # Generate config and launch for each host
-    host_idx=0
-    for hostname in "${bler_hosts[@]}"; do
-        host_idx=$((host_idx + 1))
-        host_id="host${host_idx}"
-
-        sl_test_config_file="$SCRIPT_DIR/run_sl_test_config_${host_id}.sh"
-
-        # Calculate iteration range for this host
-        start=$(( (host_idx - 1) * iterations_per_host + 1 ))
-        end=$(( host_idx * iterations_per_host ))
-
-        # Give remainder iterations to last host
-        if [[ $host_idx -eq $num_hosts ]]; then
-            end=$((end + remainder))
-        fi
-
-        echo "→ ${host_id} (${hostname}): iterations ${start}-${end}"
-
-        # Generate config file
-        cat > "$sl_test_config_file" << EOF
-#!/bin/bash
-# ${host_id} Config - Auto-generated from ${SL_TEST_CONFIG_FILE}
-# Generated: $(date)
-# Host: ${hostname}
-
-enabled_tests=(
-    rfsim_slmode1_bler_test_on_local_host
-)
-
-base_log_dir="~/openairinterface5g"
-use_gnome=0
-
-# ${host_id}: Iterations ${start}-${end}
-num_repeat=$((end - start + 1))
-iteration_start=${start}
-iteration_end=${end}
-
-# Full MCS range: 0-28 (${#mcs_array[@]} values)
-mcs_array=(${mcs_array[@]})
-duration=${duration}
-
-# Noise power array: ${#noise_power_array[@]} values
-noise_power_array=(${noise_power_array[@]})
-
-ploss_db=${ploss_db}
-csi_acquisition=${csi_acquisition:-0}
-psfch_period=${psfch_period:-2}
-
-ping_count=${ping_count:-975}
-ping_interval=${ping_interval:-0.0667}
-
-# Softmodem log files
-softmodem_log_files=(
-    result_gNB.log
-    result_nrUE.log
-    result_syncref.log
-    result_nearby.log
-    result_nrUE_syncref.log
-)
-
-echo "=========================================="
-echo "${host_id} Config (${hostname})"
-echo "=========================================="
-echo "Iterations: \${iteration_start} to \${iteration_end} (\${num_repeat} iterations)"
-echo "MCS Array: \${#mcs_array[@]} values (0-28, full range)"
-echo "Noise Powers: \${#noise_power_array[@]} values"
-echo "Duration: \${duration}s per test"
-echo "Total tests: \$(((\${#mcs_array[@]}) * (\${#noise_power_array[@]}) * num_repeat))"
-echo "=========================================="
-EOF
-        chmod +x "$sl_test_config_file"
-
-        # Distribute config to remote host if not localhost
-        if [[ "$hostname" != "localhost" && "$hostname" != "local" ]]; then
-            echo "  → Copying config to ${hostname}..."
-            scp -q "$sl_test_config_file" "${hostname}:~/ci_script/" 2>/dev/null || echo "  ⚠ Failed to copy config to ${hostname}"
-        fi
-    done
+    # Setup parallel hosts by updating configs (function defined in run_sl_test_utils.sh)
+    setup_parallel_bler_hosts
 
     echo ""
     echo "=========================================="
@@ -242,7 +241,18 @@ EOF
         echo "  ${host_id} (${hostname}): ~/openairinterface5g/bler_${host_id}.log"
     done
     echo ""
-    echo "Expected completion: ~58 hours (all machines in parallel)"
+
+    # Calculate expected completion time
+    total_tests=$((${#mcs_array[@]} * ${#noise_power_array[@]} * num_repeat))
+    tests_per_host=$((total_tests / num_hosts))
+    test_time=$((duration + 10))  # duration + 10s overhead (restart, cleanup)
+    time_per_host_sec=$((tests_per_host * test_time))
+    time_per_host_hours=$((time_per_host_sec / 3600))
+    time_per_host_min=$(((time_per_host_sec % 3600) / 60))
+
+    echo "Expected completion time (parallel execution on ${num_hosts} machines):"
+    echo "  Total tests: ${total_tests} (${#mcs_array[@]} MCS × ${#noise_power_array[@]} SNR × ${num_repeat} iterations)"
+    echo "  Per machine: ${tests_per_host} tests × ${test_time}s = ${time_per_host_hours}h ${time_per_host_min}m"
     echo "=========================================="
     exit 0
 fi
@@ -264,63 +274,28 @@ echo "Log files will be saved at $log_dir"
 
 test_summary_file="$log_dir/test_summary_${timestamp}.csv"
 
-CONF_PATH=$HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF
-
-# Check if any BLER tests are enabled (they run locally, skip SSH lookups)
-is_bler_test=false
-for test_entry in "${enabled_tests[@]}"; do
-    # Extract test name (before any ':' separator for CSI/PSFCH params)
-    test_name="${test_entry%%:*}"
-    if [[ "$test_name" == *"bler"* ]]; then
-        is_bler_test=true
-        break
-    fi
-done
-
-if [[ "$is_bler_test" == "false" ]]; then
-    # Standard tests - perform SSH config lookups
-    REMOTE_UE_HOST="remote_ue" # host name in the ~/.ssh/config
-    REMOTE_HOST_IP=$(ssh -G $REMOTE_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
-    echo "Remote Host IP address = " $REMOTE_HOST_IP
-
-    LOCAL_HOST="local" # host name in the ~/.ssh/config
-    LOCAL_HOST_IP=$(ssh -G $LOCAL_HOST 2>/dev/null | awk '/^hostname / {print $2}') #  #LOCAL_HOST_IP=$(ip route get 1.2.3.4 | awk '{print $7}')
-    echo "Local Host IP address = " $LOCAL_HOST_IP
-
-    RELAY_UE_HOST="relay_ue" # host name in the ~/.ssh/config
-    RELAY_UE_HOST_IP=$(ssh -G $RELAY_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
-    echo "Relay UE Host IP address = " $RELAY_UE_HOST_IP
-
-    NR_UE_HOST="nr_ue" # host name in the ~/.ssh/config
-    NR_UE_HOST_IP=$(ssh -G $NR_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
-    echo "nrUE Host IP address = " $NR_UE_HOST_IP
-
-    GNB_HOST="gNB" # host name in the ~/.ssh/config
-    GNB_HOST_IP=$(ssh -G $GNB_HOST 2>/dev/null | awk '/^hostname / {print $2}')
-    echo "gNB Host IP address = " $GNB_HOST_IP
+# Initialize host variables based on test configuration
+# Skip SSH resolution if tests are running on local host
+if [[ "${enabled_tests[*]}" =~ "on_local_host" ]]; then
+    init_host_variables "skip_ssh"
 else
-    # BLER tests run locally - set to "local" to bypass SSH
-    REMOTE_UE_HOST="local"
-    REMOTE_HOST_IP="127.0.0.1"
-    LOCAL_HOST="local"
-    LOCAL_HOST_IP="127.0.0.1"
-    RELAY_UE_HOST="local"
-    RELAY_UE_HOST_IP="127.0.0.1"
-    NR_UE_HOST="local"
-    NR_UE_HOST_IP="127.0.0.1"
-    GNB_HOST="local"
-    GNB_HOST_IP="127.0.0.1"
-    echo "BLER test mode: skipping SSH config lookups (local execution)"
+    init_host_variables "resolve_ssh"
 fi
 
 # Read default values from config files (before any tests modify them)
-DEFAULT_CSI_ACQ=$(grep "sl_CSI_Acquisition" $CONF_PATH/sl_sync_ref.conf | grep -oP '\d+' | head -1)
-DEFAULT_PSFCH_PERIOD=$(grep "sl_PSFCH_Period" $CONF_PATH/sl_sync_ref.conf | grep -oP '\d+' | head -1)
+# Use config file values if provided, otherwise auto-detect
+if [[ -z "$DEFAULT_CSI_ACQ" ]]; then
+    DEFAULT_CSI_ACQ=$(grep "sl_CSI_Acquisition" $CONF_PATH/sl_sync_ref.conf | grep -oP '\d+' | head -1)
+fi
+if [[ -z "$DEFAULT_PSFCH_PERIOD" ]]; then
+    DEFAULT_PSFCH_PERIOD=$(grep "sl_PSFCH_Period" $CONF_PATH/sl_sync_ref.conf | grep -oP '\d+' | head -1)
+fi
 echo "Default CSI Acquisition = " $DEFAULT_CSI_ACQ
 echo "Default PSFCH Period = " $DEFAULT_PSFCH_PERIOD
 
-TX_GAIN=0      # Default: 0
-RX_GAIN=110    # Default: 110
+# Use TX/RX gain from config file, or set defaults if not defined
+TX_GAIN="${TX_GAIN:-0}"
+RX_GAIN="${RX_GAIN:-110}"
 
 #############################################################
 ### Basic functions ###
@@ -409,7 +384,7 @@ restart_core_network() {
     if [[ $? -ne 0 ]]; then
         echo "WARNING: Failed to stop containers (may not be running)"
     fi
-    sleep 3  # Wait for clean shutdown
+    sleep ${sleep_timing[cn_shutdown]}  # Configurable: wait for clean shutdown
 
     # Ensure docker service is running (try with sudo if needed)
     if ! systemctl is-active --quiet docker.service; then
@@ -430,7 +405,7 @@ restart_core_network() {
         return 1
     fi
 
-    sleep 3  # Wait for initialization
+    sleep ${sleep_timing[cn_init]}  # Configurable: wait for initialization
 
     # Verify containers are running
     local running_containers=$(cd "$cn_dir" && docker compose ps --status running | grep -c "Up")
@@ -542,17 +517,17 @@ print_test_summary() {
 
     # Calculate PSSCH pass rates (RX/TX format for success rate)
     # Rate1: syncref TX -> nearby RX
-    if [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
-        local pssch_rate1=$((LAST_PSSCH_RX_NEARBY * 100 / LAST_PSSCH_TX_SYNCREF))
-        local pssch_rate1_str="${LAST_PSSCH_RX_NEARBY}/${LAST_PSSCH_TX_SYNCREF} (${pssch_rate1}%)"
+    if [ -n "$LAST_PSSCH_TX_SYNCREF" ] && [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
+        local pssch_rate1=$((${LAST_PSSCH_RX_NEARBY:-0} * 100 / LAST_PSSCH_TX_SYNCREF))
+        local pssch_rate1_str="${LAST_PSSCH_RX_NEARBY:-0}/${LAST_PSSCH_TX_SYNCREF} (${pssch_rate1}%)"
     else
         local pssch_rate1_str="N/A"
     fi
 
     # Rate2: nearby TX -> syncref RX
-    if [ "$LAST_PSSCH_TX_NEARBY" -gt 0 ]; then
-        local pssch_rate2=$((LAST_PSSCH_RX_SYNCREF * 100 / LAST_PSSCH_TX_NEARBY))
-        local pssch_rate2_str="${LAST_PSSCH_RX_SYNCREF}/${LAST_PSSCH_TX_NEARBY} (${pssch_rate2}%)"
+    if [ -n "$LAST_PSSCH_TX_NEARBY" ] && [ "$LAST_PSSCH_TX_NEARBY" -gt 0 ]; then
+        local pssch_rate2=$((${LAST_PSSCH_RX_SYNCREF:-0} * 100 / LAST_PSSCH_TX_NEARBY))
+        local pssch_rate2_str="${LAST_PSSCH_RX_SYNCREF:-0}/${LAST_PSSCH_TX_NEARBY} (${pssch_rate2}%)"
     else
         local pssch_rate2_str="N/A"
     fi
@@ -561,16 +536,16 @@ print_test_summary() {
     # For single-host tests, only count syncref; for multi-host, aggregate both
     if [ "$num_hosts" -eq 1 ]; then
         # Single host: only syncref direction exists
-        if [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
-            local pssch_total=$((LAST_PSSCH_RX_NEARBY * 100 / LAST_PSSCH_TX_SYNCREF))
+        if [ -n "$LAST_PSSCH_TX_SYNCREF" ] && [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
+            local pssch_total=$((${LAST_PSSCH_RX_NEARBY:-0} * 100 / LAST_PSSCH_TX_SYNCREF))
             local pssch_total_str="${pssch_total}%"
         else
             local pssch_total_str="N/A"
         fi
     else
         # Multi-host: aggregate both directions
-        local total_tx=$((LAST_PSSCH_TX_SYNCREF + LAST_PSSCH_TX_NEARBY))
-        local total_rx=$((LAST_PSSCH_RX_SYNCREF + LAST_PSSCH_RX_NEARBY))
+        local total_tx=$((${LAST_PSSCH_TX_SYNCREF:-0} + ${LAST_PSSCH_TX_NEARBY:-0}))
+        local total_rx=$((${LAST_PSSCH_RX_SYNCREF:-0} + ${LAST_PSSCH_RX_NEARBY:-0}))
         if [ "$total_tx" -gt 0 ]; then
             local pssch_total=$((total_rx * 100 / total_tx))
             local pssch_total_str="${pssch_total}%"
@@ -690,6 +665,35 @@ find_user_name() {
     fi
 }
 
+get_gnb_config_path() {
+    # Get the appropriate gNB config file path
+    # Args: sl_mode, host_name, [bler_mode]
+    # Returns: full path to config file
+    local sl_mode=$1
+    local host_name=$2
+    local bler_mode=${3:-0}  # 0=normal, 1=bler
+
+    # Determine base config file
+    if [[ $sl_mode -eq 1 ]]; then
+        local base_config="$GNB_CONF_RELAY"
+    else
+        local base_config="$GNB_CONF_USRP"
+    fi
+
+    # Add _bler suffix if needed
+    if [[ $bler_mode -eq 1 ]]; then
+        base_config="${base_config%.conf}_bler.conf"
+    fi
+
+    # Adjust path for remote host
+    if [[ $host_name != "local" ]]; then
+        local user_name=$(find_user_name "$host_name")
+        base_config=$(echo "$base_config" | sed "s|\$HOME|/home/$user_name|g")
+    fi
+
+    echo "$base_config"
+}
+
 sync_default_config_params() {
     # Sync sl_PSFCH_Period and sl_CSI_Acquisition across all config files
     # Args: csi_acq psfch_period
@@ -705,7 +709,7 @@ sync_default_config_params() {
     sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g" "$CONF_PATH/sl_ue1.conf"
 
     # Local gNB relay config
-    local gnb_conf="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf"
+    local gnb_conf="$GNB_CONF_RELAY"
     if [[ -f "$gnb_conf" ]]; then
         sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g" "$gnb_conf"
         sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g" "$gnb_conf"
@@ -714,7 +718,7 @@ sync_default_config_params() {
     # Remote config if REMOTE_UE_HOST is set
     if [[ -n "$REMOTE_UE_HOST" ]] && [[ "$REMOTE_UE_HOST" != "local" ]]; then
         local remote_user=$(find_user_name "$REMOTE_UE_HOST")
-        local remote_conf="/home/$remote_user/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf"
+        local remote_conf="/home/$remote_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf"
         safe_ssh "$REMOTE_UE_HOST" "sed -i 's/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g' $remote_conf" 2>/dev/null
         safe_ssh "$REMOTE_UE_HOST" "sed -i 's/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g' $remote_conf" 2>/dev/null
     fi
@@ -732,7 +736,7 @@ sync_config_files() {
     fi
 
     local remote_user=$(find_user_name "$remote_host")
-    local remote_conf_path="/home/$remote_user/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF"
+    local remote_conf_path="/home/$remote_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH"
 
     echo "Syncing configuration files to $remote_host..."
     for conf_file in "${config_files[@]}"; do
@@ -785,9 +789,9 @@ run_cmd() {
 
     if [[ $host_name == "local" ]] || [[ $host_name == "" ]] ; then
         if [ $USE_GNOME -ge 1 ]; then
-            gnome-terminal --geometry=$geom -- bash -c "source ~/.bashrc 2>/dev/null; $cmd 2>&1 | tee $log_file" &
+            gnome-terminal --geometry=$geom -- bash -c "source ~/.bashrc 2>/dev/null; eval \"$cmd\" 2>&1 | tee $log_file" &
         else
-            bash -c "source ~/.bashrc 2>/dev/null; $cmd" 2>&1 | tee $log_file &
+            eval "$cmd" 2>&1 | tee $log_file &
         fi
     else
         if [ $USE_GNOME -ge 1 ]; then
@@ -805,6 +809,10 @@ evaluate_ping_test() {
     [[ $# -ge 4 ]] && local sl_mode=$4
     [[ $# -ge 5 ]] && local test_name=$5
 
+    # Set default ping parameters if not already set (for non-BLER tests)
+    : ${ping_count:=10}
+    : ${ping_interval:=1}
+
     local user_name
     user_name=$(find_user_name "$host_name")
     # Generate unique filename with timestamp
@@ -813,8 +821,8 @@ evaluate_ping_test() {
     if [[ $host_name == "local" ]]; then
         # Run ping locally
         ping_output="$log_dir/ping_result_${test_name}_${timestamp}.txt"
-        cmd="ping -c 15 -I $src_if $dest_ip"
-        echo "Ping command: $cmd"
+        cmd="ping -c $ping_count -i $ping_interval -I $src_if $dest_ip"
+        echo "Ping command: $cmd (count=$ping_count, interval=${ping_interval}s)"
 
         # Save command to commands.txt
         echo "=== Ping Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -826,15 +834,15 @@ evaluate_ping_test() {
         # Run ping on remote host
         remote_log_dir="/home/$user_name/test_${timestamp}"
         ping_output="$remote_log_dir/ping_result_${test_name}_${timestamp}.txt"
-        echo "Ping command (remote): ping -c 15 -I $src_if $dest_ip on $host_name"
+        echo "Ping command (remote): ping -c $ping_count -i $ping_interval -I $src_if $dest_ip on $host_name (count=$ping_count, interval=${ping_interval}s)"
         local safe_filename="$log_dir/ping_result_${test_name}_${timestamp}.txt"
 
         # Build remote command with proper variable expansion
-        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c 15 -I $src_if $dest_ip"
+        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c $ping_count -i $ping_interval -I $src_if $dest_ip"
 
         # Save command to commands.txt
         echo "=== Ping Command (host: $host_name) ===" >> "$log_dir/commands.txt"
-        echo "ping -c 15 -I $src_if $dest_ip" >> "$log_dir/commands.txt"
+        echo "ping -c $ping_count -i $ping_interval -I $src_if $dest_ip" >> "$log_dir/commands.txt"
         echo "" >> "$log_dir/commands.txt"
 
         run_cmd $host_name "$cmd" "$safe_filename"
@@ -966,26 +974,27 @@ run_gNB_cmd() {
     [[ $# -ge 2 ]] && sl_mode=$2
     [[ $# -ge 3 ]] && host_name=$3
 
-    # Get user name based on host
-    local user_name=$(find_user_name "$host_name")
+    # Get config path using helper function
+    local config_path=$(get_gnb_config_path $sl_mode $host_name 0)
 
     [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --ip-demo 1 --sl-mode 1" || sl_relay_tag=""
-    [[ $sl_mode -eq 1 ]] && conf_tag="_relay_ue" || conf_tag=""
 
     if [[ $test_type == "rfsim" ]]; then
         if [[ $host_name == 'local' ]]; then
-            gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
-                    -O $HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
+            gNB_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-softmodem \
+                    -O $config_path --gNBs.[0].min_rxtxtime 6 \
                     --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim $sa_flag --log_config.global_log_level info $sl_relay_tag"
         else
-            gNB_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
-                    sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-softmodem \
-                    -O /home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
+            gNB_cmd="LD_LIBRARY_PATH=$config_path:$LD_LIBRARY_PATH \
+                    sudo -E $(dirname $config_path)/../../cmake_targets/ran_build/build/nr-softmodem \
+                    -O $config_path --gNBs.[0].min_rxtxtime 6 \
                     --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim $sa_flag --log_config.global_log_level info $sl_relay_tag"
         fi
     elif [[ $test_type == "usrp" ]]; then
-        gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-softmodem \
-                -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210$conf_tag.conf --gNBs.[0].min_rxtxtime 6 \
+        # For USRP, use relative path from build directory
+        local rel_config="../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/$(basename $config_path)"
+        gNB_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-softmodem \
+                -O $rel_config --gNBs.[0].min_rxtxtime 6 \
                 -E $sa_flag --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
     fi
     log_file="$HOME/result_gNB.log"
@@ -1011,21 +1020,21 @@ run_nrUE_cmd() {
 
     if [[ $test_type == "rfsim" ]]; then
         if [[ $host_name == 'local' ]]; then
-            nrUE_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
+            nrUE_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                     ./nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         else
-            nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
-                    sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
+            nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
+                    sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     --rfsimulator.serveraddr $LOCAL_HOST_IP --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         fi
     elif [[ $test_type == "usrp" ]]; then
-        nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
-                    sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
+        nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
+                    sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     -E $sa_flag --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
                     --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
@@ -1053,17 +1062,17 @@ run_syncref_cmd() {
     if [[ $sl_mode -eq 1 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
-                syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                            -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
+                syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                            -O $CONF_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                             --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs"
             else
-                syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
-                            sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                            -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
+                syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
+                            sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
+                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                             --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
@@ -1071,8 +1080,8 @@ run_syncref_cmd() {
                             --log_config.global_log_level info $mcs"
             fi
         elif [[ $test_type == "usrp" ]]; then
-            syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
+            syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                        -O $CONF_PATH/sl_sync_ref.conf \
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                         -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
                         --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
@@ -1082,14 +1091,14 @@ run_syncref_cmd() {
         log_file="$HOME/result_nrUE_syncref.log"
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
-            syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
-                         $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf --sync-ref --sl-mode 2 --rfsim $sa_flag \
+            syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
+                         $OAI_BUILD_DIR/nr-uesoftmodem \
+                        -O $CONF_PATH/sl_sync_ref.conf --sync-ref --sl-mode 2 --rfsim $sa_flag \
                         --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 --log_config.global_log_level info  $mcs"
         elif [[ $test_type == "usrp" ]]; then
-            syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build \
-                        $HOME/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf -E $sa_flag --sl-mode 2 --sync-ref \
+            syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
+                        $OAI_BUILD_DIR/nr-uesoftmodem \
+                        -O $CONF_PATH/sl_sync_ref.conf -E $sa_flag --sl-mode 2 --sync-ref \
                         $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
@@ -1118,42 +1127,42 @@ run_nearby_cmd() {
     if [[ $sl_mode -eq 1 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
-                nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                            -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+                nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                            -O $CONF_PATH/sl_ue1.conf \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
             else
-                nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
-                            sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                            -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+                nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
+                            sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
+                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
-            nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
-                        sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+            nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
+                        sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
+                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf \
                         -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 $ext_clock_flag $mcs \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
-                nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; sudo -E LD_LIBRARY_PATH=$HOME/openairinterface5g/cmake_targets/ran_build/build ./nr-uesoftmodem \
-                        -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
+                nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                        -O $CONF_PATH/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
                         --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
             else
-                nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build:$LD_LIBRARY_PATH \
-                        sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
+                nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
+                        sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
+                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
                         --rfsimulator.serveraddrsl $LOCAL_HOST_IP --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
-            nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/openairinterface5g/cmake_targets/ran_build/build \
-                        sudo -E /home/$user_name/openairinterface5g/cmake_targets/ran_build/build/nr-uesoftmodem \
-                        -O /home/$user_name/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf -E $sa_flag --sl-mode 2 \
+            nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
+                        sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
+                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf -E $sa_flag --sl-mode 2 \
                         $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
@@ -1383,20 +1392,9 @@ create_bler_config() {
     local sl_mode=$1
     local host_name=$2
 
-    [[ $sl_mode -eq 1 ]] && conf_tag="_relay_ue" || conf_tag=""
-
-    # Determine user name and config path based on host
-    local user_name=$(find_user_name "$host_name")
-    local base_conf=""
-    local bler_conf=""
-
-    if [[ $host_name == 'local' ]]; then
-        base_conf="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}.conf"
-        bler_conf="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}_bler.conf"
-    else
-        base_conf="/home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}.conf"
-        bler_conf="/home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${conf_tag}_bler.conf"
-    fi
+    # Get base config path and derive BLER config path
+    local base_conf=$(get_gnb_config_path $sl_mode $host_name 0)
+    local bler_conf="${base_conf%.conf}_bler.conf"
 
     # Check if BLER config already exists
     if [[ $host_name == 'local' ]]; then
@@ -1454,22 +1452,14 @@ run_gNB_cmd_with_noise() {
     : ${mcs_value:=28}
 
     [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --ip-demo 1 --sl-mode 1" || sl_relay_tag=""
-    [[ $sl_mode -eq 1 ]] && conf_tag="_relay_ue" || conf_tag=""
 
     # Create BLER config with fixed MCS settings
     create_bler_config $sl_mode $host_name
 
-    # Determine user name and use BLER-specific config
-    local user_name=$(find_user_name "$host_name")
-    local bler_conf_tag="${conf_tag}_bler"
+    # Get BLER config path using helper function
+    local config_path=$(get_gnb_config_path $sl_mode $host_name 1)
 
-    if [[ $host_name == 'local' ]]; then
-        local config_path="$HOME/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${bler_conf_tag}.conf"
-    else
-        local config_path="/home/$user_name/openairinterface5g/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210${bler_conf_tag}.conf"
-    fi
-
-    gNB_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; \
+    gNB_cmd="cd $OAI_BUILD_DIR; \
              sudo -E LD_LIBRARY_PATH=\$PWD ./nr-softmodem \
              -O $config_path \
              --gNBs.[0].min_rxtxtime 6 \
@@ -1480,6 +1470,8 @@ run_gNB_cmd_with_noise() {
              --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
              --MACRLCs.[0].dl_max_mcs ${mcs_value} \
              --MACRLCs.[0].ul_max_mcs ${mcs_value} \
+             --MACRLCs.[0].dl_harq_round_max 1 \
+             --MACRLCs.[0].ul_harq_round_max 1 \
              $sl_relay_tag"
 
     log_file="$HOME/result_gNB.log"
@@ -1507,9 +1499,9 @@ run_syncref_cmd_with_noise() {
     : ${noise_power:=0}
     : ${ploss:=5}
 
-    syncref_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; \
+    syncref_cmd="cd $OAI_BUILD_DIR; \
                  sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
-                 -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
+                 -O $CONF_PATH/sl_sync_ref.conf \
                  -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                  --rfsim --sa --sync-ref --sl-mode 1 \
                  --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
@@ -1545,9 +1537,9 @@ run_nearby_cmd_with_noise() {
     : ${noise_power:=0}
     : ${ploss:=5}
 
-    nearby_cmd="cd $HOME/openairinterface5g/cmake_targets/ran_build/build; \
+    nearby_cmd="cd $OAI_BUILD_DIR; \
                 sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
-                -O $HOME/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
+                -O $CONF_PATH/sl_ue1.conf \
                 -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 \
                 --rfsim --sa --sl-mode 2 \
                 --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
@@ -1604,6 +1596,14 @@ bler_test() {
         continue
     }
 
+    # Set Uu interface MCS in gNB configuration (config file approach for reliability)
+    echo "[0/4] Configuring Uu interface MCS=${mcs}..."
+    if [[ "$gnb_host_name" == "local" || "$gnb_host_name" == "localhost" ]]; then
+        set_uu_mcs $mcs
+    else
+        set_uu_mcs_remote $gnb_host_name $mcs
+    fi
+
     # Launch processes with noise injection
     echo "[1/4] Starting gNB with noise=${noise_power}dB, MCS=${mcs}..."
     run_gNB_cmd_with_noise $test_type $sl_mode $gnb_host_name $noise_power $ploss_db $mcs
@@ -1620,10 +1620,11 @@ bler_test() {
     echo "[4/4] Waiting for tunnel interface..."
     wait_for_tun_interface $src_if $nearby_host_name 30
 
-    # Run ping test
-    local ping_count=$((duration * 15))
-    echo "Starting ping: $ping_count packets (interval 0.0667s)..."
-    ping -I $src_if $dest_ip -i 0.0667 -c $ping_count > /tmp/ping_result_mcs${mcs}.txt 2>&1
+    # Run ping test (use configured rate)
+    local bler_ping_count=$((duration * ping_per_second))
+    local bler_ping_interval=$(awk "BEGIN {print 1.0/$ping_per_second}")
+    echo "Starting ping: $bler_ping_count packets @ ${ping_per_second} pkt/s (interval ${bler_ping_interval}s)..."
+    ping -I $src_if $dest_ip -i $bler_ping_interval -c $bler_ping_count > /tmp/ping_result_mcs${mcs}.txt 2>&1
 
     # Parse ping results
     local tx_packets=$(grep "transmitted" /tmp/ping_result_mcs${mcs}.txt | awk '{print $1}')
