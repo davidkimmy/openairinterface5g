@@ -9,6 +9,8 @@ NO EXTERNAL DEPENDENCIES - uses only standard library
 import re
 import sys
 import csv
+import subprocess
+import tempfile
 from pathlib import Path
 from collections import defaultdict
 
@@ -96,7 +98,10 @@ def extract_pc5_rx_summary_from_log(log_file, interface_type):
             content = f.read()
 
         # Extract PC5_RX_SUMMARY: total=X errors=Y BLER=Z
-        rx_summary_matches = re.findall(r'PC5_RX_SUMMARY total=(\d+) errors=(\d+) BLER=([\d.]+)', content)
+        # Pattern handles both formats:
+        # - With MCS: PC5_RX_SUMMARY mcs=9 total=100 errors=0 BLER=0.0000
+        # - Without MCS: PC5_RX_SUMMARY total=100 errors=0 BLER=0.0000
+        rx_summary_matches = re.findall(r'PC5_RX_SUMMARY(?:\s+mcs=\d+)?\s+total=(\d+)\s+errors=(\d+)\s+BLER=([\d.]+)', content)
         if rx_summary_matches:
             # Use the last summary (most complete data)
             last_summary = rx_summary_matches[-1]
@@ -234,66 +239,211 @@ def extract_mac_bler_from_log(log_file, interface_type):
 
     return None
 
-def process_local_logs(test_dir, output_csv, output_pc5_rx_csv):
-    """Process logs in test directory and save to CSV"""
-    results_path = Path(test_dir)
-    all_data = []
+def convert_bilateral_row_to_pc5_rx_format(row):
+    """Convert bilateral extraction CSV row to PC5 RX data format"""
+    method = row.get('method', 'unknown')
+
+    # Determine interface name based on method
+    if method == 'bilateral':
+        interface = 'pc5_bilateral_' + ('syncref' if 'syncref' in row.get('role', '') else 'nearby')
+    elif method == 'rx':
+        interface = 'pc5_rx_' + ('syncref' if 'syncref' in row.get('role', '') else 'remote')
+    else:
+        interface = f'pc5_{method}_' + ('syncref' if 'syncref' in row.get('role', '') else 'remote')
+
+    rounds_0 = int(row.get('rounds_0', 0))
+    bler = float(row['bler'])
+
+    # Calculate total and errors based on method
+    if method == 'bilateral':
+        # For bilateral: rounds_0 = successful, need to calculate total and errors
+        total = int(rounds_0 / (1 - bler)) if bler < 1 else rounds_0
+        errors = total - rounds_0
+    else:
+        # For rx method: total = all rounds, errors = bler * total
+        rounds_1 = int(row.get('rounds_1', 0))
+        rounds_2 = int(row.get('rounds_2', 0))
+        rounds_3 = int(row.get('rounds_3', 0))
+        total = rounds_0 + rounds_1 + rounds_2 + rounds_3
+        errors = int(bler * total)
+
+    return {
+        'mcs': int(row['mcs']),
+        'noise': int(row['noise']),
+        'snr': int(row['snr']),
+        'total': total,
+        'errors': errors,
+        'bler': bler,
+        'interface': interface
+    }
+
+def extract_bilateral_bler_for_ue(test_dir, ue_type, temp_dir_path, script_dir):
+    """
+    Extract bilateral BLER data for a specific UE type (syncref or nearby)
+
+    Args:
+        test_dir: Directory containing test logs
+        ue_type: 'syncref' or 'nearby'
+        temp_dir_path: Temporary directory for intermediate files
+        script_dir: Directory containing extract_bler.py script
+
+    Returns:
+        list: Extracted PC5 RX data entries
+    """
+    print(f"  Attempting bilateral extraction for {ue_type}...")
+
+    bilateral_bler_csv = Path(temp_dir_path) / f"{ue_type}_bilateral_bler.csv"
+    bilateral_ldpc_csv = Path(temp_dir_path) / f"{ue_type}_bilateral_ldpc.csv"
+    extract_bler_script = script_dir / "extract_bler.py"
+
+    pc5_rx_data = []
+
+    try:
+        result = subprocess.run(
+            ["python3", str(extract_bler_script), test_dir,
+             str(bilateral_bler_csv), str(bilateral_ldpc_csv), ue_type],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Read and convert bilateral data
+        if bilateral_bler_csv.exists():
+            with open(bilateral_bler_csv, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    row['role'] = ue_type  # Add role for interface naming
+                    pc5_rx_data.append(convert_bilateral_row_to_pc5_rx_format(row))
+
+            print(f"    ✓ Extracted bilateral data for {ue_type}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"    ⚠ Warning: Bilateral extraction for {ue_type} failed: {e}")
+        print(f"      stderr: {e.stderr}")
+    except Exception as e:
+        print(f"    ⚠ Warning: Bilateral extraction for {ue_type} error: {e}")
+
+    return pc5_rx_data
+
+def extract_bilateral_bler_data(test_dir, script_dir):
+    """
+    Extract bilateral BLER data for both syncref and nearby UEs
+
+    Returns:
+        list: Combined PC5 RX data from both UEs
+    """
     all_pc5_rx_data = []
 
-    print(f"Processing logs in: {test_dir}")
+    # Create temporary directory for bilateral extraction
+    temp_dir_obj = tempfile.TemporaryDirectory()
+    temp_dir_path = temp_dir_obj.name
 
-    # PC5 Relay UE (syncref)
+    # Extract for both UE types
+    for ue_type in ['syncref', 'nearby']:
+        pc5_rx_data = extract_bilateral_bler_for_ue(
+            test_dir, ue_type, temp_dir_path, script_dir
+        )
+        all_pc5_rx_data.extend(pc5_rx_data)
+
+    # Cleanup temp directory
+    temp_dir_obj.cleanup()
+
+    return all_pc5_rx_data
+
+def process_relay_ue_logs(results_path):
+    """
+    Process Relay UE (syncref) logs for PC5 interface
+
+    Returns:
+        tuple: (harq_data, pc5_rx_data)
+    """
+    harq_data = []
+    pc5_rx_data = []
+
     relay_logs = sorted(results_path.glob("*mcs*_noise*_result_nrUE_syncref.log"))
     print(f"  Processing {len(relay_logs)} Relay UE logs...")
+
     for log in relay_logs:
         # HARQ-based BLER
         data = extract_mac_bler_from_log(log, 'pc5_relay')
         if data:
-            all_data.append(data)
+            harq_data.append(data)
 
         # PC5_RX_SUMMARY based BLER (syncref receives PSFCH feedback)
         rx_data = extract_pc5_rx_summary_from_log(log, 'pc5_rx_syncref')
         if rx_data:
-            all_pc5_rx_data.append(rx_data)
+            pc5_rx_data.append(rx_data)
 
         # PC5_TX (scheduler-side) BLER - tracks all transmissions
         tx_data = extract_pc5_tx_from_log(log, 'pc5_tx_syncref')
         if tx_data:
-            all_pc5_rx_data.append(tx_data)  # Add to same dataset for comparison
+            pc5_rx_data.append(tx_data)
 
-    # PC5 Remote UE (nearby)
+    return harq_data, pc5_rx_data
+
+def process_remote_ue_logs(results_path):
+    """
+    Process Remote UE (nearby) logs for PC5 interface
+
+    Returns:
+        tuple: (harq_data, pc5_rx_data)
+    """
+    harq_data = []
+    pc5_rx_data = []
+
     remote_logs = sorted(results_path.glob("*mcs*_noise*_result_nearby.log"))
     print(f"  Processing {len(remote_logs)} Remote UE logs...")
+
     for log in remote_logs:
         # HARQ-based BLER
         data = extract_mac_bler_from_log(log, 'pc5_remote')
         if data:
-            all_data.append(data)
+            harq_data.append(data)
 
         # PC5_RX_SUMMARY based BLER
         rx_data = extract_pc5_rx_summary_from_log(log, 'pc5_rx_remote')
         if rx_data:
-            all_pc5_rx_data.append(rx_data)
+            pc5_rx_data.append(rx_data)
 
-    # Uu from gNB logs
+    return harq_data, pc5_rx_data
+
+def process_gnb_logs(results_path):
+    """
+    Process gNB logs for Uu interface (DL and UL)
+
+    Returns:
+        list: HARQ data for both DL and UL
+    """
+    harq_data = []
+
     gnb_logs = sorted(results_path.glob("*mcs*_noise*_result_gNB.log"))
     print(f"  Processing {len(gnb_logs)} gNB logs...")
+
     for log in gnb_logs:
+        # Uu DL
         data_dl = extract_mac_bler_from_log(log, 'uu_dl')
         if data_dl:
-            all_data.append(data_dl)
+            harq_data.append(data_dl)
 
+        # Uu UL
         data_ul = extract_mac_bler_from_log(log, 'uu_ul')
         if data_ul:
-            all_data.append(data_ul)
+            harq_data.append(data_ul)
 
-    if not all_data:
-        print(f"  Warning: No BLER data extracted!")
-        return False
+    return harq_data
 
-    # Average across iterations (group by mcs, noise, interface)
-    # Use dictionary to group data
-    grouped = defaultdict(lambda: {'count': 0, 'sum_bler': 0.0, 'sum_r0': 0, 'sum_r1': 0, 'sum_r2': 0, 'sum_r3': 0, 'snr': 0, 'sum_avg_ldpc': 0.0, 'sum_max_ldpc': 0.0})
+def average_harq_data(all_data):
+    """
+    Average HARQ data across iterations grouped by (mcs, noise, interface)
+
+    Returns:
+        list: Averaged BLER data points
+    """
+    grouped = defaultdict(lambda: {
+        'count': 0, 'sum_bler': 0.0,
+        'sum_r0': 0, 'sum_r1': 0, 'sum_r2': 0, 'sum_r3': 0,
+        'snr': 0, 'sum_avg_ldpc': 0.0, 'sum_max_ldpc': 0.0
+    })
 
     for item in all_data:
         key = (item['mcs'], item['noise'], item['interface'])
@@ -303,7 +453,7 @@ def process_local_logs(test_dir, output_csv, output_pc5_rx_csv):
         grouped[key]['sum_r1'] += item['rounds_1']
         grouped[key]['sum_r2'] += item['rounds_2']
         grouped[key]['sum_r3'] += item['rounds_3']
-        grouped[key]['snr'] = item['snr']  # Same for all in group
+        grouped[key]['snr'] = item['snr']
         grouped[key]['sum_avg_ldpc'] += item.get('avg_ldpc_iter', 0)
         grouped[key]['sum_max_ldpc'] += item.get('max_ldpc_iter', 0)
 
@@ -330,59 +480,119 @@ def process_local_logs(test_dir, output_csv, output_pc5_rx_csv):
     # Sort by interface, noise, mcs
     averaged.sort(key=lambda x: (x['interface'], x['noise'], x['mcs']))
 
-    # Write to CSV
+    return averaged
+
+def average_pc5_rx_data(all_pc5_rx_data):
+    """
+    Average PC5 RX data across iterations grouped by (mcs, noise, interface)
+
+    Returns:
+        list: Averaged PC5 RX BLER data points
+    """
+    rx_grouped = defaultdict(lambda: {
+        'count': 0, 'sum_bler': 0.0,
+        'sum_total': 0, 'sum_errors': 0, 'snr': 0
+    })
+
+    for item in all_pc5_rx_data:
+        key = (item['mcs'], item['noise'], item['interface'])
+        rx_grouped[key]['count'] += 1
+        rx_grouped[key]['sum_bler'] += item['bler']
+        rx_grouped[key]['sum_total'] += item['total']
+        rx_grouped[key]['sum_errors'] += item['errors']
+        rx_grouped[key]['snr'] = item['snr']
+
+    rx_averaged = []
+    for (mcs, noise, interface), values in rx_grouped.items():
+        avg_bler = values['sum_bler'] / values['count']
+        rx_averaged.append({
+            'mcs': mcs,
+            'noise': noise,
+            'snr': values['snr'],
+            'interface': interface,
+            'total': values['sum_total'],
+            'errors': values['sum_errors'],
+            'bler': avg_bler
+        })
+
+    # Sort by interface, noise, mcs
+    rx_averaged.sort(key=lambda x: (x['interface'], x['noise'], x['mcs']))
+
+    return rx_averaged
+
+def save_harq_csv(averaged_data, output_csv):
+    """Save averaged HARQ BLER data to CSV"""
     with open(output_csv, 'w', newline='') as f:
-        fieldnames = ['mcs', 'noise', 'snr', 'interface', 'rounds_0', 'rounds_1', 'rounds_2', 'rounds_3', 'bler', 'avg_ldpc_iter', 'max_ldpc_iter']
+        fieldnames = ['mcs', 'noise', 'snr', 'interface',
+                     'rounds_0', 'rounds_1', 'rounds_2', 'rounds_3',
+                     'bler', 'avg_ldpc_iter', 'max_ldpc_iter']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(averaged)
+        writer.writerows(averaged_data)
 
-    print(f"  ✓ Saved {len(averaged)} averaged BLER points to: {output_csv}")
+    print(f"  ✓ Saved {len(averaged_data)} averaged BLER points to: {output_csv}")
 
     # Print summary
-    mcs_values = [item['mcs'] for item in averaged]
-    noise_values = [item['noise'] for item in averaged]
-    if mcs_values and noise_values:
+    if averaged_data:
+        mcs_values = [item['mcs'] for item in averaged_data]
+        noise_values = [item['noise'] for item in averaged_data]
         print(f"  MCS range: {min(mcs_values)}-{max(mcs_values)}")
         print(f"  Noise range: {min(noise_values)}-{max(noise_values)}")
 
-    # Process PC5_RX_SUMMARY data
+def save_pc5_rx_csv(rx_averaged_data, output_pc5_rx_csv):
+    """Save averaged PC5 RX BLER data to CSV"""
+    with open(output_pc5_rx_csv, 'w', newline='') as f:
+        fieldnames = ['mcs', 'noise', 'snr', 'interface', 'total', 'errors', 'bler']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rx_averaged_data)
+
+    print(f"  ✓ Saved {len(rx_averaged_data)} PC5_RX_SUMMARY BLER points to: {output_pc5_rx_csv}")
+
+def process_local_logs(test_dir, output_csv, output_pc5_rx_csv):
+    """
+    Process logs in test directory and save to CSV
+
+    Main orchestrator function that coordinates all extraction and processing steps
+    """
+    results_path = Path(test_dir)
+    script_dir = Path(__file__).parent
+
+    print(f"Processing logs in: {test_dir}")
+
+    # Step 1: Extract bilateral BLER data using extract_bler.py
+    all_pc5_rx_data = extract_bilateral_bler_data(test_dir, script_dir)
+
+    # Step 2: Process logs for HARQ-based BLER
+    all_harq_data = []
+
+    # PC5 Relay UE (syncref)
+    relay_harq, relay_pc5_rx = process_relay_ue_logs(results_path)
+    all_harq_data.extend(relay_harq)
+    all_pc5_rx_data.extend(relay_pc5_rx)
+
+    # PC5 Remote UE (nearby)
+    remote_harq, remote_pc5_rx = process_remote_ue_logs(results_path)
+    all_harq_data.extend(remote_harq)
+    all_pc5_rx_data.extend(remote_pc5_rx)
+
+    # Uu from gNB logs
+    gnb_harq = process_gnb_logs(results_path)
+    all_harq_data.extend(gnb_harq)
+
+    # Step 3: Validate data
+    if not all_harq_data:
+        print(f"  Warning: No BLER data extracted!")
+        return False
+
+    # Step 4: Average and save HARQ data
+    averaged_harq = average_harq_data(all_harq_data)
+    save_harq_csv(averaged_harq, output_csv)
+
+    # Step 5: Average and save PC5 RX data
     if all_pc5_rx_data:
-        # Average across iterations
-        rx_grouped = defaultdict(lambda: {'count': 0, 'sum_bler': 0.0, 'sum_total': 0, 'sum_errors': 0, 'snr': 0})
-
-        for item in all_pc5_rx_data:
-            key = (item['mcs'], item['noise'], item['interface'])
-            rx_grouped[key]['count'] += 1
-            rx_grouped[key]['sum_bler'] += item['bler']
-            rx_grouped[key]['sum_total'] += item['total']
-            rx_grouped[key]['sum_errors'] += item['errors']
-            rx_grouped[key]['snr'] = item['snr']
-
-        rx_averaged = []
-        for (mcs, noise, interface), values in rx_grouped.items():
-            avg_bler = values['sum_bler'] / values['count']
-            rx_averaged.append({
-                'mcs': mcs,
-                'noise': noise,
-                'snr': values['snr'],
-                'interface': interface,
-                'total': values['sum_total'],
-                'errors': values['sum_errors'],
-                'bler': avg_bler
-            })
-
-        # Sort by interface, noise, mcs
-        rx_averaged.sort(key=lambda x: (x['interface'], x['noise'], x['mcs']))
-
-        # Write PC5_RX_SUMMARY CSV
-        with open(output_pc5_rx_csv, 'w', newline='') as f:
-            fieldnames = ['mcs', 'noise', 'snr', 'interface', 'total', 'errors', 'bler']
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rx_averaged)
-
-        print(f"  ✓ Saved {len(rx_averaged)} PC5_RX_SUMMARY BLER points to: {output_pc5_rx_csv}")
+        rx_averaged = average_pc5_rx_data(all_pc5_rx_data)
+        save_pc5_rx_csv(rx_averaged, output_pc5_rx_csv)
     else:
         print(f"  ⚠ No PC5_RX_SUMMARY data found")
 

@@ -165,7 +165,7 @@ else
 fi
 
 # Parallel mode: auto-generate host-specific configs and launch
-if [[ "$parallel_mode" == "true" ]]; then
+if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     echo "=========================================="
     echo "Parallel Mode Detected"
     echo "=========================================="
