@@ -8,6 +8,7 @@ This test framework provides automated validation for OAI 5G NR sidelink feature
 - **PC5 direct device-to-device communication** (Mode 1 & Mode 2)
 - **CSI acquisition and PSFCH feedback** with parametric testing
 - **U2N relay (SRAP protocol)** for remote UE connectivity
+- **iperf3 bandwidth sweep** for throughput characterization
 - **RF simulator and USRP hardware modes** for flexibility
 
 ### Key Features
@@ -108,6 +109,7 @@ For two-host or three-host tests:
 ~/ci_script/
   ├── run_sl_test.sh                      # Main test execution script
   ├── run_sl_test_config.sh               # User configuration (defines bler_hosts array)
+  ├── plot_sl_test_iperf3.py                      # iperf3 bandwidth sweep plot generator
   ├── bler_scripts/
   │   ├── check_test_status.sh            # Monitor distributed test progress
   │   ├── process_and_fetch_results.sh    # Results collection and plotting
@@ -221,7 +223,7 @@ ensure_ping_test_time=1
 
 # USRP serial numbers (required for SL Mode 1 relay tests only)
 RELAY_UE_USRP_SN_FOR_UU=340EA03    # USRP for Uu interface
-RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
+RELAY_UE_USRP_SN_FOR_SL=340EA3B    # USRP for sidelink interface
 ```
 
 ### 3. Run Tests
@@ -238,13 +240,50 @@ RELAY_UE_USRP_SN_FOR_SL=3271246    # USRP for sidelink interface
 
 ### Test Profiles
 
-Three built-in profiles in `run_sl_test_config.sh`. Each profile has its own test list (`pilot_tests`, `regress_tests`, `stress_tests`) that is automatically assigned to `enabled_tests`:
+Four built-in profiles in `run_sl_test_config.sh`. Each profile has its own test list (`pilot_tests`, `regress_tests`, `stress_tests`) that is automatically assigned to `enabled_tests`:
 
 | Profile   | Repeats | MCS Values | Duration | SNR/Atten   | TX/RX Gain | Max LDPC Iter | Use Case                |
 |-----------|---------|------------|----------|-------------|------------|---------------|-------------------------|
 | `pilot`   | 1       | 1          | 30s      | 0 / 20dB    | 20 / 110   | 30            | Quick smoke test        |
 | `regress` | 1       | 1, 9       | 30s      | 0 / 20dB    | 20 / 110   | 30            | Regression validation   |
 | `stress`  | 3       | 9, 16, 28  | 300s     | 0 / 20-60dB | 20 / 110   | 30            | Long-term stability     |
+| `bler`    | 12      | 0-28       | 85s      | N/A         | N/A        | 30            | BLER waterfall curves   |
+
+#### BLER Profile Details
+
+The `bler` profile is designed for Block Error Rate performance characterization. It sweeps the full MCS range (0-28) across a noise power sweep to generate BLER waterfall curves.
+
+| Parameter             | Value                   | Description                                    |
+|-----------------------|-------------------------|------------------------------------------------|
+| `num_repeat`          | 12                      | Iterations per configuration (statistical validity) |
+| `mcs_array`           | 0-28                    | Full MCS range (all modulation orders)         |
+| `duration`            | 85s                     | Per-test duration                              |
+| `noise_power_array`   | -12 to 4 dB (step 1)   | 17 noise levels for SNR sweep                  |
+| `ploss_db`            | 8 dB                    | Fixed path loss                                |
+| `csi_acquisition`     | 0                       | CSI disabled                                   |
+| `psfch_period`        | 2                       | PSFCH period = 2                               |
+| `ping_count`          | 1275                    | 15 pkt/s for 85 seconds                        |
+| `ping_interval`       | 0.0667s                 | ~66.7ms between pings                          |
+| `bler_optimization`   | `parallel_mcs`          | Keep softmodem processes running across MCS    |
+
+**SNR mapping:** `SINR = TX_power - ploss - noise_power = 20 - 8 - noise_power`
+- Noise = -12 dB --> SINR = 24 dB (high end, 64QAM)
+- Noise = +4 dB --> SINR = 8 dB (low end, all modulations reach 100% BLER)
+
+**Distributed execution:** The `bler` profile supports parallel testing across multiple machines via `bler_hosts`. Iterations are split evenly across machines.
+
+```bash
+# 4 machines, 12 iterations --> 3 iterations per machine
+bler_hosts=(l3 l4 l5 localhost)
+
+# 2 machines, 12 iterations --> 6 iterations per machine
+bler_hosts=(l3 localhost)
+
+# Single machine (all 12 iterations)
+bler_hosts=(localhost)
+```
+
+See [BLER Testing Framework](#bler-testing-framework) for full setup and usage instructions.
 
 ### Test Selection Syntax
 
@@ -268,10 +307,18 @@ The config file defines four test groups, each containing all tests of that cate
 | | 0 | `rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host` |
 | | 1 | `rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts` |
 | | 2 | `usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts` |
+| `slmode2_iperf3_tests`
+| | 0 | `rfsim_pc5_iperf3_test_on_local_host` |
+| | 1 | `rfsim_pc5_iperf3_test_on_two_hosts` |
+| | 2 | `usrp_B210_pc5_iperf3_test_on_two_hosts` |
 | `slmode1_basic_tests`
 | | 0 | `rfsim_slmode1_srap_ping_test_on_local_host` |
 | | 1 | `rfsim_slmode1_srap_ping_test_on_three_hosts` |
 | | 2 | `usrp_B210_slmode1_srap_ping_test_on_three_hosts` |
+| `slmode1_iperf3_tests`
+| | 0 | `rfsim_slmode1_srap_iperf3_test_on_local_host` |
+| | 1 | `rfsim_slmode1_srap_iperf3_test_on_three_hosts` |
+| | 2 | `usrp_B210_slmode1_srap_iperf3_test_on_three_hosts` |
 
 You can also define your own groups that reference other groups or individual tests:
 
@@ -412,6 +459,84 @@ Replace `rfsim` prefix with `usrp_B210` for hardware tests:
 - USRP B210 radios on all participating hosts
 - RF attenuator at `http://169.254.10.10/` (controlled via `set_atten`)
 
+### iperf3 Bandwidth Sweep Tests
+
+These tests measure UDP throughput over sidelink by sweeping target bandwidths and reporting actual delivered throughput, jitter, and packet loss.
+
+#### iperf3 Parameters
+
+Configured in `run_sl_test_config.sh`:
+
+| Parameter             | Default                              | Description                              |
+|-----------------------|--------------------------------------|------------------------------------------|
+| `iperf3_bw_array`    | `(1M 2M 3M 4M 5M 6M 7M 8M 9M 10M)` | Target bandwidths to sweep               |
+| `iperf3_port`        | `5001`                               | iperf3 server port                       |
+| `iperf3_run_duration` | `10`                                | Seconds per bandwidth step               |
+
+#### Mode 2 iperf3 Tests
+
+##### `rfsim_pc5_iperf3_test_on_local_host`
+PC5 Mode 2 bandwidth sweep on local machine.
+- Server: syncref UE (10.0.0.99), Client: nearby UE (10.0.0.100)
+- Sweeps through `iperf3_bw_array` with UDP traffic
+
+##### `rfsim_pc5_iperf3_test_on_two_hosts`
+PC5 Mode 2 bandwidth sweep across two machines.
+- Syncref UE runs locally, nearby UE runs on `remote_ue` host
+
+##### `usrp_B210_pc5_iperf3_test_on_two_hosts`
+PC5 Mode 2 bandwidth sweep with USRP B210 hardware across two machines.
+
+#### Mode 1 (SRAP) iperf3 Tests
+
+These tests run iperf3 through the U2N relay path: nearby UE → relay UE → gNB → 5G Core (UPF).
+
+##### `rfsim_slmode1_srap_iperf3_test_on_local_host`
+U2N relay bandwidth sweep on local machine (requires 5G Core).
+- Server: UPF docker (192.168.70.134), Client: nearby UE (10.0.0.100)
+
+##### `rfsim_slmode1_srap_iperf3_test_on_three_hosts`
+U2N relay bandwidth sweep across three machines (requires 5G Core).
+- gNB on `gNB` host, relay UE on `relay_ue` host, remote UE on `remote_ue` host
+
+##### `usrp_B210_slmode1_srap_iperf3_test_on_three_hosts`
+U2N relay bandwidth sweep with USRP B210 hardware across three machines (requires 5G Core).
+
+#### iperf3 Sweep Behavior
+
+1. **Pre-step ping check:** Before each bandwidth step, the script pings the server via the sidelink interface to verify the link is alive. If ping fails, the sweep stops.
+2. **Fresh server per step:** The iperf3 server is killed and restarted before each bandwidth step to avoid "Bad file descriptor" errors from stale server state.
+3. **Client timeout:** If the iperf3 client hangs, it is killed after `iperf3_run_duration + 15` seconds.
+4. **Saturation detection:** If actual throughput doesn't increase by at least 10% over the previous step, the result is marked `SATURATED` and the sweep stops.
+5. **Failure detection:** If packet loss exceeds 20%, the result is `FAIL` and the sweep stops. Zero throughput with 0% loss indicates a connection failure.
+
+#### iperf3 Results
+
+Results are saved to `<test_log_dir>/`:
+- `iperf3_summary_<timestamp>.csv` — Per-step results with target/actual bandwidth, jitter, loss, and result
+- `iperf3_summary_<timestamp>.png` — Plot of actual bandwidth and packet loss vs target bandwidth
+- `iperf3_server_<timestamp>.txt` — Server-side iperf3 log
+- `iperf3_client_<bw>_<timestamp>.txt` — Client-side iperf3 log per bandwidth step
+
+**CSV columns:**
+
+| Column            | Description                                      |
+|-------------------|--------------------------------------------------|
+| Test Name         | Test function name                               |
+| Itrn              | Iteration number                                 |
+| Num Hosts         | Number of hosts involved                         |
+| MCS               | Modulation and coding scheme                     |
+| BW Target         | Requested bandwidth (e.g., `1M`, `5M`)           |
+| BW Actual (Mbps)  | Measured receiver-side throughput                 |
+| Jitter (ms)       | Measured jitter                                  |
+| Loss%             | Packet loss percentage                           |
+| Result            | `PASS`, `FAIL`, or `SATURATED`                   |
+
+**Plot generation:**
+```bash
+python3 plot_sl_test_iperf3.py <iperf3_summary.csv> [output.png]
+```
+
 ## BLER Testing Framework
 
 The BLER (Block Error Rate) testing framework provides automated performance characterization across the full MCS range (0-28) and SNR sweep. It supports both local execution and distributed parallel testing across multiple machines.
@@ -477,10 +602,14 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |  
 ### Log Files
 
 All logs saved to `<base_dir>/test_<timestamp>/`, where base_dir is determined by (highest priority first): `-d` flag > `base_log_dir` in config > script directory. A `latest` symlink points to the most recent test folder.
-- `test_summary_<timestamp>.csv` - Summary table
-- `commands.txt` - All executed commands (gNB, nrUE, syncref, nearby, ping) with host information
+- `test_summary_<timestamp>.csv` - Summary table (ping/PSSCH tests)
+- `iperf3_summary_<timestamp>.csv` - iperf3 bandwidth sweep results
+- `iperf3_summary_<timestamp>.png` - iperf3 bandwidth/loss plot
+- `commands.txt` - All executed commands (gNB, nrUE, syncref, nearby, ping, iperf3 server/client) with host information
 - `result_<component>_<test_name>_<timestamp>.log` - Softmodem output per test, where component is one of: gNB, nrUE, syncref, nearby, nrUE_syncref (e.g., `result_gNB_rfsim_uu_ping_test_on_two_hosts_<timestamp>.log`)
 - `ping_result_<test_name>_<timestamp>.txt` - Ping output per test
+- `iperf3_server_<timestamp>.txt` - iperf3 server log
+- `iperf3_client_<bw>_<timestamp>.txt` - iperf3 client log per bandwidth step
 
 The list of softmodem log files is defined in `softmodem_log_files` in `run_sl_test_config.sh`.
 

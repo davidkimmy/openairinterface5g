@@ -350,6 +350,8 @@ kill_all() {
     [[ $# -ge 2 ]] && target=$2
     if [[ $host_name == 'local' ]]; then
         kill_process $target
+    elif [[ $host_name == 'upf_docker' ]]; then
+        docker exec oai-upf bash -c "pkill $target" 2>/dev/null
     else
         ssh $host_name "$(declare -f kill_process); kill_process ping $target" ; sleep 3
     fi
@@ -949,6 +951,259 @@ evaluate_ping_test() {
     fi
 }
 
+#############################################################
+### iperf3 test functions
+#############################################################
+get_iperf3_stats() {
+    local output_file=$1
+    if [ ! -f "$output_file" ]; then
+        echo "0 0 0"
+        return
+    fi
+    local summary=$(grep -A1 '\[SUM\].*receiver\|.*receiver' "$output_file" | grep 'receiver' | tail -1)
+    if [ -z "$summary" ]; then
+        summary=$(grep 'receiver' "$output_file" | tail -1)
+    fi
+    local bw=$(echo "$summary" | grep -oP '[\d.]+(?=\s+[KMG]bits/sec)' | tail -1)
+    local bw_unit=$(echo "$summary" | grep -oP '[\d.]+\s+\K[KMG](?=bits/sec)' | tail -1)
+    local loss_pct=$(echo "$summary" | grep -oP '[\d.]+(?=%)' | tail -1)
+    local jitter=$(echo "$summary" | grep -oP '[\d.]+(?=\s+ms)' | tail -1)
+    # Normalize to Mbps
+    case "$bw_unit" in
+        K) bw=$(printf "%.3f" "$(echo "$bw / 1000" | bc -l 2>/dev/null || echo "0")") ;;
+        G) bw=$(printf "%.3f" "$(echo "$bw * 1000" | bc -l 2>/dev/null || echo "0")") ;;
+    esac
+    echo "${bw:-0} ${loss_pct:-0} ${jitter:-0}"
+}
+
+print_iperf3_summary_header() {
+    local summary_file=$1
+    if [ ! -f "$summary_file" ]; then
+        echo "Test Name,Itrn,Num Hosts,MCS,BW Target,BW Actual (Mbps),Jitter (ms),Loss%,Result" \
+            | tee -a "$summary_file"
+    fi
+}
+
+print_iperf3_summary() {
+    local summary_file=$1
+    local test_name=$2
+    local iteration=$3
+    local num_hosts=$4
+    local mcs=$5
+    local bw_target=$6
+    local bw_actual=$7
+    local jitter=$8
+    local loss_pct=$9
+    local result=${10}
+
+    print_iperf3_summary_header "$summary_file"
+    echo "$test_name,$iteration,$num_hosts,${mcs:-N/A},$bw_target,${bw_actual}Mbps,${jitter}ms,${loss_pct}%,$result" \
+        | tee -a "$summary_file"
+}
+
+run_iperf3_server() {
+    local host_name=$1
+    local bind_ip=$2
+    local port=${3:-5001}
+    local log_file=$4
+
+    local cmd="iperf3 -s -B $bind_ip -p $port -i 1"
+
+    if [[ "$host_name" == "upf_docker" ]]; then
+        cmd="docker exec oai-upf bash -c 'iperf3 -s -B $bind_ip -p $port -i 1'"
+    fi
+
+    echo "=== iperf3 Server Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
+    if [[ "$host_name" == "upf_docker" ]]; then
+        bash -c "$cmd" 2>&1 | tee -a "$log_file" &
+    elif [[ "$host_name" == "local" ]]; then
+        bash -c "iperf3 -s -B $bind_ip -p $port -i 1" 2>&1 | tee -a "$log_file" &
+    else
+        local user_name=$(find_user_name "$host_name")
+        bash -c "ssh $host_name 'iperf3 -s -B $bind_ip -p $port -i 1'" 2>&1 | tee -a "$log_file" &
+    fi
+}
+
+run_iperf3_client() {
+    local host_name=$1
+    local server_ip=$2
+    local bind_ip=$3
+    local port=${4:-5001}
+    local bandwidth=$5
+    local iperf3_duration=${6:-10}
+    local log_file=$7
+
+    local cmd="iperf3 -u -c $server_ip -B $bind_ip -p $port -i 1 -b $bandwidth -t $iperf3_duration"
+
+    if [[ "$host_name" == "upf_docker" ]]; then
+        cmd="docker exec oai-upf bash -c 'iperf3 -u -c $server_ip -B $bind_ip -p $port -i 1 -b $bandwidth -t $iperf3_duration'"
+    fi
+
+    echo "=== iperf3 Client Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
+    if [[ "$host_name" == "upf_docker" ]]; then
+        bash -c "$cmd" 2>&1 | tee "$log_file" &
+    elif [[ "$host_name" == "local" ]]; then
+        bash -c "$cmd" 2>&1 | tee "$log_file" &
+    else
+        bash -c "ssh $host_name '$cmd'" 2>&1 | tee "$log_file" &
+    fi
+}
+
+evaluate_iperf3_sweep() {
+    local server_host=$1
+    local server_bind_ip=$2
+    local client_host=$3
+    local client_bind_ip=$4
+    local sl_mode=$5
+    local test_name=$6
+    local iteration=$7
+    local num_hosts=$8
+    local mcs=$9
+
+    local iperf3_port=${iperf3_port:-5001}
+    local iperf3_run_duration=${iperf3_run_duration:-10}
+    local iperf3_summary_file="$log_dir/iperf3_summary_${timestamp}.csv"
+    local prev_bw=0
+    local saturation_threshold=10
+
+    echo ""
+    echo "========== iperf3 Bandwidth Sweep =========="
+    echo "Server: $server_host ($server_bind_ip)"
+    echo "Client: $client_host ($client_bind_ip)"
+    echo "BW Array: ${iperf3_bw_array[@]}"
+    echo "============================================="
+
+    local server_log="$log_dir/iperf3_server_${timestamp}.txt"
+    local server_pid=0
+
+    for bw_target in "${iperf3_bw_array[@]}"; do
+        echo ""
+        echo "--- iperf3: target bandwidth = $bw_target ---"
+
+        # Start fresh server for each bandwidth step
+        if [ "$server_pid" -gt 0 ]; then
+            kill $server_pid 2>/dev/null
+        fi
+        kill_all "$server_host" "iperf3"
+        sleep 3
+        run_iperf3_server "$server_host" "$server_bind_ip" "$iperf3_port" "$server_log"
+        server_pid=$!
+        sleep 3
+
+        # Verify link is alive before each bandwidth step
+        local ping_ok=0
+        if [[ "$client_host" == "local" ]]; then
+            ping -c 3 -W 2 -I "$client_bind_ip" "$server_bind_ip" &>/dev/null && ping_ok=1
+        else
+            safe_ssh "$client_host" "ping -c 3 -W 2 -I $client_bind_ip $server_bind_ip" &>/dev/null && ping_ok=1
+        fi
+        if [ "$ping_ok" -eq 0 ]; then
+            echo "WARNING: ping to $server_bind_ip failed before $bw_target — link is down"
+            print_iperf3_summary "$iperf3_summary_file" "$test_name" "$iteration" "$num_hosts" "$mcs" \
+                "$bw_target" "0" "0" "0" "FAIL"
+            break
+        fi
+
+        local ts=$(date +%Y%m%d_%H%M%S)
+        local client_log="$log_dir/iperf3_client_${bw_target}_${ts}.txt"
+
+        # Start client (server is already running)
+        run_iperf3_client "$client_host" "$server_bind_ip" "$client_bind_ip" "$iperf3_port" "$bw_target" "$iperf3_run_duration" "$client_log"
+        local client_pid=$!
+
+        # Wait for client to finish (timeout = run_duration + 15s for connection + summary overhead)
+        local wait_timeout=$(( iperf3_run_duration + 15 ))
+        local wait_count=0
+        while kill -0 $client_pid 2>/dev/null; do
+            sleep 1
+            wait_count=$(( wait_count + 1 ))
+            if [ $wait_count -ge $wait_timeout ]; then
+                echo "WARNING: iperf3 client timed out after ${wait_timeout}s, killing..."
+                kill $client_pid 2>/dev/null
+                kill_all "$client_host" "iperf3"
+                break
+            fi
+        done
+        sleep 3
+
+        # Parse results
+        local stats=$(get_iperf3_stats "$client_log")
+        local bw_actual=$(echo "$stats" | awk '{print $1}')
+        local loss_pct=$(echo "$stats" | awk '{print $2}')
+        local jitter=$(echo "$stats" | awk '{print $3}')
+
+        # Determine result
+        local result="PASS"
+        local loss_int=$(echo "$loss_pct" | awk '{printf "%d", $1}')
+        if [ "$loss_int" -gt 20 ]; then
+            result="FAIL"
+        fi
+
+        # Detect connection failure (0 Mbps actual = server likely dead)
+        local bw_zero=$(echo "$bw_actual" | awk '{print ($1 == 0) ? 1 : 0}')
+        if [ "$bw_zero" -eq 1 ] && [ "$loss_int" -eq 0 ]; then
+            result="FAIL"
+            echo "WARNING: iperf3 client got 0 Mbps with 0% loss — server connection failed"
+        # Check saturation: if actual BW didn't increase by at least 10% over previous
+        elif [ "$prev_bw" != "0" ]; then
+            local increase=$(echo "$bw_actual $prev_bw" | awk '{if ($2 > 0) printf "%d", (($1 - $2) / $2) * 100; else print 100}')
+            if [ "$increase" -lt "$saturation_threshold" ]; then
+                result="SATURATED"
+            fi
+        fi
+
+        print_iperf3_summary "$iperf3_summary_file" "$test_name" "$iteration" "$num_hosts" "$mcs" \
+            "$bw_target" "$bw_actual" "$jitter" "$loss_pct" "$result"
+
+        prev_bw=$bw_actual
+
+        if [[ "$result" == "SATURATED" || "$result" == "FAIL" ]]; then
+            echo "iperf3 sweep stopped: $result at target=$bw_target (actual=${bw_actual}Mbps, loss=${loss_pct}%)"
+            break
+        fi
+    done
+
+    # Kill server after sweep completes
+    kill $server_pid 2>/dev/null
+    kill_all "$server_host" "iperf3"
+
+    echo ""
+    echo "iperf3 sweep complete. Results saved to: $iperf3_summary_file"
+    if [ -f "$iperf3_summary_file" ]; then
+        cat "$iperf3_summary_file"
+        python3 "$SCRIPT_DIR/plot_sl_test_iperf3.py" "$iperf3_summary_file"
+    fi
+}
+
+verify_ping() {
+    local host_name=$1
+    local src_if=$2
+    local dest_ip=$3
+    local count=${4:-5}
+
+    echo "Verifying connectivity with ping -c $count -I $src_if $dest_ip on $host_name..."
+    local ping_result
+    if [[ "$host_name" == "local" ]]; then
+        ping_result=$(ping -c $count -I $src_if $dest_ip 2>&1)
+    else
+        ping_result=$(safe_ssh "$host_name" "ping -c $count -I $src_if $dest_ip" 2>&1)
+    fi
+    local received=$(echo "$ping_result" | grep -oP '\d+(?= received)')
+    if [ "${received:-0}" -gt 0 ]; then
+        echo "Ping verification PASSED ($received/$count received)"
+        return 0
+    else
+        echo "Ping verification FAILED (0/$count received)"
+        return 1
+    fi
+}
+
 evaluate_ping_and_rsrp_test() {
     # Argumemt(s): duration, test_type, mcs, iteration, host_name, test_name
     [[ $# -ge 1 ]] && duration=$1
@@ -1199,9 +1454,6 @@ slmode1_srap_ping_test() {
         validate_test_type_for_local_host $test_type $test_name || return 1
     fi
     cleanup_old_logs
-
-    # Sync default configuration parameters across all files
-    sync_default_config_params 0 2
 
     local start_time=$(date +%s)
     local sl_mode=1
@@ -1774,9 +2026,6 @@ pc5_ping_test() {
     fi
     cleanup_old_logs
 
-    # Sync default configuration parameters across all files
-    sync_default_config_params 0 2
-
     local start_time=$(date +%s)
     local sl_mode=2
     local src_if="oaitun_ue1"
@@ -2018,6 +2267,233 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
 }
 
 #############################################################
+### iperf3 test cases
+#############################################################
+pc5_iperf3_test() {
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && test_type=$2
+    [[ $# -ge 3 ]] && mcs=$3
+    [[ $# -ge 4 ]] && iteration=$4
+    [[ $# -ge 5 ]] && syncref_host_name=$5
+    [[ $# -ge 6 ]] && nearby_host_name=$6
+    [[ $# -ge 7 ]] && num_hosts=$7
+    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}"
+
+    # Validate test type for local host execution
+    if [[ $num_hosts -eq 1 ]]; then
+        validate_test_type_for_local_host $test_type $test_name || return 1
+    fi
+    cleanup_old_logs
+
+    local start_time=$(date +%s)
+    local sl_mode=2
+    local src_if="oaitun_ue1"
+    local dest_ip="10.0.0.100"
+    local server_ip="10.0.0.1"
+    local client_ip="10.0.0.100"
+
+    if [[ $nearby_host_name != "local" ]]; then
+        sync_config_files $nearby_host_name
+    fi
+
+    run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+    sleep 1
+    run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+
+    local wait_start=$(date +%s)
+    wait_for_tun_interface $src_if $syncref_host_name $duration
+    local remaining=$(( duration - $(date +%s) + wait_start ))
+    if [[ $remaining -gt 0 ]]; then
+        wait_for_pc5_sync $remaining
+    fi
+
+    # Verify connectivity with ping before iperf3
+    if ! verify_ping "$syncref_host_name" "$src_if" "$dest_ip" 5; then
+        echo "SKIP: iperf3 test skipped due to ping failure"
+        LAST_TEST_RESULT="FAIL"
+        kill_all $syncref_host_name nr-uesoftmodem
+        kill_all $nearby_host_name nr-uesoftmodem
+        save_softmodem_logs "${test_name}"
+        local end_time=$(date +%s)
+        print_runtime $start_time $end_time
+        return 1
+    fi
+
+    # Run iperf3 sweep: server on syncref, client on nearby
+    evaluate_iperf3_sweep "$syncref_host_name" "$server_ip" "$nearby_host_name" "$client_ip" \
+        $sl_mode "$test_name" "$iteration" "$num_hosts" "$mcs"
+
+    # Cleanup
+    kill_all $syncref_host_name nr-uesoftmodem
+    kill_all $nearby_host_name nr-uesoftmodem
+    kill_all $syncref_host_name iperf3
+    kill_all $nearby_host_name iperf3
+    save_softmodem_logs "${test_name}"
+
+    local end_time=$(date +%s)
+    print_runtime $start_time $end_time
+}
+
+#############################################################
+rfsim_pc5_iperf3_test_on_local_host() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="rfsim"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+rfsim_pc5_iperf3_test_on_two_hosts() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="rfsim"
+    local syncref_host_name="local"
+    local nearby_host_name=$REMOTE_UE_HOST
+    local num_hosts=2
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+usrp_B210_pc5_iperf3_test_on_two_hosts() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="usrp"
+    local syncref_host_name="local"
+    local nearby_host_name=$REMOTE_UE_HOST
+    local num_hosts=2
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+
+slmode1_srap_iperf3_test() {
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && test_type=$2
+    [[ $# -ge 3 ]] && mcs=$3
+    [[ $# -ge 4 ]] && iteration=$4
+    [[ $# -ge 5 ]] && gnb_host_name=$5
+    [[ $# -ge 6 ]] && syncref_host_name=$6
+    [[ $# -ge 7 ]] && nearby_host_name=$7
+    [[ $# -ge 8 ]] && num_hosts=$8
+    [[ $# -ge 9 ]] && test_name=$9 || test_name="${FUNCNAME[0]}"
+
+    # Validate test type for local host execution
+    if [[ $num_hosts -eq 1 ]]; then
+        validate_test_type_for_local_host $test_type $test_name || return 1
+    fi
+    cleanup_old_logs
+
+    local start_time=$(date +%s)
+    local sl_mode=1
+    local src_if="oaitun_ue2"
+    local dest_ip="8.8.8.8"
+    local server_ip="192.168.70.134"
+    local client_ip="10.0.0.100"
+
+    pre1='docker ps | grep oai-upf | wc -l'
+    act1='echo "core network is required !!!"; cd ~/oai-cn5g; systemctl start docker.service; docker compose up -d; sleep 2'
+    [[ $(eval "$pre1") -eq 1 ]] && echo "Requirements are satisfied !!!" || eval "$act1"
+
+    if [[ $syncref_host_name != "local" ]]; then
+        sync_config_files $syncref_host_name
+    fi
+    if [[ $nearby_host_name != "local" ]]; then
+        sync_config_files $nearby_host_name
+    fi
+
+    run_gNB_cmd $test_type $sl_mode $gnb_host_name
+    sleep 1
+    run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+    sleep 1
+    run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+
+    local wait_start=$(date +%s)
+    wait_for_tun_interface $src_if $nearby_host_name $duration
+    local remaining=$(( duration - $(date +%s) + wait_start ))
+    if [[ $remaining -gt 0 ]]; then
+        wait_for_pc5_sync $remaining
+    fi
+
+    # Verify connectivity with ping before iperf3
+    if ! verify_ping "$nearby_host_name" "$src_if" "$dest_ip" 5; then
+        echo "SKIP: iperf3 test skipped due to ping failure"
+        LAST_TEST_RESULT="FAIL"
+        kill_all $nearby_host_name nr-uesoftmodem
+        kill_all $syncref_host_name nr-uesoftmodem
+        kill_all $gnb_host_name nr-softmodem
+        save_softmodem_logs "${test_name}"
+        local end_time=$(date +%s)
+        print_runtime $start_time $end_time
+        return 1
+    fi
+
+    # Run iperf3 sweep: server on UPF docker, client on nearby UE
+    evaluate_iperf3_sweep "upf_docker" "$server_ip" "$nearby_host_name" "$client_ip" \
+        $sl_mode "$test_name" "$iteration" "$num_hosts" "$mcs"
+
+    # Cleanup
+    kill_all $nearby_host_name nr-uesoftmodem
+    kill_all $syncref_host_name nr-uesoftmodem
+    kill_all $gnb_host_name nr-softmodem
+    kill_all $nearby_host_name iperf3
+    kill_all "local" iperf3
+    save_softmodem_logs "${test_name}"
+
+    local end_time=$(date +%s)
+    print_runtime $start_time $end_time
+}
+#############################################################
+rfsim_slmode1_srap_iperf3_test_on_local_host() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+rfsim_slmode1_srap_iperf3_test_on_three_hosts() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name=$RELAY_UE_HOST
+    local nearby_host_name=$REMOTE_UE_HOST
+    local num_hosts=3
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+usrp_B210_slmode1_srap_iperf3_test_on_three_hosts() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="usrp"
+    local gnb_host_name="local"
+    local syncref_host_name=$RELAY_UE_HOST
+    local nearby_host_name=$REMOTE_UE_HOST
+    local num_hosts=3
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+
+#############################################################
 ### Driver function
 #############################################################
 
@@ -2226,7 +2702,16 @@ main() {
     echo "Test Execution Complete"
     echo "=========================================="
 
-    if [ -f "$test_summary_file" ]; then
+    local iperf3_csv
+    iperf3_csv=$(find "$log_dir" -maxdepth 1 -name 'iperf3_summary_*.csv' 2>/dev/null | head -1)
+
+    if [ -n "$iperf3_csv" ]; then
+        echo "iperf3 Summary: $iperf3_csv"
+        echo ""
+        echo "iperf3 Test Results:"
+        cat "$iperf3_csv"
+        echo ""
+    elif [ -f "$test_summary_file" ]; then
         echo "Summary saved to: $test_summary_file"
         echo ""
         echo "All Test Results:"

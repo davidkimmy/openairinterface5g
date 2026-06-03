@@ -93,16 +93,28 @@ slmode2_csi_psfch_tests=( # Each item includes 8 sub-test cases.
     rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts
     usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts
 )
+slmode2_iperf3_tests=(
+    rfsim_pc5_iperf3_test_on_local_host
+    rfsim_pc5_iperf3_test_on_two_hosts
+    usrp_B210_pc5_iperf3_test_on_two_hosts
+)
 slmode1_basic_tests=(
     rfsim_slmode1_srap_ping_test_on_local_host
     rfsim_slmode1_srap_ping_test_on_three_hosts
     usrp_B210_slmode1_srap_ping_test_on_three_hosts
+)
+slmode1_iperf3_tests=(
+    rfsim_slmode1_srap_iperf3_test_on_local_host
+    rfsim_slmode1_srap_iperf3_test_on_three_hosts
+    usrp_B210_slmode1_srap_iperf3_test_on_three_hosts
 )
 regress_tests=(
     uu_basic_tests
     slmode1_basic_tests
     slmode2_basic_tests
     slmode2_csi_psfch_tests
+    slmode1_iperf3_tests
+    slmode2_iperf3_tests
 )
 stress_tests=(
     slmode2_basic_tests[1:2]
@@ -111,12 +123,19 @@ pilot_tests=(
     slmode1_basic_tests[2]
     #slmode2_basic_tests[2]
     #slmode2_csi_psfch_tests[2]
+    #slmode1_iperf3_tests[2]
+    #slmode2_iperf3_tests[2]
 )
 
 # Set to 1 if your system needs additional time for:
 #   - TUN interface initialization
 #   - Sidelink synchronization stabilization
 use_extended_delays=0 # (0 default: disabled)
+
+# iperf3 test parameters
+iperf3_bw_array=(1M 2M 3M 4M 5M 6M 7M 8M 9M 10M)
+iperf3_port=5001
+iperf3_run_duration=10  # seconds per bandwidth step
 
 # Base directory for logs. The default will be this script folder.
 base_log_dir="$HOME/openairinterface5g"
@@ -249,6 +268,11 @@ echo "Use --sa flag        : $use_sa"
 echo "Use External Clock   : $use_external_clock"
 echo "Use GNOME            : $use_gnome"
 echo "Ensure Ping Test Time: $ensure_ping_test_time"
+if printf '%s\n' "${enabled_tests[@]}" | grep -q "iperf3"; then
+    echo "iperf3 BW Array      : ${iperf3_bw_array[@]}"
+    echo "iperf3 Port          : $iperf3_port"
+    echo "iperf3 Run Duration  : ${iperf3_run_duration}s"
+fi
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""
 echo "Enabled Test Cases:"

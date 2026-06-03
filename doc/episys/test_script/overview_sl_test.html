@@ -68,11 +68,13 @@
     <div>
       <h3>What It Tests</h3>
       <ul>
-        <li><span class="badge badge-blue">Mode 2</span> PC5 direct D2D communication</li>
-        <li><span class="badge badge-blue">Mode 1</span> Network-scheduled sidelink</li>
+        <li><span class="badge badge-blue">Mode 2</span> Sidelink direct D2D communication</li>
+        <li><span class="badge badge-blue">Mode 1</span> Sidelink network-scheduled</li>
         <li><span class="badge badge-green">SRAP</span> U2N relay for remote UE connectivity</li>
         <li><span class="badge badge-orange">CSI / PSFCH</span> Parametric feedback testing</li>
         <li><span class="badge badge-purple">Uu</span> gNB &harr; UE interface testing</li>
+        <li><span class="badge badge-green">iperf3</span> Bandwidth sweep throughput characterization</li>
+        <li><span class="badge badge-orange">BLER</span> Waterfall curves across MCS 0-28 with noise sweep</li>
       </ul>
     </div>
     <div>
@@ -81,7 +83,7 @@
         <li><strong>Array-based test selection</strong> &mdash; simple ordered list</li>
         <li><strong>Parametric sweeps</strong> &mdash; CSI &times; PSFCH combinations</li>
         <li><strong>Multi-host support</strong> &mdash; 1, 2, or 3 machines via SSH</li>
-        <li><strong>Profile-based config</strong> &mdash; pilot / regress / stress</li>
+        <li><strong>Profile-based config</strong> &mdash; pilot / regress / stress / bler</li>
         <li><strong>Auto result tracking</strong> &mdash; ping + PSSCH statistics</li>
       </ul>
     </div>
@@ -126,6 +128,7 @@ run_sl_test_config.sh     # Configuration
   latest -&gt; test_&lt;ts&gt;/    # Symlink
   test_&lt;timestamp&gt;/       # Results
     test_summary_*.csv
+    iperf3_summary_*.csv / *.png
     result_*_&lt;test&gt;_&lt;ts&gt;.log
     ping_result_*.txt</div>
       <div class="box" style="margin-top: 10px; font-size: 0.75em;">
@@ -184,9 +187,15 @@ run_sl_test_config.sh     # Configuration
         <tr><td><code>pilot</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
         <tr><td><code>regress</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1, 9</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
         <tr><td><code>stress</code></td><td style="text-align:center;">3</td><td style="text-align:center;">9, 16, 28</td><td style="text-align:center;">300s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
+        <tr><td><code>bler</code></td><td style="text-align:center;">12</td><td style="text-align:center;">0-28</td><td style="text-align:center;">85s</td><td style="text-align:center;">N/A</td><td style="text-align:center;">30</td></tr>
       </table>
+      <div class="box" style="margin-top: 8px; font-size: 0.65em;">
+        <strong>BLER profile:</strong> Noise sweep &minus;12 to +4 dB (17 levels), path loss 8 dB, CSI=0, PSFCH=2.
+        Supports distributed parallel execution via <code>bler_hosts</code>.
+        See <a href="bler_scripts/README_BLER_test.md">README_BLER_test.md</a> for details.
+      </div>
       <h3 style="margin-top: 15px;">Per-Profile Test Lists</h3>
-      <p style="font-size: 0.7em;">Each profile has its own test array (<code>pilot_tests</code>, <code>regress_tests</code>, <code>stress_tests</code>) assigned to <code>enabled_tests</code> automatically.</p>
+      <p style="font-size: 0.7em;">Each profile has its own test array (<code>pilot_tests</code>, <code>regress_tests</code>, <code>stress_tests</code>, <code>bler</code>) assigned to <code>enabled_tests</code> automatically.</p>
       <ul style="font-size: 0.75em;">
         <li><code>slmode2_basic_tests</code> &mdash; entire group</li>
         <li><code>slmode2_basic_tests[0:2]</code> &mdash; range</li>
@@ -211,7 +220,7 @@ ensure_ping_test_time=1
 
 # USRP serial numbers (SL Mode 1 relay only)
 RELAY_UE_USRP_SN_FOR_UU=340EA03
-RELAY_UE_USRP_SN_FOR_SL=3271246</code></pre>
+RELAY_UE_USRP_SN_FOR_SL=340EA3B</code></pre>
       <h3 style="margin-top: 15px;">Running Tests</h3>
       <pre><code># use config settings (or defaults)
 ./run_sl_test.sh
@@ -235,8 +244,9 @@ RELAY_UE_USRP_SN_FOR_SL=3271246</code></pre>
     <tr><td><code>rfsim_pc5_ping_test_on_two_hosts</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">2</td><td>PC5 ping across two machines</td></tr>
     <tr><td><code>rfsim_pc5_csi_psfch_*_on_local_host</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>CSI/PSFCH parametric sweep (8 combos)</td></tr>
     <tr><td><code>rfsim_pc5_csi_psfch_*_on_two_hosts</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">2</td><td>CSI/PSFCH parametric on two machines</td></tr>
-    <tr><td><code>rfsim_slmode1_srap_*_on_local_host</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1</td><td>U2N relay via SRAP on localhost</td></tr>
-    <tr><td><code>rfsim_slmode1_srap_*_on_three_hosts</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">3</td><td>U2N relay across gNB + Relay + Remote</td></tr>
+    <tr><td><code>rfsim_pc5_iperf3_test_on_*</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1-2</td><td>iperf3 bandwidth sweep over PC5</td></tr>
+    <tr><td><code>rfsim_slmode1_srap_ping_*</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1, 3</td><td>U2N relay ping via SRAP</td></tr>
+    <tr><td><code>rfsim_slmode1_srap_iperf3_*</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1, 3</td><td>U2N relay iperf3 bandwidth sweep</td></tr>
     <tr><td><code>rfsim_uu_ping_test_on_local_host</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">1</td><td>gNB &harr; UE ping on localhost</td></tr>
     <tr><td><code>rfsim_uu_ping_test_on_two_hosts</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">2</td><td>gNB &harr; UE ping across two machines</td></tr>
     <tr><td><code>usrp_B210_*</code></td><td style="text-align:center;">All</td><td style="text-align:center;">2-3</td><td>USRP hardware variants of above tests</td></tr>
@@ -251,7 +261,9 @@ RELAY_UE_USRP_SN_FOR_SL=3271246</code></pre>
       <code>uu_basic_tests</code>,
       <code>slmode2_basic_tests</code>,
       <code>slmode2_csi_psfch_tests</code>,
-      <code>slmode1_basic_tests</code>
+      <code>slmode2_iperf3_tests</code>,
+      <code>slmode1_basic_tests</code>,
+      <code>slmode1_iperf3_tests</code>
     </div>
   </div>
 </section>
@@ -281,8 +293,11 @@ rfsim_slmode1_srap_ping_test_on_local_host     |    1 |     1 |   1 |    42s  | 
       <h3>Log Files (per test)</h3>
       <ul style="font-size: 0.75em;">
         <li><code>test_summary_*.csv</code> &mdash; summary table</li>
+        <li><code>iperf3_summary_*.csv</code> &mdash; iperf3 bandwidth sweep results</li>
+        <li><code>iperf3_summary_*.png</code> &mdash; iperf3 bandwidth/loss plot</li>
         <li><code>result_&lt;component&gt;_&lt;test_name&gt;_&lt;ts&gt;.log</code> &mdash; softmodem output (gNB, nrUE, syncref, nearby, nrUE_syncref)</li>
         <li><code>ping_result_*.txt</code> &mdash; ping output</li>
+        <li><code>iperf3_server_*.txt</code> / <code>iperf3_client_*.txt</code> &mdash; iperf3 logs</li>
       </ul>
       <div class="box" style="margin-top: 8px; font-size: 0.7em;">
         Remote logs captured via <code>tee</code>, then moved to log folder.<br>
