@@ -86,6 +86,31 @@ For two-host or three-host tests:
 
 ## Prerequisites
 
+### Test Script Setup
+
+The test scripts reference `~/ci_script/` as the working directory. You need to create a symbolic link from your home directory to the actual script location:
+
+```bash
+# Create symbolic link to the test script directory
+ln -s ~/openairinterface5g/doc/episys/test_script ~/ci_script
+
+# Verify the link was created
+ls -la ~/ci_script
+```
+
+**Alternative:** If you want to use the test scripts independently of the repository branch or OAI software version:
+```bash
+# Copy test scripts to home directory
+cp -pr ~/openairinterface5g/doc/episys/test_script ~/ci_script
+```
+
+**When to use the alternative approach:**
+- You want test scripts that remain stable across branch switches
+- You're testing multiple OAI versions and want consistent test behavior
+- You need to modify scripts without affecting the repository version
+
+**Note:** Using a symbolic link is recommended for active development as it keeps the scripts in sync with the repository. Use the alternative approach (using copy) if you need OAI version-independent test scripts.
+
 ### Required Software
 - OpenAirInterface 5G (`~/openairinterface5g/`)
 - Built executables: `nr-uesoftmodem`, `nr-softmodem`, `nr-cuup`
@@ -95,7 +120,8 @@ For two-host or three-host tests:
 
 ### Required Hardware (USRP tests only)
 - Network-controlled RF attenuator at `http://169.254.10.10/`
-- Two or three machines with USRP B210 radios
+- Two host machines with two USRP B210 radios for sidelink mode 2 test
+- Three host machines with four USRP B210 radios for sidelink mode 1 test
 - SSH access configured in `~/.ssh/config` (see setup below)
 
 ### Directory Structure
@@ -106,7 +132,8 @@ For two-host or three-host tests:
   ├── test_<timestamp>/                   # Test logs (auto-created, timestamped)
   ├── bler_results_<timestamp>/           # BLER analysis results (auto-created)
   └── latest -> test_<timestamp>/         # Symlink to most recent test
-~/ci_script/
+
+~/openairinterface5g/doc/episys/test_script (alternatively, ~/ci_script/)
   ├── run_sl_test.sh                      # Main test execution script
   ├── run_sl_test_config.sh               # User configuration (defines bler_hosts array)
   ├── plot_sl_test_iperf3.py              # iperf3 bandwidth sweep plot generator
@@ -117,7 +144,7 @@ For two-host or three-host tests:
   └── run_sl_test_config_host*.sh         # Auto-generated per-host configs (parallel mode)
 ```
 
-**Note:** Test logs default to `~/openairinterface5g/test_<timestamp>/` but can be overridden with `-d` flag or `base_log_dir` config.
+**Note:** Test logs default to `~/openairinterface5g/test_<timestamp>/` but can be overridden with `-d` flag in command line argument or `base_log_dir` config in `run_sl_test_config.sh` file.
 
 ## Quick Start
 
@@ -207,6 +234,7 @@ pilot_tests=(
 ```
 
 Additional settings in `run_sl_test_config.sh`:
+Recommendation: updating of USRP serial numbers per your setting in the following in `run_sl_test_config.sh` file.
 
 ```bash
 # Base directory for log output (default: script directory)

@@ -1,7 +1,7 @@
 # Chat Application
 This application is composed of two scripts, chat_server.py and chat_client.py.
 chat_server.py provides server role, and chat_client.py provides client role.
-Currently, as of 03/13/2025, this application has only been tested and ran with OAI but can be utilized for plain TCP/IP communications as well.
+This application has only been tested and ran with OAI in sidelink mode 2 but can be utilized for plain TCP/IP communications as well.
 
 ## Prerequisites
 - Tkinter is a default package in the standard Python interface to the Tcl/Tk GUI toolkit:
@@ -36,7 +36,7 @@ SyncRef UE terminal (terminal 1):
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo -E LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH \
 ./nr-uesoftmodem -O ~/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
---sa --sl-mode 2 --sync-ref --ue-txgain 10 --ue-rxgain 100 --mcs 9
+--sa --sl-mode 2 --sync-ref --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif --mcs 9
 ```
 
 Nearby UE terminal (terminal 1):
@@ -44,7 +44,7 @@ Nearby UE terminal (terminal 1):
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo -E LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH \
 ./nr-uesoftmodem -O ~/openairinterface5g/targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
---sa --sl-mode 2 --ue-txgain 10 --ue-rxgain 100 --mcs 9
+--sa --sl-mode 2 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif --mcs 9
 ```
 
 ### Check tun/tap Interface ###
@@ -56,6 +56,7 @@ Open two new terminals on the SyncRef (terminal 2 and termianl 3) and one new te
 #### Launch chat_server.py
 SyncRef UE terminal (terminal 2):
 ```bash
+cd ~/openairinterface5g/ci-scripts
 python3 ./chat_server.py
 ```
 
@@ -64,10 +65,12 @@ Run `./chat_client.py` on the SyncRef and Nearby UE:
 
 SyncRef UE terminal (terminal 3):
 ```bash
+cd ~/openairinterface5g/ci-scripts
 python3 ./chat_client.py
 ```
 Nearby UE terminal (terminal 2):
 ```bash
+cd ~/openairinterface5g/ci-scripts
 python3 ./chat_client.py
 ```
 

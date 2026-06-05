@@ -102,7 +102,7 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp;**Note:** This branch includes a fix for ASN.1 compiler installation. The build system will automatically install **ASN.1 compiler v0.9.29** (commit 998e7ea2) instead of the newer vlm_master branch. This is required because the codebase is currently compatible with v0.9.29 (June 2024), while newer versions (v1.2+, v1.4+) generate incompatible pointer structures instead of structs, which would require approximately 1500 code changes throughout the codebase.
 
 ### 5.2 **Build OAI:**
-&emsp;Follow these steps to build OAI with support for 5G Sidelink and related features:
+&emsp;Follow these steps to build OAI with support for 5G Sidelink and related features. If you use the default UHD version, ignore the lines starting with `export` in the following script:
 ```
 $ git clone https://gitlab.eurecom.fr/oai/openairinterface5g.git
 $ cd ~/openairinterface5g
@@ -111,7 +111,9 @@ $ git clean -fdX
 $ git checkout sl-5g-nr
 $ source oaienv
 $ cd cmake_targets
-$ ./build_oai -C -I --install-optional-packages   # Only necessary on fresh installs
+$ export BUILD_UHD_FROM_SOURCE=True
+$ export UHD_VERSION=4.7.0.0
+$ ./build_oai -C -I -w USRP --install-optional-packages   # Only necessary on fresh installs
 $ ./build_oai --nrUE --gNB -w USRP -w SIMU
 ```
 
@@ -260,7 +262,7 @@ cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-softmodem -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf \
 --gNBs.[0].min_rxtxtime 6 --sa -E \
---ue-txgain 10 --ue-rxgain 100 \
+--ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --relay-type 1 --remote-ue-id 1  --ip-demo 1 2>&1 | tee ~/result_gNB.log
 ```
 &emsp; ***Relay UE in Terminal 1 of Machine 2:***
@@ -270,7 +272,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
  -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
 --sa -E --sl-mode 1 --sync-ref \
---ue-txgain 10 --ue-rxgain 100 \
+--ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --usrp-args 'serial=<Relay UE B210_Serial_Number in Uu interface>,type=b200' \
 --usrp-args-sl 'serial=<Relay UE B210_Serial_Number in PC5 interface>,type=b200' \
 --relay-type 1 --is-relay-ue 1 2>&1 | tee ~/result_nrUE_syncref.log
@@ -283,7 +285,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
  -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
 --sa -E --sl-mode 1 --sync-ref \
---ue-txgain 10 --ue-rxgain 100 \
+--ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --usrp-args 'serial=340EA03,type=b200' \
 --usrp-args-sl 'serial=340EA3B,type=b200' \
 --relay-type 1 --is-relay-ue 1 2>&1 | tee ~/result_nrUE_syncref.log
@@ -295,7 +297,7 @@ cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
 --sa -E --sl-mode 2 \
---ue-txgain 10 --ue-rxgain 100 \
+--ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --relay-type 1 2>&1 | tee ~/result_nearby.log
 ```
 
@@ -603,7 +605,7 @@ SSH to Machine 1. Note, the serial field may need to be changed to match the USR
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
---sa -E --sl-mode 2 --sync-ref --ue-txgain 10 --ue-rxgain 100 \
+--sa -E --sl-mode 2 --sync-ref --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --thread-pool -1,-1
 ```
 
@@ -613,7 +615,7 @@ SSH to Machine 2. Note, the serial field may need to be changed to match the USR
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
---sa -E --sl-mode 2 --ue-txgain 10 --ue-rxgain 100 \
+--sa -E --sl-mode 2 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --thread-pool -1,-1
 ```
 
