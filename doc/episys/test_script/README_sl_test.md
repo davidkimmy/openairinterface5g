@@ -109,7 +109,7 @@ For two-host or three-host tests:
 ~/ci_script/
   ├── run_sl_test.sh                      # Main test execution script
   ├── run_sl_test_config.sh               # User configuration (defines bler_hosts array)
-  ├── plot_sl_test_iperf3.py                      # iperf3 bandwidth sweep plot generator
+  ├── plot_sl_test_iperf3.py              # iperf3 bandwidth sweep plot generator
   ├── bler_scripts/
   │   ├── check_test_status.sh            # Monitor distributed test progress
   │   ├── process_and_fetch_results.sh    # Results collection and plotting
@@ -258,7 +258,7 @@ The `bler` profile is designed for Block Error Rate performance characterization
 | `num_repeat`          | 12                      | Iterations per configuration (statistical validity) |
 | `mcs_array`           | 0-28                    | Full MCS range (all modulation orders)         |
 | `duration`            | 85s                     | Per-test duration                              |
-| `noise_power_array`   | -12 to 4 dB (step 1)   | 17 noise levels for SNR sweep                  |
+| `noise_power_array`   | -12 to 4 dB (step 1)    | 17 noise levels for SNR sweep                  |
 | `ploss_db`            | 8 dB                    | Fixed path loss                                |
 | `csi_acquisition`     | 0                       | CSI disabled                                   |
 | `psfch_period`        | 2                       | PSFCH period = 2                               |
@@ -271,17 +271,6 @@ The `bler` profile is designed for Block Error Rate performance characterization
 - Noise = +4 dB --> SINR = 8 dB (low end, all modulations reach 100% BLER)
 
 **Distributed execution:** The `bler` profile supports parallel testing across multiple machines via `bler_hosts`. Iterations are split evenly across machines.
-
-```bash
-# 4 machines, 12 iterations --> 3 iterations per machine
-bler_hosts=(l3 l4 l5 localhost)
-
-# 2 machines, 12 iterations --> 6 iterations per machine
-bler_hosts=(l3 localhost)
-
-# Single machine (all 12 iterations)
-bler_hosts=(localhost)
-```
 
 See [BLER Testing Framework](#bler-testing-framework) for full setup and usage instructions.
 
@@ -555,23 +544,6 @@ The BLER (Block Error Rate) testing framework provides automated performance cha
 - Results collection with `process_and_fetch_results.sh`
 - Plot interpretation and data analysis
 - Troubleshooting and configuration options
-
-**Quick Start:**
-```bash
-# 1. Build with BLER instrumentation on all machines
-cd ~/openairinterface5g
-./build_oai --nrUE -w SIMU --ninja -c --bler-instrumentation
-
-# 2. Configure and run test
-cd ~/ci_script
-./run_sl_test.sh  # Uses settings from run_sl_test_config.sh
-
-# 3. Monitor progress
-./check_test_status.sh
-
-# 4. Collect results and generate plots
-./process_and_fetch_results.sh
-```
 
 For detailed instructions, see [README_BLER_test.md](README_BLER_test.md).
 

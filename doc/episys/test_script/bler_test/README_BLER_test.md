@@ -4,12 +4,14 @@ Comprehensive guide for automated Block Error Rate (BLER) performance characteri
 
 ## Overview
 
-The BLER (Block Error Rate) testing framework provides automated performance characterization across the full MCS range (0-28) and SNR sweep (-12 to 4 dB) using **RFSIM (RF Simulator)**. It supports both local execution and distributed parallel testing across multiple machines for faster completion.
+The BLER testing framework provides automated performance characterization across the full MCS range (0-28) and SNR sweep (-12 to 4 dB) using **RFSim (RF Simulator)**. It supports both local execution and distributed parallel testing across multiple machines for faster completion.
 
-> **Note**: This framework is designed for **RFSIM testing** with configurable noise injection. For USRP hardware testing, see separate hardware test documentation.
+> **Note**: This framework is designed for **RFSim testing** with configurable noise injection.
+
+> **Note**: We assume that the test script files are located under ~/ci_script folder specified in the alternative way in the [README_sl_test.md](../README_sl_test.md).
 
 **Key Features:**
-- **RFSIM-based testing**: Uses RF simulator with controlled noise power injection
+- **RFSim-based testing**: Uses RF simulator with controlled noise power injection
 - Full MCS coverage (0-28) with all modulation schemes (QPSK, 16-QAM, 64-QAM)
 - SNR sweep across 17 noise power levels (-12 to 4 dB)
 - Multiple test iterations for statistical confidence
@@ -24,59 +26,75 @@ The BLER (Block Error Rate) testing framework provides automated performance cha
 
 ### What is BLER Instrumentation?
 
-BLER instrumentation is compiled into the code using the `--bler-instrumentation` build flag, which enables the CMake option `ENABLE_BLER_INSTRUMENTATION`. This adds conditional logging wrapped in `#ifdef ENABLE_BLER_INSTRUMENTATION` blocks in the source code.
+BLER instrumentation is compiled into the code by enabling the CMake option `ENABLE_BLER_INSTRUMENTATION` via `--cmake-opt "-DENABLE_BLER_INSTRUMENTATION=ON"`. This adds conditional logging wrapped in `#ifdef ENABLE_BLER_INSTRUMENTATION` blocks in the source code.
 
 **What it provides:**
 - **PC5 RX BLER tracking** (`nr_ue_procedures_sl.c`):
   - Block-level error counting (total blocks, errors)
   - Periodic BLER summaries every 100 blocks (up to 1000)
   - Log tag: `[BLER_STATS]`
-  
+
 - **HARQ round statistics** (`nr_slsch_scheduler.c`):
   - Success counts per HARQ round (R0, R1, R2, R3)
   - Log tag: `[HARQ_STATS]`
-  
+
 - **LDPC decoder iterations** (`nr_pscch_pssch_rx.c`):
   - Iteration count per decoded block with MCS
   - Convergence success/failure indication
   - Log tag: `[LDPC_STATS]`
 
-**Zero runtime overhead when disabled**: When built without `--bler-instrumentation`, all logging code is completely removed at compile time (not just disabled).
+**Zero runtime overhead when disabled**: When built without the BLER instrumentation CMake option, all logging code is completely removed at compile time (not just disabled).
 
 ### Build Commands
 
 **Single machine:**
 
 ```bash
-cd ~/openairinterface5g
-
-# First time: Install dependencies
-./build_oai -I
+cd ~/openairinterface5g/cmake_targets
 
 # Build with BLER instrumentation enabled
-./build_oai --nrUE -w SIMU --ninja -c --bler-instrumentation
+./build_oai --nrUE --gNB -w SIMU -c --cmake-opt "-DENABLE_BLER_INSTRUMENTATION=ON"
 
-# Verify it's enabled (should show: BLER instrumentation: ENABLED)
-grep "BLER instrumentation" cmake_targets/log/nr-uesoftmodem.Rel15.txt
+# If error "getcwd() failed: No such file or directory" or CMakeCache conflict:
+rm -f ~/openairinterface5g/CMakeCache.txt && ./build_oai --clean-all
 ```
 
 **Distributed testing** - build on **all machines** in your `bler_hosts` array:
 
+> **Note:** The examples below use `l3 l4 l5` as remote machine hostnames. Update these to match your actual setup (e.g., `host1 host2 host3` or IP addresses).
+
 ```bash
-# From the control machine
+# From the control machine (update l3 l4 l5 to your actual machine hostnames)
+# Run builds in parallel for faster completion
 for host in l3 l4 l5; do
   echo "=== Building with BLER instrumentation on $host ==="
-  ssh $host "cd ~/openairinterface5g && ./build_oai --nrUE -w SIMU --ninja -c --bler-instrumentation"
+  ssh $host "cd ~/openairinterface5g/cmake_targets && ./build_oai --nrUE --gNB -w SIMU -c --cmake-opt \"-DENABLE_BLER_INSTRUMENTATION=ON\"" &
 done
+wait  # Wait for all parallel builds to complete
+echo "All builds completed!"
+
+# If any machine has build errors (getcwd() failed or CMakeCache conflict):
+for host in l3 l4 l5; do
+  ssh $host "rm -f ~/openairinterface5g/CMakeCache.txt && cd ~/openairinterface5g/cmake_targets && ./build_oai --clean-all" &
+done
+wait  # Wait for all cleanup to complete
 ```
 
 ### Verification
 
-**Check CMake option was set:**
+**Check CMake option was set (single machine):**
 ```bash
-cd ~/openairinterface5g/cmake_targets/ran_build/build
-cmake -L | grep ENABLE_BLER_INSTRUMENTATION
+grep ENABLE_BLER_INSTRUMENTATION ~/openairinterface5g/cmake_targets/ran_build/build/CMakeCache.txt
 # Should show: ENABLE_BLER_INSTRUMENTATION:BOOL=ON
+```
+
+**Check CMake option on all machines (distributed):**
+```bash
+for host in l3 l4 l5; do
+  echo "=== Verifying $host ==="
+  ssh $host "grep ENABLE_BLER_INSTRUMENTATION ~/openairinterface5g/cmake_targets/ran_build/build/CMakeCache.txt"
+done
+# Each should show: ENABLE_BLER_INSTRUMENTATION:BOOL=ON
 ```
 
 **Verify logging works in test:**
@@ -90,15 +108,29 @@ grep "BLER_STATS\|HARQ_STATS\|LDPC_STATS" ~/openairinterface5g/test_*/result_nea
 # [LDPC_STATS] PC5_LDPC_ITERATIONS mcs=16 iterations=3 max=50 success=1
 ```
 
+**Verify logging on all machines (after distributed test):**
+```bash
+for host in l3 l4 l5; do
+  echo "=== Checking logs on $host ==="
+  ssh $host "grep -c 'BLER_STATS' ~/openairinterface5g/test_*/result_nearby_*.log 2>/dev/null | head -1"
+done
+# Each should show a count > 0 if BLER instrumentation is working
+```
+
 ### Production Builds (Without BLER Instrumentation)
 
 For production deployments or non-BLER testing, simply omit the flag:
 
 ```bash
-./build_oai --nrUE -w SIMU --ninja -c
+cd ~/openairinterface5g/cmake_targets
 
-# Verify it's disabled (should show: BLER instrumentation: DISABLED)
-grep "BLER instrumentation" cmake_targets/log/nr-uesoftmodem.Rel15.txt
+./build_oai --nrUE --gNB -w SIMU -c --cmake-opt "-DENABLE_BLER_INSTRUMENTATION=OFF"
+```
+
+**Verify it's disabled:**
+```bash
+grep ENABLE_BLER_INSTRUMENTATION ~/openairinterface5g/cmake_targets/ran_build/build/CMakeCache.txt
+# Should show: ENABLE_BLER_INSTRUMENTATION:BOOL=OFF (or no output if not set)
 ```
 
 **Benefits of disabling:**
@@ -127,9 +159,9 @@ Most users should keep `use_extended_delays=0` (default). Only enable if you exp
 ## BLER Test Types
 
 ### `rfsim_slmode1_bler_test_on_local_host`
-Comprehensive BLER characterization on a single machine using **RFSIM (RF Simulator)** with noise injection.
+Comprehensive BLER characterization on a single machine using **RFSim (RF Simulator)** with noise injection.
 
-- **Test method**: RFSIM with configurable noise power injection
+- **Test method**: RFSim with configurable noise power injection
 - Runs on local machine only (no physical hardware required)
 - Full MCS range: 0-28 (29 values)
 - Noise power sweep: -12 to 4 dB (17 values)
@@ -140,6 +172,9 @@ Comprehensive BLER characterization on a single machine using **RFSIM (RF Simula
   - PC5_RX_SUMMARY: BLER, HARQ rounds, SNR
   - PC5_LDPC_ITER: LDPC decoder iterations
   - PSSCH TX/RX statistics
+  - GNB_DL_SUMMARY: gNB downlink BLER, HARQ rounds (Uu DL)
+  - GNB_UL_HARQ: gNB uplink BLER, HARQ ACK/NACK rounds (Uu UL)
+  - UU_RX_SUMMARY: Relay UE downlink BLER (Uu DL from UE perspective)
 - **Pass criteria:** Completes full sweep, generates CSV outputs
 
 ## Running BLER Tests Locally
@@ -169,7 +204,33 @@ cd ~/ci_script
 ./run_sl_test.sh
 ```
 
-**3. Monitor progress:**
+**3. Monitor progress across machines:**
+
+After launching `./run_sl_test.sh`, you may monitor the test progress in parallel by using the following script.
+
+**Use the monitoring script (Optional but recommended):**
+```bash
+# Check status of all machines with progress details
+cd ~/ci_script
+./check_test_status.sh
+
+# Or watch continuously (updates every 30 seconds)
+watch -n 30 '~/ci_script/check_test_status.sh'
+```
+
+The monitoring script shows:
+- Which machines are running tests
+- Current progress (test X / Y)
+- Current MCS and noise power values
+- Elapsed time and estimated remaining time
+- Latest HARQ statistics
+
+**check logs directly:**
+```bash
+tail -f ~/openairinterface5g/test_*/commands.txt
+```
+
+**4. Monitor the test progress:**
 
 Test logs are saved to `~/openairinterface5g/test_<timestamp>/` (where `<timestamp>` is `YYYYMMDD_HHMMSS` format):
 - Real-time output shows current MCS, noise power, and iteration
@@ -177,7 +238,7 @@ Test logs are saved to `~/openairinterface5g/test_<timestamp>/` (where `<timesta
 - Logs: `result_syncref_*.log`, `result_nearby_*.log`
 - Example directory: `~/openairinterface5g/test_20260518_120045/`
 
-**4. Expected completion time:**
+**5. Expected completion time:**
 
 - **Sequential (1 machine):** ~7.5 hours
   - 29 MCS × 17 noise × 10 iterations × 30s = 4,930 tests × 30s = ~41 hours
@@ -207,12 +268,12 @@ host4:      Iterations 10-12 | MCS 0-28 | Noise -12 to 4 dB
 elif [[ $test_profile == "bler" ]]; then
     # Enable parallel mode
     parallel_mode=true
-    
+
     # BLER test configuration
     enabled_tests=(
         rfsim_slmode1_bler_test_on_local_host
     )
-    
+
     # Machine configuration for distributed testing
     # List machines for parallel testing. Iterations are split evenly.
     bler_hosts=(
@@ -223,7 +284,7 @@ elif [[ $test_profile == "bler" ]]; then
     )
     # For 2 machines: bler_hosts=(host1 host2)
     # For 1 machine:  bler_hosts=(localhost)
-    
+
     num_repeat=12             # Total iterations
     mcs_array=($(seq 0 28))   # Full MCS range
     noise_power_array=($(seq -12 4))  # Noise sweep
@@ -233,15 +294,9 @@ elif [[ $test_profile == "bler" ]]; then
 
 The script automatically:
 - Reads `bler_hosts` array from config
-- Generates machine-specific config files (`run_sl_test_config_M1.sh`, etc.)
-- Distributes iterations evenly (12 iterations ÷ 4 machines = 3 per machine)
+- Distributes iterations evenly (e.g. 12 iterations ÷ 4 machines = 3 per machine)
 - Copies configs to remote machines via SCP
 - Launches tests in parallel
-
-```bash
-cd ~/ci_script
-./run_sl_test.sh
-```
 
 **Expected output:**
 ```
@@ -266,11 +321,11 @@ Per machine: 3
 → host4: iterations 10-12
 ```
 
-**4. Monitor progress across machines:**
+**3. Monitor progress across machines:**
 
 Each machine logs independently to its own `~/openairinterface5g/test_<timestamp>/` directory.
 
-**Use the monitoring script (recommended):**
+**Use the monitoring script (Optional but recommended):**
 ```bash
 # Check status of all machines with progress details
 cd ~/ci_script
@@ -294,7 +349,7 @@ ssh l4 "tail -f ~/openairinterface5g/test_*/commands.txt"
 ssh l5 "tail -f ~/openairinterface5g/test_*/commands.txt"
 ```
 
-**5. Expected completion time (parallel):**
+**4. Expected completion time (parallel):**
 
 - **4 machines:** ~2 hours
   - Each machine: 29 MCS × 17 noise × 3 iterations × 30s = 1,478 tests × 30s ≈ 12 hours
@@ -328,60 +383,69 @@ BLER Results - Process & Plot
 Detected 4 machines from config
 
 Machine Configuration:
-  host1: Iterations 1-3 | MCS 0-28
-  host2: Iterations 4-6 | MCS 0-28
-  host3: Iterations 7-9 | MCS 0-28
-  host4: Iterations 10-12 | MCS 0-28
+  host1 (localhost): Iterations 1-3
+  host2 (l3): Iterations 4-6
+  host3 (l4): Iterations 7-9
+  host4 (l5): Iterations 10-12
 
 Results will be saved to: ~/openairinterface5g/bler_results_<timestamp>
 
 ==========================================
-Processing host1 - MCS 0,4
+Extracting Nearby (RX) BLER Data
 ==========================================
-  → SSHing to host1 to process logs...
+→ Processing host1 (localhost)...
   Test directory: ~/openairinterface5g/test_<timestamp>
-  Processing logs...
-  ✓ Generated: bler_host1.csv (234 lines)
-  ✓ Generated: bler_host1_pc5_rx.csv (234 lines)
-  Fetching CSVs...
-  ✓ Fetched: bler_host1.csv
-  ✓ Fetched: bler_host1_pc5_rx.csv
+  Using MAX BLER strategy for nearby
+  Step 1: RX method...
+    RX: 234 BLER rows
+  Step 2: Bilateral method...
+    Bilateral: 234 BLER rows
+  Step 3: Merging with MAX...
+    Merged: 234 BLER rows
 
 [... host2, host3, host4 processing ...]
 
-==========================================
-Combining Results from All Machines
-==========================================
-Combining MAC BLER results...
-✓ Combined MAC BLER: 936 data points
-Combining PC5_RX BLER results...
-✓ Combined PC5_RX BLER: 936 data points
-
-==========================================
-Extracting Nearby (RX) BLER Data
-==========================================
-→ Processing host1...
-  Test directory: ~/openairinterface5g/test_<timestamp>
-[... extraction continues ...]
-
 Combining nearby BLER...
-✓ Combined nearby BLER: 468 data points
+✓ Combined nearby BLER: 936 data points
 Combining nearby LDPC...
-✓ Combined nearby LDPC: 468 data points
-
-==========================================
-Skipping Syncref (TX) BLER Data
-==========================================
+✓ Combined nearby LDPC: 936 data points
 
 ==========================================
 Extracting Syncref RX BLER Data
 ==========================================
-[... extraction continues ...]
+→ Processing host1 (localhost)...
+  Test directory: ~/openairinterface5g/test_<timestamp>
+  Using MAX BLER strategy for syncref
+  [... extraction continues ...]
 
 Combining syncref RX BLER...
-✓ Combined syncref RX BLER: 468 data points
+✓ Combined syncref RX BLER: 936 data points
 Combining syncref RX LDPC...
-✓ Combined syncref RX LDPC: 468 data points
+✓ Combined syncref RX LDPC: 936 data points
+
+==========================================
+Extracting Uu DL BLER Data (gNB → Relay UE)
+==========================================
+→ Processing host1 (localhost)...
+  Test directory: ~/openairinterface5g/test_<timestamp>
+  Using RX method for uu_dl
+[... extraction continues ...]
+
+Combining Uu DL BLER...
+✓ Combined Uu DL BLER: 936 data points
+Combining Uu DL LDPC...
+✓ Combined Uu DL LDPC: 936 data points
+
+==========================================
+Extracting Uu UL BLER Data (Relay UE → gNB)
+==========================================
+→ Processing host1 (localhost)...
+  Test directory: ~/openairinterface5g/test_<timestamp>
+  Using RX method for uu_ul
+[... extraction continues ...]
+
+Combining Uu UL BLER...
+✓ Combined Uu UL BLER: 936 data points
 
 ==========================================
 Generating Focused Plots
@@ -390,6 +454,10 @@ Generating Focused Plots
   ✓ nearby_bler_4panel.png
 → Syncref RX 4-panel plot...
   ✓ syncref_rx_bler_4panel.png
+→ Uu DL 4-panel plot...
+  ✓ uu_dl_bler_4panel.png
+→ Uu UL 2-panel plot...
+  ✓ uu_ul_bler_2panel.png
 
 ==========================================
 ✓ Complete!
@@ -399,9 +467,11 @@ Location: ~/openairinterface5g/bler_results_<timestamp>
 Generated plots:
 -rw-rw-r-- 1 user user 234K <timestamp> nearby_bler_4panel.png
 -rw-rw-r-- 1 user user 231K <timestamp> syncref_rx_bler_4panel.png
+-rw-rw-r-- 1 user user 245K <timestamp> uu_dl_bler_4panel.png
+-rw-rw-r-- 1 user user 156K <timestamp> uu_ul_bler_2panel.png
 
 CSV files:
- 32 CSV files generated
+ 44 CSV files generated
 
 Opening plots...
 ✓ Done!
@@ -416,44 +486,46 @@ Opening plots...
 
 1. **Display machine configuration**
    - Sources `run_sl_test_config.sh` to read `bler_hosts` array
-   - Reads machine-specific config files (`run_sl_test_config_M*.sh`) for iteration ranges
-   - Displays iteration assignments and MCS coverage
+   - Displays iteration assignments per host
 
-2. **Process MAC BLER logs** on each machine using `process_bler_local.py`:
-   - Connects via SSH with 10s timeout and up to 3 retry attempts
-   - Finds most recent `test_2026*` directory
-   - Generates per-machine CSV files:
-     - `bler_host1.csv` through `bler_host4.csv` (MAC BLER data)
-     - `bler_host1_pc5_rx.csv` through `bler_host4_pc5_rx.csv` (PC5_RX BLER data)
-   - Fetches only CSV files via SCP (not full logs)
-
-3. **Combine MAC BLER data** from all machines:
-   - Concatenates headers once, then appends data rows
-   - Outputs:
-     - `bler_combined.csv` - All MAC BLER data points
-     - `bler_combined_pc5_rx.csv` - All PC5_RX BLER data points
-
-4. **Extract Nearby (UE RX) BLER data** using `extract_bler.py`:
-   - Processes each machine's test logs (on remote or local)
-   - Extracts UE RX perspective: BLER and LDPC iterations
+2. **Extract Nearby (PC5 RX) BLER data** using `extract_bler.py`:
+   - Processes each machine's test logs (on remote or local via SSH)
+   - Extracts from `result_nearby_*.log` files
+   - Uses MAX BLER strategy (RX method + bilateral method, taking maximum)
    - Combines into:
      - `nearby_bler_combined.csv` - Nearby UE BLER data
      - `nearby_ldpc_combined.csv` - Nearby UE LDPC iterations
 
-5. **Skip Syncref TX data** (not needed for analysis)
-
-6. **Extract Syncref RX BLER data** using `extract_bler.py`:
-   - Processes each machine's test logs (on remote or local)
-   - Extracts Syncref RX perspective: BLER and LDPC iterations
+3. **Extract Syncref RX (PC5 RX) BLER data** using `extract_bler.py`:
+   - Processes each machine's test logs
+   - Extracts from `result_nrUE_syncref_*.log` files
+   - Uses MAX BLER strategy
    - Combines into:
      - `syncref_rx_bler_combined.csv` - Syncref RX BLER data
      - `syncref_rx_ldpc_combined.csv` - Syncref RX LDPC iterations
 
-7. **Generate focused 4-panel plots** using `plot_results.py`:
-   - `nearby_bler_4panel.png` - Nearby UE RX performance
-   - `syncref_rx_bler_4panel.png` - Syncref RX performance
+4. **Extract Uu DL BLER data** using `extract_bler.py`:
+   - Processes each machine's test logs
+   - Extracts from `result_gNB.log` and `result_nrUE_syncref.log` files
+   - Uses RX method (log type: `uu_dl`)
+   - Combines into:
+     - `uu_dl_bler_combined.csv` - Uu DL BLER data (gNB → Relay UE)
+     - `uu_dl_ldpc_combined.csv` - Uu DL LDPC iterations
 
-8. **Open plots automatically** if `eog` (Eye of GNOME) is available
+5. **Extract Uu UL BLER data** using `extract_bler.py`:
+   - Processes each machine's test logs
+   - Extracts from `result_gNB.log` files
+   - Uses RX method (log type: `uu_ul`)
+   - Combines into:
+     - `uu_ul_bler_combined.csv` - Uu UL BLER data (Relay UE → gNB)
+
+6. **Generate focused plots** using `plot_results.py`:
+   - `nearby_bler_4panel.png` - PC5 Nearby UE RX performance (4-panel)
+   - `syncref_rx_bler_4panel.png` - PC5 Syncref RX performance (4-panel)
+   - `uu_dl_bler_4panel.png` - Uu DL performance (4-panel)
+   - `uu_ul_bler_2panel.png` - Uu UL performance (2-panel, no LDPC)
+
+7. **Open plots automatically** if `eog` (Eye of GNOME) is available
 
 ### View Results
 
@@ -461,75 +533,106 @@ Opening plots...
 cd ~/openairinterface5g/bler_results_<timestamp>
 
 # View plots
-eog nearby_bler_4panel.png syncref_rx_bler_4panel.png
+eog nearby_bler_4panel.png syncref_rx_bler_4panel.png uu_dl_bler_4panel.png uu_ul_bler_2panel.png
 
 # Inspect CSV data
 head nearby_bler_combined.csv
+head uu_dl_bler_combined.csv
 ```
 
 ### CSV File Formats
 
-**MAC BLER CSVs** (`bler_combined.csv`, `bler_M*.csv`):
-- Generated by `process_bler_local.py`
+**PC5 Nearby BLER CSVs** (`nearby_bler_combined.csv`, `nearby_bler_host*.csv`):
+- Generated by `extract_bler.py` with log type `nearby`
 - Columns: `mcs`, `noise`, `snr`, `rounds_0`, `rounds_1`, `rounds_2`, `rounds_3`, `bler`
+- Data source: `result_nearby_*.log` files
 
-**PC5_RX BLER CSVs** (`bler_combined_pc5_rx.csv`, `bler_M*_pc5_rx.csv`):
-- Generated by `process_bler_local.py`
-- Same format as MAC BLER CSVs
+**PC5 Nearby LDPC CSVs** (`nearby_ldpc_combined.csv`, `nearby_ldpc_host*.csv`):
+- Generated by `extract_bler.py` with log type `nearby`
+- Columns: `mcs`, `noise`, `snr`, `avg_ldpc_iter`, `max_ldpc_iter`, `num_samples`
+- Tracks LDPC decoder iteration statistics
 
-**Nearby BLER CSVs** (`nearby_bler_combined.csv`, `nearby_bler_M*.csv`):
-- Generated by `extract_bler.py`
-- UE RX perspective with MAC BLER data
+**PC5 Syncref RX BLER CSVs** (`syncref_rx_bler_combined.csv`, `syncref_rx_bler_host*.csv`):
+- Generated by `extract_bler.py` with log type `syncref`
+- Columns: `mcs`, `noise`, `snr`, `rounds_0`, `rounds_1`, `rounds_2`, `rounds_3`, `bler`
+- Data source: `result_nrUE_syncref_*.log` files
 
-**Nearby LDPC CSVs** (`nearby_ldpc_combined.csv`, `nearby_ldpc_M*.csv`):
-- Generated by `extract_bler.py`
-- Columns include `avg_ldpc_iter` for decoder iteration analysis
+**PC5 Syncref RX LDPC CSVs** (`syncref_rx_ldpc_combined.csv`, `syncref_rx_ldpc_host*.csv`):
+- Generated by `extract_bler.py` with log type `syncref`
+- Columns: `mcs`, `noise`, `snr`, `avg_ldpc_iter`, `max_ldpc_iter`, `num_samples`
 
-**Syncref RX BLER CSVs** (`syncref_rx_bler_combined.csv`, `syncref_rx_bler_M*.csv`):
-- Generated by `extract_bler.py`
-- Syncref RX perspective with MAC BLER data
+**Uu DL BLER CSVs** (`uu_dl_bler_combined.csv`, `uu_dl_bler_host*.csv`):
+- Generated by `extract_bler.py` with log type `uu_dl`
+- Columns: `mcs`, `noise`, `snr`, `rounds_0`, `rounds_1`, `rounds_2`, `rounds_3`, `bler`
+- Data source: `result_gNB.log` and `result_nrUE_syncref.log` files
+- Captures gNB → Relay UE downlink performance
 
-**Syncref RX LDPC CSVs** (`syncref_rx_ldpc_combined.csv`, `syncref_rx_ldpc_M*.csv`):
-- Generated by `extract_bler.py`
-- Columns include `avg_ldpc_iter` for decoder iteration analysis
+**Uu DL LDPC CSVs** (`uu_dl_ldpc_combined.csv`, `uu_dl_ldpc_host*.csv`):
+- Generated by `extract_bler.py` with log type `uu_dl`
+- Columns: `mcs`, `noise`, `snr`, `avg_ldpc_iter`, `max_ldpc_iter`, `num_samples`
+
+**Uu UL BLER CSVs** (`uu_ul_bler_combined.csv`, `uu_ul_bler_host*.csv`):
+- Generated by `extract_bler.py` with log type `uu_ul`
+- Columns: `mcs`, `noise`, `snr`, `rounds_0`, `rounds_1`, `rounds_2`, `rounds_3`, `bler`
+- Data source: `result_gNB.log` files (HARQ ACK/NACK tracking)
+- Captures Relay UE → gNB uplink performance
+- Note: No LDPC data for UL (LDPC is DL-only)
 
 ### Results Directory Structure
 
 ```
 ~/openairinterface5g/bler_results_<timestamp>/
-├── nearby_bler_4panel.png          # UE RX 4-panel plot
-├── syncref_rx_bler_4panel.png      # Syncref RX 4-panel plot
-├── bler_combined.csv               # Combined MAC BLER (all machines)
-├── bler_combined_pc5_rx.csv        # Combined PC5_RX BLER (all machines)
-├── nearby_bler_combined.csv        # UE RX BLER data (all machines)
-├── nearby_ldpc_combined.csv        # UE RX LDPC data (all machines)
-├── syncref_rx_bler_combined.csv    # Syncref RX BLER data (all machines)
-├── syncref_rx_ldpc_combined.csv    # Syncref RX LDPC data (all machines)
-├── bler_host1.csv                  # host1 MAC BLER data
-├── bler_host1_pc5_rx.csv           # host1 PC5_RX BLER data
-├── bler_host2.csv                  # host2 MAC BLER data
-├── bler_host2_pc5_rx.csv           # host2 PC5_RX BLER data
-├── bler_host3.csv                  # host3 MAC BLER data
-├── bler_host3_pc5_rx.csv           # host3 PC5_RX BLER data
-├── bler_host4.csv                  # host4 MAC BLER data
-├── bler_host4_pc5_rx.csv           # host4 PC5_RX BLER data
-├── nearby_bler_host1.csv           # host1 Nearby BLER
-├── nearby_ldpc_host1.csv           # host1 Nearby LDPC
-├── nearby_bler_host2.csv           # host2 Nearby BLER
-├── nearby_ldpc_host2.csv           # host2 Nearby LDPC
-├── nearby_bler_host3.csv           # host3 Nearby BLER
-├── nearby_ldpc_host3.csv           # host3 Nearby LDPC
-├── nearby_bler_host4.csv           # host4 Nearby BLER
-├── nearby_ldpc_host4.csv           # host4 Nearby LDPC
-├── syncref_rx_bler_host1.csv       # host1 Syncref RX BLER
-├── syncref_rx_ldpc_host1.csv       # host1 Syncref RX LDPC
-├── syncref_rx_bler_host2.csv       # host2 Syncref RX BLER
-├── syncref_rx_ldpc_host2.csv       # host2 Syncref RX LDPC
-├── syncref_rx_bler_host3.csv       # host3 Syncref RX BLER
-├── syncref_rx_ldpc_host3.csv       # host3 Syncref RX LDPC
-├── syncref_rx_bler_host4.csv       # host4 Syncref RX BLER
-└── syncref_rx_ldpc_host4.csv       # host4 Syncref RX LDPC
+├── # Plots (PNG images)
+├── nearby_bler_4panel.png          # PC5 Nearby UE RX 4-panel plot
+├── syncref_rx_bler_4panel.png      # PC5 Syncref RX 4-panel plot
+├── uu_dl_bler_4panel.png           # Uu DL 4-panel plot (gNB → Relay UE)
+├── uu_ul_bler_2panel.png           # Uu UL 2-panel plot (Relay UE → gNB)
+│
+├── # Combined CSV files (all machines merged)
+├── nearby_bler_combined.csv        # PC5 Nearby BLER (all machines)
+├── nearby_ldpc_combined.csv        # PC5 Nearby LDPC (all machines)
+├── syncref_rx_bler_combined.csv    # PC5 Syncref RX BLER (all machines)
+├── syncref_rx_ldpc_combined.csv    # PC5 Syncref RX LDPC (all machines)
+├── uu_dl_bler_combined.csv         # Uu DL BLER (all machines)
+├── uu_dl_ldpc_combined.csv         # Uu DL LDPC (all machines)
+├── uu_ul_bler_combined.csv         # Uu UL BLER (all machines)
+│
+├── # Per-machine CSV files
+├── nearby_bler_host1.csv           # host1 PC5 Nearby BLER
+├── nearby_ldpc_host1.csv           # host1 PC5 Nearby LDPC
+├── nearby_bler_host2.csv           # host2 PC5 Nearby BLER
+├── nearby_ldpc_host2.csv           # host2 PC5 Nearby LDPC
+├── nearby_bler_host3.csv           # host3 PC5 Nearby BLER
+├── nearby_ldpc_host3.csv           # host3 PC5 Nearby LDPC
+├── nearby_bler_host4.csv           # host4 PC5 Nearby BLER
+├── nearby_ldpc_host4.csv           # host4 PC5 Nearby LDPC
+├── syncref_rx_bler_host1.csv       # host1 PC5 Syncref RX BLER
+├── syncref_rx_ldpc_host1.csv       # host1 PC5 Syncref RX LDPC
+├── syncref_rx_bler_host2.csv       # host2 PC5 Syncref RX BLER
+├── syncref_rx_ldpc_host2.csv       # host2 PC5 Syncref RX LDPC
+├── syncref_rx_bler_host3.csv       # host3 PC5 Syncref RX BLER
+├── syncref_rx_ldpc_host3.csv       # host3 PC5 Syncref RX LDPC
+├── syncref_rx_bler_host4.csv       # host4 PC5 Syncref RX BLER
+├── syncref_rx_ldpc_host4.csv       # host4 PC5 Syncref RX LDPC
+├── uu_dl_bler_host1.csv            # host1 Uu DL BLER
+├── uu_dl_ldpc_host1.csv            # host1 Uu DL LDPC
+├── uu_dl_bler_host2.csv            # host2 Uu DL BLER
+├── uu_dl_ldpc_host2.csv            # host2 Uu DL LDPC
+├── uu_dl_bler_host3.csv            # host3 Uu DL BLER
+├── uu_dl_ldpc_host3.csv            # host3 Uu DL LDPC
+├── uu_dl_bler_host4.csv            # host4 Uu DL BLER
+├── uu_dl_ldpc_host4.csv            # host4 Uu DL LDPC
+├── uu_ul_bler_host1.csv            # host1 Uu UL BLER
+├── uu_ul_bler_host2.csv            # host2 Uu UL BLER
+├── uu_ul_bler_host3.csv            # host3 Uu UL BLER
+└── uu_ul_bler_host4.csv            # host4 Uu UL BLER
 ```
+
+**Total files (4 machines):**
+- 4 plot images
+- 7 combined CSV files
+- 44 per-machine CSV files (11 per machine)
+- **Total: 55 files**
 
 ## Understanding BLER Plots
 
@@ -570,33 +673,36 @@ Each 4-panel plot provides comprehensive performance analysis:
 
 ## Data Processing Flow
 
-The `process_and_fetch_results.sh` script orchestrates three Python scripts in sequence:
+The `process_and_fetch_results.sh` script orchestrates two Python scripts in sequence:
 
-1. **`process_bler_local.py`** - Initial MAC BLER extraction
-   - Input: Raw test logs (`result_*.log` files)
-   - Output: Machine-specific MAC BLER CSVs (`bler_M*.csv`, `bler_M*_pc5_rx.csv`)
+1. **`extract_bler.py`** - Unified BLER and LDPC extraction
+   - Input: Test log directories + log type
+   - Output: BLER and LDPC CSVs for specified interface/UE type
+   - Called four times for different perspectives:
+     - `extract_bler.py ... nearby` → PC5 RX from `result_nearby_*.log`
+     - `extract_bler.py ... syncref` → PC5 RX from `result_nrUE_syncref_*.log`
+     - `extract_bler.py ... uu_dl` → Uu DL from `result_gNB.log` and/or `result_nrUE_syncref.log`
+     - `extract_bler.py ... uu_ul` → Uu UL from `result_gNB.log`
    - Runs on each machine (local or remote via SSH)
+   - Supports multiple log types: `nearby`, `syncref`, `uu_dl_gnb`, `uu_dl_relay`, `uu_ul`
 
-2. **`extract_bler.py`** - Unified BLER and LDPC extraction
-   - Input: Test log directories + log type (`nearby` or `syncref`)
-   - Output: BLER and LDPC CSVs for specified UE type
-   - Called twice:
-     - `extract_bler.py ... nearby` → Extracts from `result_nearby_*.log`
-     - `extract_bler.py ... syncref` → Extracts from `result_nrUE_syncref_*.log`
-
-3. **`plot_results.py`** - Plot generation
+2. **`plot_results.py`** - Plot generation
    - Input: Combined CSV files
-   - Output: 4-panel PNG plots
-   - Called twice: once for "nearby", once for "syncref_rx"
+   - Output: 4-panel or 2-panel PNG plots
+   - Called up to four times:
+     - `plot_results.py ... nearby` → PC5 Nearby UE RX 4-panel plot
+     - `plot_results.py ... syncref_rx` → PC5 Syncref RX 4-panel plot
+     - `plot_results.py ... uu_dl` → Uu DL 4-panel plot (gNB → Relay UE)
+     - `plot_results.py ... uu_ul` → Uu UL 2-panel plot (Relay UE → gNB)
 
 ## Manual Data Processing (Optional)
 
 If you need to process logs manually without `process_and_fetch_results.sh`:
 
-**1. Extract UE RX BLER data (Nearby UE perspective):**
+**1. Extract PC5 Nearby UE RX BLER data:**
 
 ```bash
-cd ~/ci_script
+cd ~/ci_script/bler_test
 python3 extract_bler.py \
     ~/openairinterface5g/test_<timestamp> \
     nearby_bler.csv \
@@ -604,7 +710,7 @@ python3 extract_bler.py \
     nearby
 ```
 
-**2. Extract Syncref RX BLER data (Syncref UE perspective):**
+**2. Extract PC5 Syncref RX BLER data:**
 
 ```bash
 python3 extract_bler.py \
@@ -614,11 +720,44 @@ python3 extract_bler.py \
     syncref
 ```
 
-**3. Generate plots:**
+**3. Extract Uu DL BLER data (gNB perspective):**
+
+```bash
+python3 extract_bler.py \
+    ~/openairinterface5g/test_<timestamp> \
+    uu_dl_bler.csv \
+    uu_dl_ldpc.csv \
+    uu_dl_gnb
+```
+
+**4. Extract Uu DL BLER data (Relay UE RX perspective):**
+
+```bash
+python3 extract_bler.py \
+    ~/openairinterface5g/test_<timestamp> \
+    uu_dl_relay_bler.csv \
+    uu_dl_relay_ldpc.csv \
+    uu_dl_relay
+```
+
+**5. Extract Uu UL BLER data (gNB RX perspective):**
+
+```bash
+python3 extract_bler.py \
+    ~/openairinterface5g/test_<timestamp> \
+    uu_ul_bler.csv \
+    uu_ul_ldpc.csv \
+    uu_ul
+```
+
+**6. Generate plots:**
 
 ```bash
 python3 plot_results.py ~/openairinterface5g/bler_results_<timestamp> nearby
 python3 plot_results.py ~/openairinterface5g/bler_results_<timestamp> syncref_rx
+python3 plot_results.py ~/openairinterface5g/bler_results_<timestamp> uu_dl_gnb
+python3 plot_results.py ~/openairinterface5g/bler_results_<timestamp> uu_dl_relay
+python3 plot_results.py ~/openairinterface5g/bler_results_<timestamp> uu_ul
 ```
 
 ## BLER Test Configuration Options
@@ -626,17 +765,8 @@ python3 plot_results.py ~/openairinterface5g/bler_results_<timestamp> syncref_rx
 Additional settings in `run_sl_test_config.sh` for BLER tests:
 
 ```bash
-# External clock synchronization (USRP only)
-use_external_clock=1              # 0=internal, 1=external clock source
-
-# Standalone mode
-use_sa=1                          # 0=disabled, 1=enabled
-
 # Parallel mode
 parallel_mode=true                # Enable distributed testing
-
-# Log directory
-base_log_dir="~/openairinterface5g"
 
 # MCS and noise arrays
 mcs_array=($(seq 0 28))           # Full MCS range
@@ -646,8 +776,8 @@ noise_power_array=($(seq -12 4))  # 17 noise levels
 duration=30                       # Seconds per test
 num_repeat=10                     # Iterations per (MCS, noise) combo
 
-# Path loss (RFSIM)
-ploss_db=30                       # dB
+# Path loss (RFSim)
+ploss_db=8                        # dB
 ```
 
 ## Troubleshooting BLER Tests
@@ -663,7 +793,7 @@ ploss_db=30                       # dB
   ```bash
   # Look for BLER instrumentation message in build output
   grep "BLER instrumentation: ENABLED" cmake_targets/log/nr-uesoftmodem.Rel15.txt
-  
+
   # Or check if logging appears in test
   grep "PC5_RX_SUMMARY" ~/openairinterface5g/test_*/result_nearby_*.log
   ```
@@ -671,7 +801,7 @@ ploss_db=30                       # dB
 - Verify MCS and noise power are valid ranges
 - If no logging appears, rebuild with instrumentation:
   ```bash
-  ./build_oai --nrUE -w SIMU --ninja -c --bler-instrumentation
+  ./build_oai --nrUE --gNB -w SIMU -c --cmake-opt "-DENABLE_BLER_INSTRUMENTATION=ON"
   ```
 
 ### CSV parsing errors
@@ -705,7 +835,7 @@ If tests experience timing issues (TUN interface not ready, sync failures):
    ```
 
 2. Most modern systems should keep the default `use_extended_delays=0`
-   
+
    # Run with custom config
    BLER_CONFIG_FILE=my_config.sh ./run_sl_test.sh
    ```
@@ -720,7 +850,7 @@ If tests experience timing issues (TUN interface not ready, sync failures):
   ```
 - If not enabled, rebuild on remote machine:
   ```bash
-  ssh l3 "cd ~/openairinterface5g && ./build_oai --nrUE -w SIMU --ninja -c --bler-instrumentation"
+  ssh l3 "cd ~/openairinterface5g && ./build_oai --nrUE --gNB -w SIMU -c --cmake-opt \"-DENABLE_BLER_INSTRUMENTATION=ON\""
   ```
 - Check if config was copied: `ssh l3 "ls ~/ci_script/run_sl_test_config_host*.sh"`
 - Verify config is executable: `ssh l3 "chmod +x ~/ci_script/run_sl_test_config_host1.sh"`
