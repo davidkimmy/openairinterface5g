@@ -54,7 +54,7 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp; ◉ Basic Configured Grant Type 1 based MAC scheduling for mode 1 operation<br>
 &emsp;&emsp; ◉ Resource pool configuration (pre-configured/static)<br>
 &emsp;&emsp; ◉ Dedicated Sidelink Resource pool configuration<br>
-&emsp;&emsp; ◉ Dynamic MCS support (currently up to MCS 14 in B210 USRP)<br>
+&emsp;&emsp; ◉ Dynamic MCS support (currently up to MCS 10 in B210 USRP)<br>
 &emsp;&emsp; ◉ HARQ retransmission handling (basic)<br>
 &emsp;&emsp; ◉ SL pre-configuration support (static configuration via .conf files)<br>
 &emsp;&emsp; ◉ SL IP Traffic support (updates to PDCP, RLC, and SDAP layers)<br>
