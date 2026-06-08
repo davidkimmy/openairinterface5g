@@ -140,6 +140,20 @@ $ /opt/asn1c/bin/asn1c -version
 # Should output: ASN.1 Compiler, v0.9.29
 ```
 
+### 5.3 **USRP hardware access control:**
+**🔔Note:** After OAI compilation, apply the following for USRP hardware access:
+
+1. Copy the USRP hardware access rules into your system configuration
+```
+sudo cp /usr/local/lib/uhd/utils/uhd-usrp.rules /etc/udev/rules.d/
+```
+
+2. Reload the device manager rules to apply the change instantly
+```
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
 ## 6. EpiSci's 5G Sidelink Mode 1
 
 ### 6.1 **5G SL Relay**
