@@ -223,7 +223,7 @@ elif [[ $test_profile == "bler" ]]; then
 
     # Distributed BLER test machine configuration
     # Enable parallel mode to distribute tests across multiple machines
-    parallel_mode="true"
+    parallel_mode="false"
 
     # List machines for parallel testing. Iterations are split evenly across machines.
     # Format: hostname (use "localhost" or "local" for local execution)
@@ -232,9 +232,9 @@ elif [[ $test_profile == "bler" ]]; then
     # For 2 machines (6 iterations each): bler_hosts=(l3 localhost)
     # For 1 machine (all 12 iterations): bler_hosts=(localhost)
 
-    # Default: run all iterations (updated per host during parallel setup)
+    # Iteration range (orchestration logic divides num_repeat across hosts in parallel mode)
     iteration_start=1
-    iteration_end=12
+    iteration_end=$num_repeat
 else
     echo "ERROR: Unknown test profile '$test_profile'"
     echo "Available profiles: pilot, regress, stress, bler"

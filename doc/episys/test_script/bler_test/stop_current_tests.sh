@@ -24,61 +24,83 @@ if [[ -z "${bler_hosts[@]}" ]]; then
     exit 1
 fi
 
+# Use configured OAI base directory or default
+OAI_BASE_DIR="${OAI_BASE_DIR:-$HOME/openairinterface5g}"
+
 echo "=========================================="
 echo "Stopping All BLER Tests on All Machines"
 echo "=========================================="
 echo ""
 
 # Function to stop tests on a remote machine
-stop_remote_machine() {
-    local host=$1
-    local machine_name=$2
+stop_remote_host() {
+    local hostname=$1
+    local host_id=$2
 
-    echo "→ Stopping $machine_name ($host)..."
+    echo "→ Stopping $host_id ($hostname)..."
 
-    # Execute all stop commands on the remote machine
-    ssh $host 'bash -s' << 'ENDSSH'
-        # Kill test script PIDs
-        for pid_file in ~/openairinterface5g/bler_host*.pid; do
-            if [[ -f "$pid_file" ]]; then
-                pid=$(cat "$pid_file" 2>/dev/null)
-                if [[ -n "$pid" ]]; then
-                    kill -9 $pid 2>/dev/null
-                    echo "  ✓ Killed PID $pid from $(basename $pid_file)"
+    # Try SSH with timeout and limited retries
+    ssh_success=false
+    for attempt in 1 2 3; do
+        if timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no $hostname 'bash -s' << 'ENDSSH'; then
+            # Kill test script PIDs
+            for pid_file in ${HOME}/openairinterface5g/bler_host*.pid; do
+                if [[ -f "$pid_file" ]]; then
+                    pid=$(cat "$pid_file" 2>/dev/null)
+                    if [[ -n "$pid" ]]; then
+                        kill -9 $pid 2>/dev/null
+                        echo "  ✓ Killed PID $pid from $(basename $pid_file)"
+                    fi
                 fi
-            fi
-        done
+            done
 
-        # Kill run_sl_test.sh scripts
-        pkill -9 -f 'run_sl_test.sh' 2>/dev/null && echo "  ✓ Killed run_sl_test.sh processes"
+            # Kill run_sl_test.sh scripts
+            pkill -9 -f 'run_sl_test.sh' 2>/dev/null && echo "  ✓ Killed run_sl_test.sh processes"
 
-        # Kill all softmodem processes by finding all PIDs
-        for proc in nr-softmodem nr-uesoftmodem; do
-            pids=$(ps aux | grep "$proc" | grep -v grep | awk '{print $2}')
-            if [[ -n "$pids" ]]; then
-                for pid in $pids; do
-                    sudo kill -9 $pid 2>/dev/null
-                done
-                echo "  ✓ Killed all $proc processes"
-            fi
-        done
+            # Kill all softmodem processes by finding all PIDs
+            for proc in nr-softmodem nr-uesoftmodem; do
+                pids=$(ps aux | grep "$proc" | grep -v grep | awk '{print $2}')
+                if [[ -n "$pids" ]]; then
+                    for pid in $pids; do
+                        sudo kill -9 $pid 2>/dev/null
+                    done
+                    echo "  ✓ Killed all $proc processes"
+                fi
+            done
 
-        # Kill any nohup processes
-        pkill -9 -f 'nohup.*run_sl_test' 2>/dev/null
+            # Kill any nohup processes
+            pkill -9 -f 'nohup.*run_sl_test' 2>/dev/null
+
+            exit 0
 ENDSSH
+            if [[ $? -eq 0 ]]; then
+                ssh_success=true
+                break
+            fi
+        else
+            echo "  ⚠ SSH attempt $attempt/3 failed (exit code: $?)"
+            [[ $attempt -lt 3 ]] && sleep 2
+        fi
+    done
 
-    echo "  ✓ $machine_name stopped"
+    if [[ "$ssh_success" == "false" ]]; then
+        echo "  ✗ Failed to connect to $hostname after 3 attempts, skipping..."
+        echo ""
+        return
+    fi
+
+    echo "  ✓ $host_id stopped"
     echo ""
 }
 
 # Function to stop tests on localhost
 stop_localhost() {
-    local machine_name=$1
+    local host_id=$1
 
-    echo "→ Stopping $machine_name (localhost)..."
+    echo "→ Stopping $host_id (localhost)..."
 
     # Kill test script PIDs
-    for pid_file in ~/openairinterface5g/bler_host*.pid; do
+    for pid_file in ${OAI_BASE_DIR}/bler_host*.pid; do
         if [[ -f "$pid_file" ]]; then
             pid=$(cat "$pid_file" 2>/dev/null)
             if [[ -n "$pid" ]]; then
@@ -118,7 +140,7 @@ for hostname in "${bler_hosts[@]}"; do
     if [[ "$hostname" == "localhost" || "$hostname" == "local" ]]; then
         stop_localhost "$host_id"
     else
-        stop_remote_machine "$hostname" "$host_id"
+        stop_remote_host "$hostname" "$host_id"
     fi
 done
 
@@ -132,7 +154,7 @@ for hostname in "${bler_hosts[@]}"; do
         count=$(ps aux | grep -E '(nr-softmodem|nr-uesoftmodem|run_sl_test)' | grep -v grep | wc -l)
         echo "  localhost: $count processes remaining"
     else
-        count=$(ssh $hostname "ps aux | grep -E '(nr-softmodem|nr-uesoftmodem|run_sl_test)' | grep -v grep | wc -l" 2>/dev/null)
+        count=$(timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no $hostname "ps aux | grep -E '(nr-softmodem|nr-uesoftmodem|run_sl_test)' | grep -v grep | wc -l" 2>/dev/null || echo "?")
         echo "  $hostname: $count processes remaining"
     fi
 done

@@ -8,7 +8,16 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOCAL_RESULTS=~/openairinterface5g/bler_results_${TIMESTAMP}
+
+# Source config first to get OAI_BASE_DIR
+SL_TEST_CONFIG_FILE="$PARENT_DIR/run_sl_test_config.sh"
+if [[ -f "$SL_TEST_CONFIG_FILE" ]]; then
+    source "$SL_TEST_CONFIG_FILE" > /dev/null 2>&1
+fi
+
+# Use configured paths or defaults
+OAI_BASE_DIR="${OAI_BASE_DIR:-$HOME/openairinterface5g}"
+LOCAL_RESULTS="${BLER_RESULTS_DIR}_${TIMESTAMP}"
 
 mkdir -p $LOCAL_RESULTS
 
@@ -17,20 +26,10 @@ echo "BLER Results - Process & Plot"
 echo "=========================================="
 echo ""
 
-# Source config to get bler_hosts array
-SL_TEST_CONFIG_FILE="$PARENT_DIR/run_sl_test_config.sh"
-if [[ ! -f "$SL_TEST_CONFIG_FILE" ]]; then
-    echo "ERROR: Config file not found at $SL_TEST_CONFIG_FILE"
-    exit 1
-fi
-
-# Source config (suppress output)
-source "$SL_TEST_CONFIG_FILE" > /dev/null 2>&1
-
-# Check if bler_hosts array is defined
+# Check if bler_hosts array is defined (already sourced above)
 if [[ -z "${bler_hosts[@]}" ]]; then
-    echo "ERROR: bler_hosts array not defined in config"
-    echo "Add to $SL_TEST_CONFIG_FILE:"
+    echo "ERROR: bler_hosts array not defined in config file: $SL_TEST_CONFIG_FILE"
+    echo "Add to the config file:"
     echo "  bler_hosts=(l3 l4 l5 localhost)"
     exit 1
 fi
@@ -45,20 +44,29 @@ for ((i=1; i<=num_hosts; i++)); do
     host_ids+=("host${i}")
 done
 
+# Note: Test configuration (MCS/noise values) will be shown after processing logs
+echo ""
+
 # Display host configuration
 echo "Machine Configuration:"
 host_idx=0
 for hostname in "${bler_hosts[@]}"; do
     host_idx=$((host_idx + 1))
-    host_id="M${host_idx}"
+    host_id="host${host_idx}"
 
-    sl_test_config_file="$PARENT_DIR/run_sl_test_config_${host_id}.sh"
+    # Worker config file names match what was created by orchestration
+    if [[ "$hostname" == "localhost" || "$hostname" == "local" ]]; then
+        sl_test_config_file="$PARENT_DIR/run_sl_test_config_worker_local.sh"
+    else
+        sl_test_config_file="$PARENT_DIR/run_sl_test_config_worker_${hostname}.sh"
+    fi
+
     if [[ -f "$sl_test_config_file" ]]; then
         iter_start=$(grep "^iteration_start=" "$sl_test_config_file" | cut -d'=' -f2)
         iter_end=$(grep "^iteration_end=" "$sl_test_config_file" | cut -d'=' -f2)
-        echo "  ${host_id} (${hostname}): Iterations ${iter_start}-${iter_end} | MCS 0-28"
+        echo "  ${host_id} (${hostname}): Iterations ${iter_start}-${iter_end}"
     else
-        echo "  ${host_id} (${hostname}): Config not found"
+        echo "  ${host_id} (${hostname}): Config not found (expected: $(basename $sl_test_config_file))"
     fi
 done
 
@@ -70,25 +78,15 @@ echo ""
 host_idx=0
 for hostname in "${bler_hosts[@]}"; do
     host_idx=$((host_idx + 1))
-    host_id="M${host_idx}"
-
-    # Calculate MCS range for display (distribute 0-28 across hosts)
-    total_mcs=29
-    mcs_per_machine=$((total_mcs / num_hosts))
-    mcs_start=$(((host_idx - 1) * mcs_per_machine))
-    mcs_end=$((host_idx * mcs_per_machine - 1))
-    if [[ $host_idx -eq $num_hosts ]]; then
-        mcs_end=28  # Last host gets remainder
-    fi
-    mcs_str="${mcs_start},${mcs_end}"
+    host_id="host${host_idx}"
 
     echo "=========================================="
-    echo "Processing $host_id ($hostname) - MCS $mcs_str"
+    echo "Processing $host_id ($hostname)"
     echo "=========================================="
 
     if [[ "$hostname" == "localhost" ]]; then
         # Process locally
-        test_dir=$(ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1)
+        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
@@ -119,7 +117,7 @@ for hostname in "${bler_hosts[@]}"; do
         # Try SSH with timeout and limited retries
         ssh_success=false
         for attempt in 1 2 3; do
-            if timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "
+            if timeout 300 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "
                 # Find most recent test directory
                 test_dir=\$(ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1)
                 if [[ -z \"\$test_dir\" ]]; then
@@ -130,7 +128,7 @@ for hostname in "${bler_hosts[@]}"; do
                 echo \"  Test directory: \$test_dir\"
                 echo \"  Processing logs...\"
 
-                cd ~/ci_script
+                cd ~/ci_script/bler_test
                 python3 process_bler_local.py \
                     \$test_dir \
                     /tmp/bler_${host_id}.csv \
@@ -145,7 +143,7 @@ for hostname in "${bler_hosts[@]}"; do
                     lines=\$(wc -l < /tmp/bler_${host_id}_pc5_rx.csv)
                     echo \"  ✓ Generated: bler_${host_id}_pc5_rx.csv (\$lines lines)\"
                 fi
-            " 2>/dev/null; then
+            "; then
                 ssh_success=true
                 break
             else
@@ -178,12 +176,12 @@ cd $SCRIPT_DIR
 echo "Combining MAC BLER results..."
 header_written=false
 for host_id in "${host_ids[@]}"; do
-    if [[ -f $LOCAL_RESULTS/bler_${machine}.csv ]]; then
+    if [[ -f $LOCAL_RESULTS/bler_${host_id}.csv ]]; then
         if [[ "$header_written" == "false" ]]; then
-            head -1 $LOCAL_RESULTS/bler_${machine}.csv > $LOCAL_RESULTS/bler_combined.csv
+            head -1 $LOCAL_RESULTS/bler_${host_id}.csv > $LOCAL_RESULTS/bler_combined.csv
             header_written=true
         fi
-        tail -n +2 $LOCAL_RESULTS/bler_${machine}.csv >> $LOCAL_RESULTS/bler_combined.csv 2>/dev/null
+        tail -n +2 $LOCAL_RESULTS/bler_${host_id}.csv >> $LOCAL_RESULTS/bler_combined.csv 2>/dev/null
     fi
 done
 if [[ -f $LOCAL_RESULTS/bler_combined.csv ]]; then
@@ -196,12 +194,12 @@ fi
 echo "Combining PC5_RX BLER results..."
 header_written=false
 for host_id in "${host_ids[@]}"; do
-    if [[ -f $LOCAL_RESULTS/bler_${machine}_pc5_rx.csv ]]; then
+    if [[ -f $LOCAL_RESULTS/bler_${host_id}_pc5_rx.csv ]]; then
         if [[ "$header_written" == "false" ]]; then
-            head -1 $LOCAL_RESULTS/bler_${machine}_pc5_rx.csv > $LOCAL_RESULTS/bler_combined_pc5_rx.csv
+            head -1 $LOCAL_RESULTS/bler_${host_id}_pc5_rx.csv > $LOCAL_RESULTS/bler_combined_pc5_rx.csv
             header_written=true
         fi
-        tail -n +2 $LOCAL_RESULTS/bler_${machine}_pc5_rx.csv >> $LOCAL_RESULTS/bler_combined_pc5_rx.csv 2>/dev/null
+        tail -n +2 $LOCAL_RESULTS/bler_${host_id}_pc5_rx.csv >> $LOCAL_RESULTS/bler_combined_pc5_rx.csv 2>/dev/null
     fi
 done
 if [[ -f $LOCAL_RESULTS/bler_combined_pc5_rx.csv ]]; then
@@ -227,7 +225,7 @@ for hostname in "${bler_hosts[@]}"; do
     echo "→ Processing $host_id ($hostname)..."
 
     if [[ "$hostname" == "localhost" ]]; then
-        test_dir=$(ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1)
+        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
@@ -248,12 +246,12 @@ for hostname in "${bler_hosts[@]}"; do
         fi
         echo "  Test directory: $test_dir"
 
-        # Try SSH with timeout
-        if ! timeout 30 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/extract_bler.py \
+        # Try SSH with timeout (increased for bilateral processing)
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
             $test_dir \
             /tmp/nearby_bler_${host_id}.csv \
             /tmp/nearby_ldpc_${host_id}.csv \
-            nearby" 2>/dev/null; then
+            nearby"; then
             echo "  ✗ Failed to extract data from $hostname, skipping..."
             continue
         fi
@@ -268,12 +266,12 @@ echo "Combining nearby BLER..."
 # Find first available file for header
 header_written=false
 for host_id in "${host_ids[@]}"; do
-    if [[ -f $LOCAL_RESULTS/nearby_bler_${machine}.csv ]]; then
+    if [[ -f $LOCAL_RESULTS/nearby_bler_${host_id}.csv ]]; then
         if [[ "$header_written" == "false" ]]; then
-            head -1 $LOCAL_RESULTS/nearby_bler_${machine}.csv > $LOCAL_RESULTS/nearby_bler_combined.csv
+            head -1 $LOCAL_RESULTS/nearby_bler_${host_id}.csv > $LOCAL_RESULTS/nearby_bler_combined.csv
             header_written=true
         fi
-        tail -n +2 $LOCAL_RESULTS/nearby_bler_${machine}.csv >> $LOCAL_RESULTS/nearby_bler_combined.csv 2>/dev/null
+        tail -n +2 $LOCAL_RESULTS/nearby_bler_${host_id}.csv >> $LOCAL_RESULTS/nearby_bler_combined.csv 2>/dev/null
     fi
 done
 if [[ -f $LOCAL_RESULTS/nearby_bler_combined.csv ]]; then
@@ -287,12 +285,12 @@ fi
 echo "Combining nearby LDPC..."
 header_written=false
 for host_id in "${host_ids[@]}"; do
-    if [[ -f $LOCAL_RESULTS/nearby_ldpc_${machine}.csv ]]; then
+    if [[ -f $LOCAL_RESULTS/nearby_ldpc_${host_id}.csv ]]; then
         if [[ "$header_written" == "false" ]]; then
-            head -1 $LOCAL_RESULTS/nearby_ldpc_${machine}.csv > $LOCAL_RESULTS/nearby_ldpc_combined.csv
+            head -1 $LOCAL_RESULTS/nearby_ldpc_${host_id}.csv > $LOCAL_RESULTS/nearby_ldpc_combined.csv
             header_written=true
         fi
-        tail -n +2 $LOCAL_RESULTS/nearby_ldpc_${machine}.csv >> $LOCAL_RESULTS/nearby_ldpc_combined.csv 2>/dev/null
+        tail -n +2 $LOCAL_RESULTS/nearby_ldpc_${host_id}.csv >> $LOCAL_RESULTS/nearby_ldpc_combined.csv 2>/dev/null
     fi
 done
 if [[ -f $LOCAL_RESULTS/nearby_ldpc_combined.csv ]]; then
@@ -321,7 +319,7 @@ for hostname in "${bler_hosts[@]}"; do
     echo "→ Processing $host_id ($hostname)..."
 
     if [[ "$hostname" == "localhost" ]]; then
-        test_dir=$(ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1)
+        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
@@ -342,12 +340,12 @@ for hostname in "${bler_hosts[@]}"; do
         fi
         echo "  Test directory: $test_dir"
 
-        # Try SSH with timeout
-        if ! timeout 30 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/extract_bler.py \
+        # Try SSH with timeout (increased for bilateral processing)
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
             $test_dir \
             /tmp/syncref_rx_bler_${host_id}.csv \
             /tmp/syncref_rx_ldpc_${host_id}.csv \
-            syncref" 2>/dev/null; then
+            syncref"; then
             echo "  ✗ Failed to extract data from $hostname, skipping..."
             continue
         fi
@@ -361,12 +359,12 @@ done
 echo "Combining syncref RX BLER..."
 header_written=false
 for host_id in "${host_ids[@]}"; do
-    if [[ -f $LOCAL_RESULTS/syncref_rx_bler_${machine}.csv ]]; then
+    if [[ -f $LOCAL_RESULTS/syncref_rx_bler_${host_id}.csv ]]; then
         if [[ "$header_written" == "false" ]]; then
-            head -1 $LOCAL_RESULTS/syncref_rx_bler_${machine}.csv > $LOCAL_RESULTS/syncref_rx_bler_combined.csv
+            head -1 $LOCAL_RESULTS/syncref_rx_bler_${host_id}.csv > $LOCAL_RESULTS/syncref_rx_bler_combined.csv
             header_written=true
         fi
-        tail -n +2 $LOCAL_RESULTS/syncref_rx_bler_${machine}.csv >> $LOCAL_RESULTS/syncref_rx_bler_combined.csv 2>/dev/null
+        tail -n +2 $LOCAL_RESULTS/syncref_rx_bler_${host_id}.csv >> $LOCAL_RESULTS/syncref_rx_bler_combined.csv 2>/dev/null
     fi
 done
 if [[ -f $LOCAL_RESULTS/syncref_rx_bler_combined.csv ]]; then
@@ -380,12 +378,12 @@ fi
 echo "Combining syncref RX LDPC..."
 header_written=false
 for host_id in "${host_ids[@]}"; do
-    if [[ -f $LOCAL_RESULTS/syncref_rx_ldpc_${machine}.csv ]]; then
+    if [[ -f $LOCAL_RESULTS/syncref_rx_ldpc_${host_id}.csv ]]; then
         if [[ "$header_written" == "false" ]]; then
-            head -1 $LOCAL_RESULTS/syncref_rx_ldpc_${machine}.csv > $LOCAL_RESULTS/syncref_rx_ldpc_combined.csv
+            head -1 $LOCAL_RESULTS/syncref_rx_ldpc_${host_id}.csv > $LOCAL_RESULTS/syncref_rx_ldpc_combined.csv
             header_written=true
         fi
-        tail -n +2 $LOCAL_RESULTS/syncref_rx_ldpc_${machine}.csv >> $LOCAL_RESULTS/syncref_rx_ldpc_combined.csv 2>/dev/null
+        tail -n +2 $LOCAL_RESULTS/syncref_rx_ldpc_${host_id}.csv >> $LOCAL_RESULTS/syncref_rx_ldpc_combined.csv 2>/dev/null
     fi
 done
 if [[ -f $LOCAL_RESULTS/syncref_rx_ldpc_combined.csv ]]; then
@@ -397,23 +395,192 @@ fi
 
 echo ""
 echo "=========================================="
+echo "Extracting Uu DL BLER Data (gNB → Relay UE)"
+echo "=========================================="
+
+# Extract Uu DL BLER and LDPC from all hosts
+host_idx=0
+for hostname in "${bler_hosts[@]}"; do
+    host_idx=$((host_idx + 1))
+    host_id="host${host_idx}"
+
+    echo "→ Processing $host_id ($hostname)..."
+
+    if [[ "$hostname" == "localhost" ]]; then
+        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        if [[ -z "$test_dir" ]]; then
+            echo "  ⚠ No test directory found"
+            continue
+        fi
+        echo "  Test directory: $test_dir"
+
+        python3 $SCRIPT_DIR/extract_bler.py \
+            "$test_dir" \
+            $LOCAL_RESULTS/uu_dl_bler_${host_id}.csv \
+            $LOCAL_RESULTS/uu_dl_ldpc_${host_id}.csv \
+            uu_dl
+    else
+        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1" 2>/dev/null)
+        if [[ -z "$test_dir" ]]; then
+            echo "  ⚠ No test directory found or connection failed, skipping..."
+            continue
+        fi
+        echo "  Test directory: $test_dir"
+
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
+            $test_dir \
+            /tmp/uu_dl_bler_${host_id}.csv \
+            /tmp/uu_dl_ldpc_${host_id}.csv \
+            uu_dl"; then
+            echo "  ✗ Failed to extract data from $hostname, skipping..."
+            continue
+        fi
+
+        timeout 10 scp -q -o ConnectTimeout=5 $hostname:/tmp/uu_dl_bler_${host_id}.csv $LOCAL_RESULTS/ 2>/dev/null
+        timeout 10 scp -q -o ConnectTimeout=5 $hostname:/tmp/uu_dl_ldpc_${host_id}.csv $LOCAL_RESULTS/ 2>/dev/null
+    fi
+done
+
+# Combine Uu DL BLER
+echo "Combining Uu DL BLER..."
+header_written=false
+for host_id in "${host_ids[@]}"; do
+    if [[ -f $LOCAL_RESULTS/uu_dl_bler_${host_id}.csv ]]; then
+        if [[ "$header_written" == "false" ]]; then
+            head -1 $LOCAL_RESULTS/uu_dl_bler_${host_id}.csv > $LOCAL_RESULTS/uu_dl_bler_combined.csv
+            header_written=true
+        fi
+        tail -n +2 $LOCAL_RESULTS/uu_dl_bler_${host_id}.csv >> $LOCAL_RESULTS/uu_dl_bler_combined.csv 2>/dev/null
+    fi
+done
+if [[ -f $LOCAL_RESULTS/uu_dl_bler_combined.csv ]]; then
+    lines=$(wc -l < $LOCAL_RESULTS/uu_dl_bler_combined.csv)
+    echo "✓ Combined Uu DL BLER: $((lines - 1)) data points"
+else
+    echo "✗ No Uu DL BLER data available"
+fi
+
+# Combine Uu DL LDPC
+echo "Combining Uu DL LDPC..."
+header_written=false
+for host_id in "${host_ids[@]}"; do
+    if [[ -f $LOCAL_RESULTS/uu_dl_ldpc_${host_id}.csv ]]; then
+        if [[ "$header_written" == "false" ]]; then
+            head -1 $LOCAL_RESULTS/uu_dl_ldpc_${host_id}.csv > $LOCAL_RESULTS/uu_dl_ldpc_combined.csv
+            header_written=true
+        fi
+        tail -n +2 $LOCAL_RESULTS/uu_dl_ldpc_${host_id}.csv >> $LOCAL_RESULTS/uu_dl_ldpc_combined.csv 2>/dev/null
+    fi
+done
+if [[ -f $LOCAL_RESULTS/uu_dl_ldpc_combined.csv ]]; then
+    lines=$(wc -l < $LOCAL_RESULTS/uu_dl_ldpc_combined.csv)
+    echo "✓ Combined Uu DL LDPC: $((lines - 1)) data points"
+else
+    echo "✗ No Uu DL LDPC data available"
+fi
+
+echo ""
+echo "=========================================="
+echo "Extracting Uu UL BLER Data (Relay UE → gNB)"
+echo "=========================================="
+
+# Extract Uu UL BLER from all hosts (gNB logs)
+host_idx=0
+for hostname in "${bler_hosts[@]}"; do
+    host_idx=$((host_idx + 1))
+    host_id="host${host_idx}"
+
+    echo "→ Processing $host_id ($hostname)..."
+
+    if [[ "$hostname" == "localhost" ]]; then
+        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        if [[ -z "$test_dir" ]]; then
+            echo "  ⚠ No test directory found"
+            continue
+        fi
+        echo "  Test directory: $test_dir"
+
+        python3 $SCRIPT_DIR/extract_bler.py \
+            "$test_dir" \
+            $LOCAL_RESULTS/uu_ul_bler_${host_id}.csv \
+            $LOCAL_RESULTS/uu_ul_ldpc_${host_id}.csv \
+            uu_ul
+    else
+        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1" 2>/dev/null)
+        if [[ -z "$test_dir" ]]; then
+            echo "  ⚠ No test directory found or connection failed, skipping..."
+            continue
+        fi
+        echo "  Test directory: $test_dir"
+
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
+            $test_dir \
+            /tmp/uu_ul_bler_${host_id}.csv \
+            /tmp/uu_ul_ldpc_${host_id}.csv \
+            uu_ul"; then
+            echo "  ✗ Failed to extract data from $hostname, skipping..."
+            continue
+        fi
+
+        timeout 10 scp -q -o ConnectTimeout=5 $hostname:/tmp/uu_ul_bler_${host_id}.csv $LOCAL_RESULTS/ 2>/dev/null
+        timeout 10 scp -q -o ConnectTimeout=5 $hostname:/tmp/uu_ul_ldpc_${host_id}.csv $LOCAL_RESULTS/ 2>/dev/null
+    fi
+done
+
+# Combine Uu UL BLER
+echo "Combining Uu UL BLER..."
+header_written=false
+for host_id in "${host_ids[@]}"; do
+    if [[ -f $LOCAL_RESULTS/uu_ul_bler_${host_id}.csv ]]; then
+        if [[ "$header_written" == "false" ]]; then
+            head -1 $LOCAL_RESULTS/uu_ul_bler_${host_id}.csv > $LOCAL_RESULTS/uu_ul_bler_combined.csv
+            header_written=true
+        fi
+        tail -n +2 $LOCAL_RESULTS/uu_ul_bler_${host_id}.csv >> $LOCAL_RESULTS/uu_ul_bler_combined.csv 2>/dev/null
+    fi
+done
+if [[ -f $LOCAL_RESULTS/uu_ul_bler_combined.csv ]]; then
+    lines=$(wc -l < $LOCAL_RESULTS/uu_ul_bler_combined.csv)
+    echo "✓ Combined Uu UL BLER: $((lines - 1)) data points"
+else
+    echo "✗ No Uu UL BLER data available"
+fi
+
+echo ""
+echo "=========================================="
 echo "Generating Focused Plots"
 echo "=========================================="
 
 # Generate nearby 4-panel plot
 echo "→ Nearby (UE Rx) 4-panel plot..."
-if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS nearby 2>/dev/null; then
+if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS nearby; then
     echo "  ✓ nearby_bler_4panel.png"
 else
-    echo "  ✗ Failed to generate nearby plot"
+    echo "  ✗ Failed to generate nearby plot (see error above)"
 fi
 
 # Generate syncref RX 4-panel plot
 echo "→ Syncref RX 4-panel plot..."
-if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS syncref_rx 2>/dev/null; then
+if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS syncref_rx; then
     echo "  ✓ syncref_rx_bler_4panel.png"
 else
-    echo "  ✗ Failed to generate syncref RX plot"
+    echo "  ✗ Failed to generate syncref RX plot (see error above)"
+fi
+
+# Generate Uu DL 4-panel plot
+echo "→ Uu DL (gNB→RelayUE) 4-panel plot..."
+if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS uu_dl; then
+    echo "  ✓ uu_dl_bler_4panel.png"
+else
+    echo "  ✗ Failed to generate Uu DL plot (see error above)"
+fi
+
+# Generate Uu UL 4-panel plot (only BLER + HARQ, no LDPC)
+echo "→ Uu UL (RelayUE→gNB) 2-panel plot..."
+if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS uu_ul; then
+    echo "  ✓ uu_ul_bler_2panel.png"
+else
+    echo "  ✗ Failed to generate Uu UL plot (see error above)"
 fi
 
 echo ""
@@ -423,18 +590,32 @@ echo "=========================================="
 echo "Location: $LOCAL_RESULTS"
 echo ""
 echo "Generated plots:"
-ls -lh $LOCAL_RESULTS/*.png 2>/dev/null
+num_plots=$(ls -1 $LOCAL_RESULTS/*.png 2>/dev/null | wc -l)
+if [[ $num_plots -gt 0 ]]; then
+    ls -lh $LOCAL_RESULTS/*.png
+else
+    echo "  ⚠ No plots generated (check for errors above)"
+fi
 echo ""
 echo "CSV files:"
-ls -lh $LOCAL_RESULTS/*.csv 2>/dev/null | wc -l
-echo " CSV files generated"
+num_csvs=$(ls -1 $LOCAL_RESULTS/*.csv 2>/dev/null | wc -l)
+echo "  $num_csvs CSV files generated"
 echo ""
 
 # Open plots if GUI available
-if command -v eog &> /dev/null; then
-    echo "Opening plots..."
-    eog $LOCAL_RESULTS/nearby_bler_4panel.png \
-        $LOCAL_RESULTS/syncref_rx_bler_4panel.png &
+if [[ $num_plots -gt 0 ]] && command -v eog &> /dev/null && [[ -n "$DISPLAY" ]]; then
+    echo "Opening plots in image viewer..."
+    existing_plots=()
+    for plot in nearby_bler_4panel syncref_rx_bler_4panel uu_dl_bler_4panel uu_ul_bler_2panel; do
+        if [[ -f "$LOCAL_RESULTS/${plot}.png" ]]; then
+            existing_plots+=("$LOCAL_RESULTS/${plot}.png")
+        fi
+    done
+    if [[ ${#existing_plots[@]} -gt 0 ]]; then
+        eog "${existing_plots[@]}" 2>/dev/null &
+    fi
+elif [[ $num_plots -gt 0 ]]; then
+    echo "Note: GUI not available. View plots manually at: $LOCAL_RESULTS"
 fi
 
 echo "✓ Done!"

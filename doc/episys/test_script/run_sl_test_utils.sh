@@ -84,9 +84,19 @@ set_uu_mcs_remote() {
 # Deploy configuration and utilities to remote hosts for parallel BLER testing
 # Usage: setup_parallel_bler_hosts
 setup_parallel_bler_hosts() {
-    # Expects: bler_hosts, num_repeat from config
+    # Expects: bler_hosts, iteration_start, iteration_end from config
     local num_hosts=${#bler_hosts[@]}
-    local total_iterations=${num_repeat:-10}
+    # Calculate total iterations from iteration_start and iteration_end (not from num_repeat)
+    # Fallback to num_repeat if iteration_start/end not defined
+    local iter_start=${iteration_start:-1}
+    local iter_end=${iteration_end:-${num_repeat:-10}}
+    local total_iterations=$((iter_end - iter_start + 1))
+    if [[ $total_iterations -le 0 ]]; then
+        echo "ERROR: Invalid iteration range: start=$iter_start, end=$iter_end"
+        echo "iteration_end must be >= iteration_start"
+        return 1
+    fi
+
     local iterations_per_host=$((total_iterations / num_hosts))
     local remainder=$((total_iterations % num_hosts))
 
@@ -130,16 +140,23 @@ setup_parallel_bler_hosts() {
 update_host_config_local() {
     local start=$1
     local end=$2
-    local config_file="$SCRIPT_DIR/run_sl_test_config.sh"
+    local source_config="$SCRIPT_DIR/run_sl_test_config.sh"
+    local worker_config="$SCRIPT_DIR/run_sl_test_config_worker_local.sh"
 
-    # Update iteration parameters in config
-    sed -i "s/^iteration_start=.*/iteration_start=$start/" "$config_file"
-    sed -i "s/^iteration_end=.*/iteration_end=$end/" "$config_file"
+    # Create worker-specific config from master config
+    cp "$source_config" "$worker_config"
+
+    # Update iteration parameters in worker config
+    sed -i "s/^[[:space:]]*iteration_start=.*/    iteration_start=$start/" "$worker_config"
+    sed -i "s/^[[:space:]]*iteration_end=.*/    iteration_end=$end/" "$worker_config"
 
     # Calculate num_repeat from range
     local num_repeat=$((end - start + 1))
     # Find and update num_repeat in bler profile section only
-    sed -i "/test_profile == \"bler\"/,/^elif/s/^\([[:space:]]*num_repeat=\)[0-9]\+/\1$num_repeat/" "$config_file"
+    sed -i "/test_profile == \"bler\"/,/^elif/s/^\([[:space:]]*num_repeat=\)[0-9]\+/\1$num_repeat/" "$worker_config"
+
+    # CRITICAL: Disable parallel mode to prevent recursive launches
+    sed -i 's/^[[:space:]]*parallel_mode=.*/    parallel_mode="false"/' "$worker_config"
 }
 
 # Update remote host config with iteration range
@@ -151,17 +168,21 @@ update_host_config_remote() {
     local num_repeat=$((end - start + 1))
 
     ssh "$hostname" "bash -c '
-        config_file=\"\$HOME/ci_script/run_sl_test_config.sh\"
+        source_config=\"\$HOME/ci_script/run_sl_test_config.sh\"
+        worker_config=\"\$HOME/ci_script/run_sl_test_config_worker_${hostname}.sh\"
 
-        # Create backup
-        cp \"\$config_file\" \"\${config_file}.bak\"
+        # Create worker-specific config from master config
+        cp \"\$source_config\" \"\$worker_config\"
 
-        # Update iteration parameters
-        sed -i \"s/^iteration_start=.*/iteration_start=$start/\" \"\$config_file\"
-        sed -i \"s/^iteration_end=.*/iteration_end=$end/\" \"\$config_file\"
+        # Update iteration parameters in worker config
+        sed -i \"s/^[[:space:]]*iteration_start=.*/    iteration_start=$start/\" \"\$worker_config\"
+        sed -i \"s/^[[:space:]]*iteration_end=.*/    iteration_end=$end/\" \"\$worker_config\"
 
         # Update num_repeat in bler profile section only
-        sed -i \"/test_profile == \\\"bler\\\"/,/^elif/s/^\([[:space:]]*num_repeat=\)[0-9]\+/\1$num_repeat/\" \"\$config_file\"
+        sed -i \"/test_profile == \\\"bler\\\"/,/^elif/s/^\([[:space:]]*num_repeat=\)[0-9]\+/\1$num_repeat/\" \"\$worker_config\"
+
+        # CRITICAL: Disable parallel mode to prevent recursive launches
+        sed -i \"s/^[[:space:]]*parallel_mode=.*/    parallel_mode=\\\"false\\\"/\" \"\$worker_config\"
 
         echo \"  ✓ Updated config on $hostname\"
     '" 2>/dev/null || echo "  ⚠ Failed to update config on ${hostname}"

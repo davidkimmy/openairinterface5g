@@ -71,23 +71,24 @@ init_host_variables() {
         GNB_HOST_IP=$(ssh -G $GNB_HOST 2>/dev/null | awk '/^hostname / {print $2}')
         echo "gNB Host IP address = $GNB_HOST_IP"
     else
-        REMOTE_UE_HOST="${REMOTE_UE_HOST:-localhost}"
+        # Force localhost for local execution (override any previous values)
+        REMOTE_UE_HOST="localhost"
         REMOTE_HOST_IP=$(ssh -G $REMOTE_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
         echo "Remote UE Host IP address = $REMOTE_HOST_IP"
 
-        LOCAL_HOST="${LOCAL_HOST:-localhost}"
+        LOCAL_HOST="localhost"
         LOCAL_HOST_IP=$(ssh -G $LOCAL_HOST 2>/dev/null | awk '/^hostname / {print $2}')
         echo "Local Host IP address = $LOCAL_HOST_IP"
 
-        RELAY_UE_HOST="${RELAY_UE_HOST:-localhost}"
+        RELAY_UE_HOST="localhost"
         RELAY_UE_HOST_IP=$(ssh -G $RELAY_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
         echo "Relay UE Host IP address = $RELAY_UE_HOST_IP"
 
-        NR_UE_HOST="${NR_UE_HOST:-localhost}"
+        NR_UE_HOST="localhost"
         NR_UE_HOST_IP=$(ssh -G $NR_UE_HOST 2>/dev/null | awk '/^hostname / {print $2}')
         echo "nrUE Host IP address = $NR_UE_HOST_IP"
 
-        GNB_HOST="${GNB_HOST:-localhost}"
+        GNB_HOST="localhost"
         GNB_HOST_IP=$(ssh -G $GNB_HOST 2>/dev/null | awk '/^hostname / {print $2}')
         echo "gNB Host IP address = $GNB_HOST_IP"
     fi
@@ -171,7 +172,7 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     echo "=========================================="
 
     # Check if bler_hosts array is defined in config
-    if [[ -z "${bler_hosts[@]}" ]]; then
+    if [[ ${#bler_hosts[@]} -eq 0 ]]; then
         echo "ERROR: bler_hosts array not defined in config file"
         echo "Add to your config file:"
         echo "  bler_hosts=(l3 l4 l5 localhost)"
@@ -195,12 +196,11 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     echo "Launching Tests on All Machines"
     echo "=========================================="
 
-    # Launch on each host
+    # Launch on each host (using worker-specific config files)
     host_idx=0
     for hostname in "${bler_hosts[@]}"; do
         host_idx=$((host_idx + 1))
         host_id="host${host_idx}"
-        config_name="run_sl_test_config_${host_id}.sh"
         log_file="~/openairinterface5g/bler_${host_id}.log"
         pid_file="~/openairinterface5g/bler_${host_id}.pid"
 
@@ -208,20 +208,21 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
         echo "→ ${host_id} (${hostname})"
 
         if [[ "$hostname" == "localhost" || "$hostname" == "local" ]]; then
-            # Launch locally
+            # Launch locally - uses worker-specific config
             cd ~/ci_script
-            BLER_CONFIG_FILE="$config_name" nohup bash run_sl_test.sh > "${log_file/#\~/$HOME}" 2>&1 &
+            # Override config file via environment variable
+            BLER_CONFIG_FILE="run_sl_test_config_worker_local.sh" nohup bash run_sl_test.sh > "${log_file/#\~/$HOME}" 2>&1 &
             echo $! > "${pid_file/#\~/$HOME}"
             echo "  ✓ Started locally (PID: $!)"
         else
-            # Launch remotely via SSH
-            ssh -n -f "$hostname" "cd ~/ci_script && BLER_CONFIG_FILE=$config_name nohup bash run_sl_test.sh > $log_file 2>&1 & echo \$! > $pid_file" 2>/dev/null
+            # Launch remotely - uses worker-specific config
+            ssh -n -f "$hostname" "cd ~/ci_script && BLER_CONFIG_FILE=\"run_sl_test_config_worker_${hostname}.sh\" nohup bash run_sl_test.sh > $log_file 2>&1 & echo \$! > $pid_file" 2>/dev/null
             if [[ $? -eq 0 ]]; then
                 echo "  ✓ Started on ${hostname}"
             else
                 echo "  ✗ Failed to start on ${hostname}"
             fi
-            sleep 2  # Configurable: default 2s - wait for SSH remote process to start
+            sleep 2  # Wait for SSH remote process to start
         fi
     done
 
@@ -253,6 +254,14 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     echo "Expected completion time (parallel execution on ${num_hosts} machines):"
     echo "  Total tests: ${total_tests} (${#mcs_array[@]} MCS × ${#noise_power_array[@]} SNR × ${num_repeat} iterations)"
     echo "  Per machine: ${tests_per_host} tests × ${test_time}s = ${time_per_host_hours}h ${time_per_host_min}m"
+    echo ""
+    echo "Note: Worker config files created (will persist for debugging):"
+    echo "  Local: ~/ci_script/run_sl_test_config_worker_local.sh"
+    for hostname in "${bler_hosts[@]}"; do
+        if [[ "$hostname" != "localhost" && "$hostname" != "local" ]]; then
+            echo "  ${hostname}: ~/ci_script/run_sl_test_config_worker_${hostname}.sh"
+        fi
+    done
     echo "=========================================="
     exit 0
 fi
