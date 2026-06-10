@@ -1020,6 +1020,9 @@ run_iperf3_server() {
 
     if [[ "$host_name" == "upf_docker" ]]; then
         cmd="docker exec oai-upf bash -c 'iperf3 -s -B $bind_ip -p $port -i 1'"
+    elif [[ "$host_name" == "$REMOTE_UE_HOST" || "$host_name" == "remote_ue" ]]; then
+        # For remote_ue with policy routing, bind to device instead of IP
+        cmd="iperf3 -s --bind-dev oaitun_ue2 -p $port -i 1"
     fi
 
     echo "=== iperf3 Server Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -1032,7 +1035,7 @@ run_iperf3_server() {
         bash -c "iperf3 -s -B $bind_ip -p $port -i 1" 2>&1 | tee -a "$log_file" &
     else
         local user_name=$(find_user_name "$host_name")
-        bash -c "ssh $host_name 'iperf3 -s -B $bind_ip -p $port -i 1'" 2>&1 | tee -a "$log_file" &
+        bash -c "ssh $host_name '$cmd'" 2>&1 | tee -a "$log_file" &
     fi
 }
 
@@ -1049,6 +1052,9 @@ run_iperf3_client() {
 
     if [[ "$host_name" == "upf_docker" ]]; then
         cmd="docker exec oai-upf bash -c 'iperf3 -u -c $server_ip -B $bind_ip -p $port -i 1 -b $bandwidth -t $iperf3_duration'"
+    elif [[ "$host_name" == "$REMOTE_UE_HOST" || "$host_name" == "remote_ue" ]]; then
+        # For remote_ue with policy routing, bind to device instead of IP
+        cmd="iperf3 -u -c $server_ip --bind-dev oaitun_ue2 -p $port -i 1 -b $bandwidth -t $iperf3_duration"
     fi
 
     echo "=== iperf3 Client Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -1106,18 +1112,33 @@ evaluate_iperf3_sweep() {
         sleep 3
 
         # Verify link is alive before each bandwidth step
+        echo "=== Pre-iperf3 Link Verification (bandwidth: $bw_target) ===" >> "$log_dir/commands.txt"
         local ping_ok=0
+        local ping_cmd=""
         if [[ "$client_host" == "local" ]]; then
+            ping_cmd="ping -c 3 -W 2 -I $client_bind_ip $server_bind_ip"
             ping -c 3 -W 2 -I "$client_bind_ip" "$server_bind_ip" &>/dev/null && ping_ok=1
         else
-            safe_ssh "$client_host" "ping -c 3 -W 2 -I $client_bind_ip $server_bind_ip" &>/dev/null && ping_ok=1
+            # For remote_ue with policy routing, use device binding instead of IP binding
+            if [[ "$client_host" == "$REMOTE_UE_HOST" || "$client_host" == "remote_ue" ]]; then
+                ping_cmd="ping -c 3 -W 2 -I oaitun_ue2 $server_bind_ip"
+                safe_ssh "$client_host" "ping -c 3 -W 2 -I oaitun_ue2 $server_bind_ip" &>/dev/null && ping_ok=1
+            else
+                ping_cmd="ping -c 3 -W 2 -I $client_bind_ip $server_bind_ip"
+                safe_ssh "$client_host" "ping -c 3 -W 2 -I $client_bind_ip $server_bind_ip" &>/dev/null && ping_ok=1
+            fi
         fi
+        echo "Command: $ping_cmd" >> "$log_dir/commands.txt"
         if [ "$ping_ok" -eq 0 ]; then
+            echo "Result: FAILED" >> "$log_dir/commands.txt"
+            echo "" >> "$log_dir/commands.txt"
             echo "WARNING: ping to $server_bind_ip failed before $bw_target — link is down"
             print_iperf3_summary "$iperf3_summary_file" "$test_name" "$iteration" "$num_hosts" "$mcs" \
                 "$bw_target" "0" "0" "0" "FAIL"
             break
         fi
+        echo "Result: PASSED" >> "$log_dir/commands.txt"
+        echo "" >> "$log_dir/commands.txt"
 
         local ts=$(date +%Y%m%d_%H%M%S)
         local client_log="$log_dir/iperf3_client_${bw_target}_${ts}.txt"
@@ -1196,19 +1217,29 @@ verify_ping() {
     local dest_ip=$3
     local count=${4:-5}
 
+    local cmd="ping -c $count -I $src_if $dest_ip"
+
+    echo "=== Ping Verification Command (host: $host_name) ===" >> "$log_dir/commands.txt"
+    echo "$cmd" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
     echo "Verifying connectivity with ping -c $count -I $src_if $dest_ip on $host_name..."
     local ping_result
     if [[ "$host_name" == "local" ]]; then
         ping_result=$(ping -c $count -I $src_if $dest_ip 2>&1)
     else
-        ping_result=$(safe_ssh "$host_name" "ping -c $count -I $src_if $dest_ip" 2>&1)
+        ping_result=$(safe_ssh "$host_name" "$cmd" 2>&1)
     fi
     local received=$(echo "$ping_result" | grep -oP '\d+(?= received)')
     if [ "${received:-0}" -gt 0 ]; then
         echo "Ping verification PASSED ($received/$count received)"
+        echo "=== Ping Result: PASSED ($received/$count received) ===" >> "$log_dir/commands.txt"
+        echo "" >> "$log_dir/commands.txt"
         return 0
     else
         echo "Ping verification FAILED (0/$count received)"
+        echo "=== Ping Result: FAILED (0/$count received) ===" >> "$log_dir/commands.txt"
+        echo "" >> "$log_dir/commands.txt"
         return 1
     fi
 }
@@ -2431,9 +2462,23 @@ slmode1_srap_iperf3_test() {
         wait_for_pc5_sync $remaining
     fi
 
-    # Verify connectivity with ping before iperf3
-    if ! verify_ping "$nearby_host_name" "$src_if" "$dest_ip" 5; then
-        echo "SKIP: iperf3 test skipped due to ping failure"
+    # Wait for end-to-end connectivity through relay (retry ping with timeout)
+    echo "Waiting for end-to-end connectivity through relay..."
+    local ping_attempts=0
+    local max_ping_attempts=30
+    local ping_success=0
+    while [ $ping_attempts -lt $max_ping_attempts ]; do
+        if verify_ping "$nearby_host_name" "$src_if" "$dest_ip" 3; then
+            ping_success=1
+            break
+        fi
+        echo "Ping attempt $((ping_attempts + 1))/$max_ping_attempts failed, retrying in 2s..."
+        sleep 2
+        ping_attempts=$((ping_attempts + 1))
+    done
+
+    if [ $ping_success -eq 0 ]; then
+        echo "SKIP: iperf3 test skipped due to ping failure after $max_ping_attempts attempts"
         LAST_TEST_RESULT="FAIL"
         kill_all $nearby_host_name nr-uesoftmodem
         kill_all $syncref_host_name nr-uesoftmodem
@@ -2443,6 +2488,8 @@ slmode1_srap_iperf3_test() {
         print_runtime $start_time $end_time
         return 1
     fi
+
+    echo "End-to-end connectivity established successfully!"
 
     # Run iperf3 sweep: server on UPF docker, client on nearby UE
     evaluate_iperf3_sweep "upf_docker" "$server_ip" "$nearby_host_name" "$client_ip" \

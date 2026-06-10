@@ -317,6 +317,17 @@ int nas_config_mbms_s1(int interface_id, int thirdOctet, int fourthOctet, char *
 }
 
 /**
+ * Detect if multiple UEs on the same host are using the same host.
+ * Checks if the IP address is localhost (127.0.0.1).
+ *
+ * @param ipAddress IP address to check (e.g., "127.0.0.1")
+ * @return true if ipAddress is "127.0.0.1", false otherwise
+ */
+static bool detect_same_host_interfaces(const char *ipAddress) {
+  return (strcmp(ipAddress, "127.0.0.1") == 0);
+}
+
+/**
  * Detect if multiple UEs on the same host are using the same subnet.
  * Scans existing oaitun_ue* interfaces and compares their IP subnets
  * with the provided IP address.
@@ -324,6 +335,7 @@ int nas_config_mbms_s1(int interface_id, int thirdOctet, int fourthOctet, char *
  * @param ipAddress IP address to check (e.g., "10.0.0.1")
  * @return true if another oaitun_ue* interface exists with same /24 subnet, false otherwise
  */
+#if 0
 static bool detect_same_subnet_interfaces(const char *ipAddress) {
   struct ifaddrs *ifaddr, *ifa;
   struct in_addr provided_addr;
@@ -353,6 +365,7 @@ static bool detect_same_subnet_interfaces(const char *ipAddress) {
   freeifaddrs(ifaddr);
   return false;
 }
+#endif
 
 /**
  * Configure policy-based routing for SL Mode 2 using system() calls.
@@ -407,9 +420,9 @@ int nas_config(int interface_id, int thirdOctet, int fourthOctet, char *ifname) 
   sprintf(interfaceName, "%s%s%d", (UE_NAS_USE_TUN || ENB_NAS_USE_TUN)?"oaitun_":ifname,
           UE_NAS_USE_TUN?"ue": (ENB_NAS_USE_TUN?"enb":""),interface_id);
 
-  // For SL Mode 2, detect same-subnet scenario and conditionally apply policy routing
-  if (get_softmodem_params()->sl_mode == 2) {
-    bool same_subnet = detect_same_subnet_interfaces(ipAddress);
+  // For SL Mode 2, detect same-host scenario and conditionally apply policy routing in case of non-relay.
+  if (get_softmodem_params()->sl_mode == 2 && get_softmodem_params()->relay_type == 0) {
+    bool same_host = detect_same_host_interfaces(ipAddress);
 
     // Configure interface with ioctl
     bringInterfaceUp(interfaceName, 0);
@@ -438,7 +451,7 @@ int nas_config(int interface_id, int thirdOctet, int fourthOctet, char *ifname) 
     (void)ret;
 
     // Apply policy routing tables only if same subnet detected
-    if (same_subnet) {
+    if (same_host) {
       int iface_num = 0;
       sscanf(interfaceName, "oaitun_ue%d", &iface_num);
       if (iface_num > 0) {
@@ -447,7 +460,7 @@ int nas_config(int interface_id, int thirdOctet, int fourthOctet, char *ifname) 
     }
 
     LOG_I(OIP, "%s configured: %s/%s%s\n", interfaceName, ipAddress, netMask,
-          same_subnet ? " (policy routing)" : "");
+          same_host ? " (policy routing)" : "");
 
     return 0;
   }
