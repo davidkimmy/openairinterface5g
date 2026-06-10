@@ -266,6 +266,32 @@ RELAY_UE_USRP_SN_FOR_SL=340EA3B    # USRP for sidelink interface
 
 ## Configuration Guide
 
+### Four-Tier Configuration System
+
+Override MCS and duration at four levels: **test-specific > slice-specific > group-specific > profile-default**.
+
+#### Basic Usage
+
+```bash
+# In run_sl_test_config.sh
+
+# Group-level (all tests in group)
+group_specific_duration["slmode2_basic_tests"]=30
+group_specific_mcs["slmode2_basic_tests"]="16,28"
+
+# Slice-level (specific indices: [0:2] range, [0,2] pick-list, [2] single)
+group_specific_duration["slmode2_basic_tests[2]"]=60
+group_specific_mcs["slmode2_basic_tests[2]"]="12,16,20,24,28"
+
+# Test-specific (individual test)
+test_specific_duration["usrp_B210_pc5_ping_test_on_two_hosts"]=90
+test_specific_mcs["usrp_B210_pc5_ping_test_on_two_hosts"]="20,24,28"
+```
+
+**MCS formats:** Comma-separated `"16,28"`, space-separated `"16 28"`, or command substitution `"$(seq 0 1 10)"`
+
+**Auto-discovery:** Test groups ending with `_basic_tests`, `_iperf3_tests`, or `_csi_psfch_tests` are automatically recognized. Excluded: `pilot_tests`, `regress_tests`, `stress_tests` (profile arrays)
+
 ### Test Profiles
 
 Four built-in profiles in `run_sl_test_config.sh`. Each profile has its own test list (`pilot_tests`, `regress_tests`, `stress_tests`) that is automatically assigned to `enabled_tests`:

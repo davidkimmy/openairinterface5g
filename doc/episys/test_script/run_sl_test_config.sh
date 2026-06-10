@@ -77,6 +77,81 @@ DEFAULT_PSFCH_PERIOD=""   # Auto-detect from sl_sync_ref.conf if empty
 #     rfsim_pc5_ping_test_on_two_hosts   # individual test
 #     rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts:0:1
 # )
+#############################################################
+# Four-Tier Configuration System
+#############################################################
+# Priority (highest to lowest):
+#   1. Test-specific     - individual test overrides
+#   2. Slice-specific    - group[indices] overrides
+#   3. Group-specific    - entire group overrides
+#   4. Profile-default   - fallback values from profile
+#
+# Format for MCS: comma-separated OR space-separated values
+#   - Comma: "16,20,28"
+#   - Space: "16 20 28"
+#   - seq:   "$(seq 0 1 10)"  ← Use command substitution!
+# Format for duration: integer seconds (e.g., 60)
+#
+# Example configurations:
+#   group_specific_duration["slmode2_basic_tests"]=30
+#   group_specific_mcs["slmode2_basic_tests[0:1]"]="16,28"
+#   group_specific_mcs["slmode2_iperf3_tests"]="$(seq 16 2 28)"
+#   test_specific_duration["rfsim_pc5_ping_test_on_local_host"]=45
+
+#------------------------------------------------------------
+# Group-Level Configuration (applies to all tests in group)
+#------------------------------------------------------------
+declare -A group_specific_mcs
+declare -A group_specific_duration
+
+# Example: BLER tests need longer duration and specific MCS
+# group_specific_duration["bler_tests"]=120
+# group_specific_mcs["bler_tests"]="16,20,24,28"
+
+# Example: Quick smoke tests - short duration, limited MCS
+# group_specific_duration["slmode2_basic_tests"]=30
+# group_specific_mcs["slmode2_basic_tests"]="16,28"
+
+# Example: iperf3 tests - longer duration for bandwidth sweep
+# group_specific_duration["slmode1_iperf3_tests"]=40
+# group_specific_mcs["slmode1_iperf3_tests"]="9 10" or "9,10" or "$(seq 9 1 10)"
+
+#------------------------------------------------------------
+# Test-Level Configuration (overrides group and profile)
+#------------------------------------------------------------
+declare -A test_specific_mcs
+declare -A test_specific_duration
+
+# Example: Override specific test within a group
+# test_specific_duration["rfsim_slmode1_bler_test_on_local_host"]=150
+# test_specific_mcs["rfsim_pc5_ping_test_on_local_host"]="28"
+
+# Example: USRP tests may need different settings than RFSIM counterparts
+# test_specific_duration["usrp_B210_pc5_ping_test_on_two_hosts"]=45
+#
+#------------------------------------------------------------
+# Test groups are automatically discovered by build_test_to_group_map()
+#------------------------------------------------------------
+# based on naming convention:
+#   - Arrays ending with "_basic_tests", "_iperf3_tests", "_csi_psfch_tests"
+#   - Excludes profile arrays: pilot_tests, regress_tests, stress_tests
+#
+# No manual configuration needed - just define your test arrays!
+#
+# Optional: Define test_group_names array to manually specify groups
+# test_group_names=(
+#     "uu_basic_tests"
+#     "slmode2_basic_tests"
+#     ...
+# )
+# test_to_group_map maps each test to its group for configuration lookup
+# The mapping is built by build_test_to_group_map() in run_sl_test.sh
+#
+declare -A test_to_group_map
+#
+#############################################################
+# Test Cases
+#############################################################
 
 uu_basic_tests=(
     rfsim_uu_ping_test_on_local_host
@@ -127,6 +202,7 @@ pilot_tests=(
     #slmode2_iperf3_tests[2]
 )
 
+verbose_config=0  # 0=quiet, 1=show config details before each test
 # Set to 1 if your system needs additional time for:
 #   - TUN interface initialization
 #   - Sidelink synchronization stabilization
@@ -153,7 +229,13 @@ if [[ $test_profile == "pilot" ]]; then
     num_repeat=1
     mcs_array=(9)
     duration=30
-    [[ "$use_extended_delays" == "1" ]] && duration=90
+    iperf3_bw_array=(6M)
+    group_specific_mcs["slmode1_iperf3_tests"]="9"
+    group_specific_duration["slmode1_iperf3_tests"]=40
+    if [[ "$use_extended_delays" == "1" ]]; then
+        duration=90
+        group_specific_duration["slmode1_iperf3_tests"]=90
+    fi
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     # Ignore snr_array unless you have any specific snr values to test
@@ -172,7 +254,12 @@ elif [[ $test_profile == "regress" ]]; then
     num_repeat=1
     mcs_array=(10) # ($(seq 0 1 10)) # [start, step, end]
     duration=30
-    [[ "$use_extended_delays" == "1" ]] && duration=90
+    group_specific_mcs["slmode1_iperf3_tests"]="9"
+    group_specific_duration["slmode1_iperf3_tests"]=40
+    if [[ "$use_extended_delays" == "1" ]]; then
+        duration=90
+        group_specific_duration["slmode1_iperf3_tests"]=90
+    fi
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     # Ignore snr_array unless you have any specific snr values to test
@@ -188,7 +275,12 @@ elif [[ $test_profile == "stress" ]]; then
     num_repeat=3
     mcs_array=(9 13)
     duration=300
-    [[ "$use_extended_delays" == "1" ]] && duration=360
+    group_specific_mcs["slmode1_iperf3_tests"]="9"
+    group_specific_duration["slmode1_iperf3_tests"]=300
+    if [[ "$use_extended_delays" == "1" ]]; then
+        duration=360
+        group_specific_duration["slmode1_iperf3_tests"]=360
+    fi
     max_ldpc_iterations=30
     # RFSIM parameters (SNR values)
     # Ignore snr_array unless you have any specific snr values to test

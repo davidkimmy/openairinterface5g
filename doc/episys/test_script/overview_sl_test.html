@@ -235,6 +235,44 @@ RELAY_UE_USRP_SN_FOR_SL=340EA3B</code></pre>
   </div>
 </section>
 
+<!-- Slide 5.5: Four-Tier Configuration System -->
+<section>
+  <h2>Four-Tier Configuration System</h2>
+  <p style="font-size: 0.8em; margin-bottom: 1em;">Override MCS and duration at four levels: <span class="highlight">test-specific &gt; slice-specific &gt; group-specific &gt; profile-default</span></p>
+
+  <div class="two-col">
+    <div>
+      <h3>Configuration Examples</h3>
+      <pre><code># In run_sl_test_config.sh
+
+# Group-level (all tests in group)
+group_specific_duration["slmode2_basic_tests"]=30
+group_specific_mcs["slmode2_basic_tests"]="16,28"
+
+# Slice-level (specific indices)
+# [0:2] range, [0,2] pick-list, [2] single
+group_specific_duration["slmode2_basic_tests[2]"]=60
+group_specific_mcs["slmode2_basic_tests[2]"]="12,16,20,24,28"
+
+# Test-specific (individual test)
+test_specific_duration["usrp_B210_pc5_ping_test"]=90
+test_specific_mcs["usrp_B210_pc5_ping_test"]="20,24,28"</code></pre>
+    </div>
+    <div>
+      <h3>Key Features</h3>
+      <ul style="font-size: 0.8em;">
+        <li><strong>MCS formats:</strong> Comma-separated <code>"16,28"</code>, space-separated <code>"16 28"</code>, or command substitution <code>"$(seq 0 1 10)"</code></li>
+        <li><strong>Auto-discovery:</strong> Test groups ending with <code>_basic_tests</code>, <code>_iperf3_tests</code>, or <code>_csi_psfch_tests</code> are automatically recognized</li>
+        <li><strong>Excluded:</strong> <code>pilot_tests</code>, <code>regress_tests</code>, <code>stress_tests</code> (profile arrays)</li>
+      </ul>
+      <div class="box-green box" style="margin-top: 15px; font-size: 0.75em;">
+        <strong>Priority order:</strong><br>
+        1️⃣ Test-specific &rarr; 2️⃣ Slice-specific &rarr; 3️⃣ Group-specific &rarr; 4️⃣ Profile-default
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- Slide 6: Available Test Cases -->
 <section>
   <h2>Available Test Cases</h2>

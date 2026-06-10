@@ -437,6 +437,265 @@ END_COMMENT
 #############################################################
 ### Library functions ###
 #############################################################
+
+#############################################################
+# Four-Tier Configuration Helper Functions
+#############################################################
+
+build_test_to_group_map() {
+    # Build mapping from individual tests to their group names
+    # This function is called after config is loaded to populate test_to_group_map
+    #
+    # Auto-discovery mode (default):
+    #   - Finds all arrays ending with: _basic_tests, _iperf3_tests, _csi_psfch_tests
+    #   - Excludes profile arrays: pilot_tests, regress_tests, stress_tests
+    #
+    # Manual mode (optional):
+    #   - Uses test_group_names array from config if defined
+
+    local group_names=()
+
+    if [[ -n "${test_group_names[*]}" ]]; then
+        # Manual mode: use explicitly defined test_group_names
+        group_names=("${test_group_names[@]}")
+    else
+        # Auto-discovery mode: find test group arrays by naming convention
+        # Pattern: *_basic_tests, *_iperf3_tests, *_csi_psfch_tests
+        # Exclude: pilot_tests, regress_tests, stress_tests (profile arrays)
+
+        local all_arrays=$(declare -p | grep -o 'declare -a [a-zA-Z0-9_]*' | awk '{print $3}')
+
+        for array_name in $all_arrays; do
+            # Check if it matches test group pattern
+            if [[ "$array_name" =~ _(basic_tests|iperf3_tests|csi_psfch_tests)$ ]]; then
+                # Exclude profile arrays
+                if [[ "$array_name" != "pilot_tests" &&
+                      "$array_name" != "regress_tests" &&
+                      "$array_name" != "stress_tests" ]]; then
+                    group_names+=("$array_name")
+                fi
+            fi
+        done
+    fi
+
+    # Build the mapping
+    for group_name in "${group_names[@]}"; do
+        # Check if array exists
+        if declare -p "$group_name" &>/dev/null 2>&1; then
+            local -n group_array="$group_name"
+            for test in "${group_array[@]}"; do
+                test_to_group_map["$test"]="$group_name"
+            done
+        fi
+    done
+}
+
+get_test_group() {
+    # Get the group name for a given test
+    # Args: test_name
+    # Returns: group_name via stdout (empty if not in any group)
+
+    local test_name=$1
+    echo "${test_to_group_map[$test_name]}"
+}
+
+slice_matches_index() {
+    # Check if an index matches a slice specification
+    # Args: slice (e.g., "0:2" or "1,3,5"), index
+    # Returns: 0 if matches, 1 if not
+
+    local slice=$1
+    local idx=$2
+
+    if [[ "$slice" == *:* ]]; then
+        # Range slice: "0:2" means indices 0,1,2
+        local start=${slice%%:*}
+        local end=${slice##*:}
+        [[ $idx -ge $start && $idx -le $end ]] && return 0
+    else
+        # Comma-separated indices: "0,2,4"
+        for i in ${slice//,/ }; do
+            [[ $i -eq $idx ]] && return 0
+        done
+    fi
+
+    return 1
+}
+
+get_test_slice_key() {
+    # Check if test belongs to a slice-specific config
+    # Args: test_name
+    # Returns: slice_key if found (e.g., "slmode2_basic_tests[0:1]"), empty otherwise
+
+    local test_name=$1
+    local group_name=$(get_test_group "$test_name")
+
+    if [[ -z "$group_name" ]]; then
+        return
+    fi
+
+    # Get the index of this test within its group
+    local -n group_array="$group_name"
+    local test_idx=-1
+    for i in "${!group_array[@]}"; do
+        if [[ "${group_array[$i]}" == "$test_name" ]]; then
+            test_idx=$i
+            break
+        fi
+    done
+
+    if [[ $test_idx -eq -1 ]]; then
+        return
+    fi
+
+    # Check all slice-specific configs for this group (check both MCS and duration maps)
+    local all_keys=()
+    for key in "${!group_specific_duration[@]}"; do
+        all_keys+=("$key")
+    done
+    for key in "${!group_specific_mcs[@]}"; do
+        # Only add if not already in list
+        local found=0
+        for existing in "${all_keys[@]}"; do
+            [[ "$existing" == "$key" ]] && found=1 && break
+        done
+        [[ $found -eq 0 ]] && all_keys+=("$key")
+    done
+
+    # Check if any key matches this test's group and index
+    for key in "${all_keys[@]}"; do
+        # Pattern: group_name[slice]
+        if [[ "$key" =~ ^${group_name}\[(.+)\]$ ]]; then
+            local slice="${BASH_REMATCH[1]}"
+
+            # Check if test_idx matches this slice
+            if slice_matches_index "$slice" "$test_idx"; then
+                echo "$key"
+                return
+            fi
+        fi
+    done
+}
+
+get_test_mcs_array() {
+    # Get MCS array for specific test (four-tier resolution)
+    # Priority: Test-specific > Slice-specific > Group-specific > Profile-default
+    # Args: test_name
+    # Returns: space-separated MCS values via stdout
+    #
+    # Supports two input formats:
+    #   - Comma-separated: "16,20,28"
+    #   - Space-separated: "16 20 28" or "$(seq 0 1 10)"
+
+    local test_name=$1
+    local group_name=$(get_test_group "$test_name")
+    local slice_key=$(get_test_slice_key "$test_name")
+    local mcs_string=""
+
+    # Priority 1: Test-specific override
+    if [[ -n "${test_specific_mcs[$test_name]}" ]]; then
+        mcs_string="${test_specific_mcs[$test_name]}"
+    # Priority 2: Slice-specific override
+    elif [[ -n "$slice_key" && -n "${group_specific_mcs[$slice_key]}" ]]; then
+        mcs_string="${group_specific_mcs[$slice_key]}"
+    # Priority 3: Group-specific override
+    elif [[ -n "$group_name" && -n "${group_specific_mcs[$group_name]}" ]]; then
+        mcs_string="${group_specific_mcs[$group_name]}"
+    else
+        # Priority 4: Profile default
+        echo "${mcs_array[@]}"
+        return
+    fi
+
+    # Convert to space-separated format (handle both comma and space-separated input)
+    if [[ "$mcs_string" == *","* ]]; then
+        # Comma-separated: convert commas to spaces
+        echo "${mcs_string//,/ }"
+    else
+        # Already space-separated: use as-is
+        echo "$mcs_string"
+    fi
+}
+
+get_test_duration() {
+    # Get duration for specific test (four-tier resolution)
+    # Priority: Test-specific > Slice-specific > Group-specific > Profile-default
+    # Args: test_name
+    # Returns: duration value via stdout
+
+    local test_name=$1
+    local group_name=$(get_test_group "$test_name")
+    local slice_key=$(get_test_slice_key "$test_name")
+
+    # Priority 1: Test-specific override
+    if [[ -n "${test_specific_duration[$test_name]}" ]]; then
+        echo "${test_specific_duration[$test_name]}"
+        return
+    fi
+
+    # Priority 2: Slice-specific override
+    if [[ -n "$slice_key" && -n "${group_specific_duration[$slice_key]}" ]]; then
+        echo "${group_specific_duration[$slice_key]}"
+        return
+    fi
+
+    # Priority 3: Group-specific override
+    if [[ -n "$group_name" && -n "${group_specific_duration[$group_name]}" ]]; then
+        echo "${group_specific_duration[$group_name]}"
+        return
+    fi
+
+    # Priority 4: Profile default
+    echo "$duration"
+}
+
+print_test_config_info() {
+    # Debug function to show resolved configuration
+    # Args: test_name
+
+    local test_name=$1
+    local group_name=$(get_test_group "$test_name")
+    local slice_key=$(get_test_slice_key "$test_name")
+    local test_mcs=($(get_test_mcs_array "$test_name"))
+    local test_duration=$(get_test_duration "$test_name")
+
+    echo "=========================================="
+    echo "Test Configuration: $test_name"
+    echo "=========================================="
+    echo "  Group: ${group_name:-<none>}"
+    echo "  Slice: ${slice_key:-<none>}"
+    echo "  MCS: [${test_mcs[@]}]"
+    echo "  Duration: ${test_duration}s"
+
+    # Show where MCS values came from
+    if [[ -n "${test_specific_mcs[$test_name]}" ]]; then
+        echo "  MCS source: Test-specific"
+    elif [[ -n "$slice_key" && -n "${group_specific_mcs[$slice_key]}" ]]; then
+        echo "  MCS source: Slice-specific ($slice_key)"
+    elif [[ -n "$group_name" && -n "${group_specific_mcs[$group_name]}" ]]; then
+        echo "  MCS source: Group-specific ($group_name)"
+    else
+        echo "  MCS source: Profile-default"
+    fi
+
+    # Show where duration value came from
+    if [[ -n "${test_specific_duration[$test_name]}" ]]; then
+        echo "  Duration source: Test-specific"
+    elif [[ -n "$slice_key" && -n "${group_specific_duration[$slice_key]}" ]]; then
+        echo "  Duration source: Slice-specific ($slice_key)"
+    elif [[ -n "$group_name" && -n "${group_specific_duration[$group_name]}" ]]; then
+        echo "  Duration source: Group-specific ($group_name)"
+    else
+        echo "  Duration source: Profile-default"
+    fi
+    echo "=========================================="
+}
+
+build_test_to_group_map
+
+#############################################################
+# Test Library Functions
+#############################################################
 wait_for_tun_interface() {
     local iface=$1
     local host=$2
@@ -2669,6 +2928,18 @@ main() {
         # Format: test_name or test_name:csi_acq:psfch_period
         IFS=':' read -r test_name csi_param psfch_param <<< "$test_entry"
 
+        # Get test-specific configuration (four-tier resolution)
+        local test_mcs_array=($(get_test_mcs_array "$test_name"))
+        local test_duration=$(get_test_duration "$test_name")
+
+        # Print configuration info if verbose mode is enabled
+        if [[ "$verbose_config" == "1" ]]; then
+            print_test_config_info "$test_name"
+        else
+            # Brief config summary
+            echo "Running $test_name with MCS=[${test_mcs_array[@]}], duration=${test_duration}s"
+        fi
+
         # Determine test type and parameter array based on test name
         # Check for BLER first (before rfsim_* check, since BLER names contain "rfsim")
         if [[ $test_name == *"bler"* ]]; then
@@ -2701,9 +2972,9 @@ main() {
             # BLER loop order: iteration -> noise_power -> MCS
             for k in $(seq $iteration_start_val 1 $iteration_end_val); do
                 for param in "${param_array[@]}"; do
-                    for mcs in ${mcs_array[@]}; do
+                    for mcs in ${test_mcs_array[@]}; do  # Use test-specific MCS
                         # Call BLER test with noise_power as 4th parameter
-                        $test_name $duration $mcs $k $param
+                        $test_name $test_duration $mcs $k $param  # Use test-specific duration
                         sleep 3
                     done
                 done
@@ -2712,36 +2983,36 @@ main() {
             # Standard tests loop order: param -> iteration -> MCS
             for param in "${param_array[@]}"; do
                 for k in $(seq $iteration_start_val 1 $iteration_end_val); do
-                    for mcs in ${mcs_array[@]}; do
+                    for mcs in ${test_mcs_array[@]}; do  # Use test-specific MCS
                         # CSI/PSFCH tests need special handling
                         if [[ $test_name == *"csi_acquisition_psfch"* ]]; then
                             if [[ -n "$csi_param" && -n "$psfch_param" ]]; then
                                 # Run specific CSI/PSFCH combination
-                                $test_name $csi_param $psfch_param $duration $mcs $k
+                                $test_name $csi_param $psfch_param $test_duration $mcs $k
                             elif [[ -n "$csi_param" && -z "$psfch_param" ]]; then
                                 # Run specific CSI with all PSFCH values (e.g., test:1:)
                                 for psfch in 0 1 2 3; do
-                                    $test_name $csi_param $psfch $duration $mcs $k
+                                    $test_name $csi_param $psfch $test_duration $mcs $k
                                 done
                             elif [[ -z "$csi_param" && -n "$psfch_param" ]]; then
                                 # Run specific PSFCH with all CSI values (e.g., test::1)
                                 for csi in 0 1; do
-                                    $test_name $csi $psfch_param $duration $mcs $k
+                                    $test_name $csi $psfch_param $test_duration $mcs $k
                                 done
                             else
                                 # Run all 8 combinations
-                                $test_name 0 0 $duration $mcs $k
-                                $test_name 0 1 $duration $mcs $k
-                                $test_name 0 2 $duration $mcs $k
-                                $test_name 0 3 $duration $mcs $k
-                                $test_name 1 0 $duration $mcs $k
-                                $test_name 1 1 $duration $mcs $k
-                                $test_name 1 2 $duration $mcs $k
-                                $test_name 1 3 $duration $mcs $k
+                                $test_name 0 0 $test_duration $mcs $k
+                                $test_name 0 1 $test_duration $mcs $k
+                                $test_name 0 2 $test_duration $mcs $k
+                                $test_name 0 3 $test_duration $mcs $k
+                                $test_name 1 0 $test_duration $mcs $k
+                                $test_name 1 1 $test_duration $mcs $k
+                                $test_name 1 2 $test_duration $mcs $k
+                                $test_name 1 3 $test_duration $mcs $k
                             fi
                         else
                             # All other tests: just call with standard parameters
-                            $test_name $duration $mcs $k
+                            $test_name $test_duration $mcs $k  # Use test-specific duration
                         fi
                         sleep 3 # delay in second between tests.
                     done
