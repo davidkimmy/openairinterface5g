@@ -402,7 +402,9 @@ or
 Option 2: UPF (Outside case of UPF docker; in case of iperf3 installed in docker)
 ```
 docker exec -it oai-upf bash -c 'iperf3 -s -B <UPF IP address> -p 5001 -i 1' | tee iperf_output.log
-
+```
+For example,
+```
 docker exec -it oai-upf bash -c 'iperf3 -s -B 192.168.70.134 -p 5001 -i 1' | tee iperf_output.log
 ```
 
@@ -429,7 +431,6 @@ Use the following format to run iperf3 server
 iperf3 -s --bind-dev <TUN interface name> -p 5001 -i 1
 ```
 For example,
-
 ```
 iperf3 -s --bind-dev oaitun_ue2 -p 5001 -i 1
 ```

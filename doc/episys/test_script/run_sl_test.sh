@@ -1759,6 +1759,10 @@ slmode1_srap_ping_test() {
     local src_if="oaitun_ue2"
     local dest_ip="8.8.8.8"
 
+    pre1='docker ps | grep oai-upf | wc -l' # expecting: 1
+    act1='echo "core network is required !!!"; cd ~/oai-cn5g; systemctl start docker.service; docker compose up -d; sleep 2'
+    [[ $(eval "$pre1") -eq 1 ]] && echo "Requirements are satisfied !!!" || eval "$act1"
+
     # Sync configuration files to remote hosts if needed
     if [[ $syncref_host_name != "local" ]]; then
         sync_config_files $syncref_host_name
