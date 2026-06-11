@@ -154,6 +154,40 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
+### 5.4 **Troubleshooting Build and Runtime Issues:**
+
+#### 5.4.1 Missing libparams_libconfig.so
+
+If you encounter the following error when launching the softmodem:
+```
+[CONFIG] Error calling dlopen(libparams_libconfig.so): libparams_libconfig.so: cannot open shared object file: No such file or directory
+```
+
+This error has two possible causes:
+
+**Cause 1: Library not built**
+
+Build the library manually:
+```
+cd ~/openairinterface5g/cmake_targets/ran_build/build
+make -j6 params_libconfig
+```
+
+Verify the library exists:
+```
+ls -la ~/openairinterface5g/cmake_targets/ran_build/build/libparams_libconfig.so
+```
+
+**Cause 2: LD_LIBRARY_PATH not set correctly (most common in remote SSH execution)**
+
+Even if the library exists, the softmodem may not find it. Use:
+
+```bash
+LD_LIBRARY_PATH=/path/to/build sudo -E /path/to/nr-uesoftmodem [options]
+```
+
+**🔔Note:** This library is required for configuration file parsing. Without proper LD_LIBRARY_PATH, the softmodem will crash on startup with a segmentation fault in `initNamedTpool`.
+
 ## 6. EpiSci's 5G Sidelink Mode 1
 
 ### 6.1 **5G SL Relay**
