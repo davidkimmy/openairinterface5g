@@ -112,10 +112,12 @@ $ git checkout sl-5g-nr
 $ source oaienv
 $ cd cmake_targets
 $ export BUILD_UHD_FROM_SOURCE=True
-$ export UHD_VERSION=4.7.0.0
+$ export UHD_VERSION=4.8.0.0
 $ ./build_oai -C -I -w USRP --install-optional-packages   # Only necessary on fresh installs
 $ ./build_oai --nrUE --gNB -w USRP -w SIMU
 ```
+
+**🔔Note:** Building UHD from source is required because the ettusresearch PPA installs multiple UHD versions (4.6.0, 4.8.0, 4.10.0), but the default symlink `/usr/lib/x86_64-linux-gnu/libuhd.so` points to UHD 4.10.0, which requires C++17 and is incompatible with OAI's older C++ standard. By setting `BUILD_UHD_FROM_SOURCE=True` and `UHD_VERSION=4.8.0.0`, the build script compiles UHD 4.8.0.0 from source, ensuring compatibility. This branch also includes a cleanup fix in `build_helper` that uses `$SUDO rm -rf /tmp/uhd` to properly remove temporary files created during the UHD build.
 
 #### 5.2.1 **For Active Development and Faster Build Times:**
 
