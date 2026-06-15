@@ -82,7 +82,7 @@ The `duration` parameter (set per profile in `run_sl_test_config.sh`) is a **sha
 For two-host or three-host tests:
 - **Local host**: Runs syncref UE (RF simulator server in Mode 2)
 - **Remote host(s)**: Run nearby/relay UEs (RF simulator clients)
-- **Communication**: SSH with passwordless keys, gnome-terminal for real-time logs
+- **Communication**: SSH with passwordless keys and gnome-terminal for real-time logs
 
 ## Prerequisites
 
@@ -109,7 +109,7 @@ cp -pr ~/openairinterface5g/doc/episys/test_script ~/ci_script
 - You're testing multiple OAI versions and want consistent test behavior
 - You need to modify scripts without affecting the repository version
 
-**Note:** Using a symbolic link is recommended for active development as it keeps the scripts in sync with the repository. Use the alternative approach (using copy) if you need OAI version-independent test scripts.
+**Note:** Using a symbolic link is recommended for active development as it keeps the scripts in sync with the repository. Use the alternative approach (copying the files) if you need OAI version-independent test scripts.
 
 ### Required Software
 - OpenAirInterface 5G (`~/openairinterface5g/`)
@@ -144,7 +144,7 @@ cp -pr ~/openairinterface5g/doc/episys/test_script ~/ci_script
   └── run_sl_test_config_host*.sh         # Auto-generated per-host configs (parallel mode)
 ```
 
-**Note:** Test logs default to `~/openairinterface5g/test_<timestamp>/` but can be overridden with `-d` flag in command line argument or `base_log_dir` config in `run_sl_test_config.sh` file.
+**Note:** Test logs default to `~/openairinterface5g/test_<timestamp>/` but can be overridden with the `-d` flag in the command line argument or `base_log_dir` config in `run_sl_test_config.sh` file.
 
 ## Quick Start
 
@@ -211,7 +211,7 @@ ssh-copy-id gNB
 ssh-copy-id local
 
 # If remote_ue and nr_ue are different hosts, copy public key to nr_ue host.
-ssh-copy-id gNB
+ssh-copy-id nr_ue
 
 # Test connection (should not prompt for password)
 ssh remote_ue hostname
@@ -234,7 +234,7 @@ pilot_tests=(
 ```
 
 Additional settings in `run_sl_test_config.sh`:
-Recommendation: updating of USRP serial numbers per your setting in the following in `run_sl_test_config.sh` file.
+Recommendation: update the USRP serial numbers according to your settings in the `run_sl_test_config.sh` file.
 
 ```bash
 # Base directory for log output (default: script directory)
@@ -599,7 +599,7 @@ The BLER (Block Error Rate) testing framework provides automated performance cha
 - Plot interpretation and data analysis
 - Troubleshooting and configuration options
 
-For detailed instructions, see [README_BLER_test.md](README_BLER_test.md).
+For detailed instructions, see [README_BLER_test.md](bler_scripts/README_BLER_test.md).
 
 ## Test Results
 
@@ -637,7 +637,7 @@ All logs saved to `<base_dir>/test_<timestamp>/`, where base_dir is determined b
 - `iperf3_server_<timestamp>.txt` - iperf3 server log
 - `iperf3_client_<bw>_<timestamp>.txt` - iperf3 client log per bandwidth step
 
-The list of softmodem log files is defined in `softmodem_log_files` in `run_sl_test_config.sh`.
+The list of softmodem log files is defined in the `softmodem_log_files` variable in `run_sl_test_config.sh`.
 
 **Remote Log Capture:**
 For multi-host tests, remote UE output is captured locally via `tee` in `run_cmd`. No SCP is needed — logs are streamed through SSH and saved to the local `$HOME` directory, then moved to the test log folder after each test completes.

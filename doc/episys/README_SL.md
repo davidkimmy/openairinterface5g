@@ -31,10 +31,10 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp; ◉ **CSI Reporting:**<br>&emsp;&emsp;&emsp;&emsp; Support for basic Channel State Information (CSI) reporting mechanisms for better link adaptation.<br>
 &emsp;&emsp; ◉ **Basic Scheduling:**<br>&emsp;&emsp;&emsp;&emsp; A basic Sidelink MAC scheduler has been implemented to manage time resource allocations in Mode 2, and it has been enhanced to support Mode 1 transmissions using Configured Grant Type 1 configurations.<br>
 &emsp;&emsp; ◉ **Resource Pool Scheme:**<br>&emsp;&emsp;&emsp;&emsp; Static and pre-configured resource pools are supported to facilitate Mode 2 communication, while Configured Grant Type 1 is supported for resource pool configurations in SL Mode 1.<br>
-&emsp;&emsp; ◉ **Data Feedback:**<br>&emsp;&emsp;&emsp;&emsp; Provided a data feedback for 5G SL communication to share the reception status with the transmitter in 5G SL both modes.<br>
+&emsp;&emsp; ◉ **Data Feedback:**<br>&emsp;&emsp;&emsp;&emsp; Provides data feedback for 5G SL communication to share the reception status with the transmitter in both 5G SL modes.<br>
 &emsp;&emsp; ◉ **Hybrid Automatic Repeat reQuest:**<br>&emsp;&emsp;&emsp;&emsp; Enhances reliability and throughput by combining error detection with retransmission and error correction.<br>
 &emsp;&emsp; ◉ **UE-to-Network (U2N) Relay**<br>&emsp;&emsp;&emsp;&emsp; U2N Relay capabilities are supported to facilitate the communication between Remote UE and gNB via Relay UE.<br>
-&emsp;&emsp; ◉ **UE Radio Resource Allocation via Configured Grant (CG) type 1**<br>&emsp;&emsp;&emsp;&emsp; Relay UE and Remote UE radio resouces are allocated via RRC message from gNB.<br>
+&emsp;&emsp; ◉ **UE Radio Resource Allocation via Configured Grant (CG) type 1**<br>&emsp;&emsp;&emsp;&emsp; Relay UE and Remote UE radio resources are allocated via RRC message from gNB.<br>
 
 ## 3. Update of 5G SL Features
 
@@ -54,7 +54,7 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp; ◉ Basic Configured Grant Type 1 based MAC scheduling for mode 1 operation<br>
 &emsp;&emsp; ◉ Resource pool configuration (pre-configured/static)<br>
 &emsp;&emsp; ◉ Dedicated Sidelink Resource pool configuration<br>
-&emsp;&emsp; ◉ Dynamic MCS support (currently up to MCS 10 in B210 USRP)<br>
+&emsp;&emsp; ◉ Dynamic MCS support (currently up to MCS 9 in B210 USRP)<br>
 &emsp;&emsp; ◉ HARQ retransmission handling (basic)<br>
 &emsp;&emsp; ◉ SL pre-configuration support (static configuration via .conf files)<br>
 &emsp;&emsp; ◉ SL IP Traffic support (updates to PDCP, RLC, and SDAP layers)<br>
@@ -89,10 +89,10 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp; The current implementation has been tested with the following configuration:
 
 &emsp;&emsp;✅ Working Setup:<br>
-&emsp;&emsp;&emsp;&emsp; ◉ Two UE devices communicating over SL mode 2 using Ettus B210 SDRs basic SL transmission and reception are confirmed functional in this setup<br>
+&emsp;&emsp;&emsp;&emsp; ◉ Two UE devices communicating over SL mode 2 using Ettus B210 SDRs; basic SL transmission and reception are confirmed functional in this setup<br>
 &emsp;&emsp;&emsp;&emsp; ◉ Three node Relay scenario (Remote UE, Relay UE and gNB) is working on RFSim and B210s setup; At present, the implementation supports MCS indices up to 9 (MCS 0–9) only.<br>
 &emsp;&emsp;❌ Unsupported or Non-Functional Setup:<br>
-&emsp;&emsp;&emsp;&emsp; ◉ Ettus N310 devices: Current implementation does not work. Debugging in work.<br>
+&emsp;&emsp;&emsp;&emsp; ◉ Ettus N310 devices: Current implementation does not work.<br>
 
 ## 5. Build 5G NR Sidelink
 
@@ -196,7 +196,7 @@ LD_LIBRARY_PATH=/path/to/build sudo -E /path/to/nr-uesoftmodem [options]
 &emsp; To enable relay scenario support in our system, we have implemented the Sidelink Relay Adaptation Protocol (SRAP). The SRAP supports two types of relaying modes:<br>
 &emsp;&emsp; ◉ UE-to-Network (U2N)<br>
 &emsp;&emsp; ◉ UE-to-UE (U2U)<br>
-Currently, only the U2N mode is implemented, which enables a Relay UE to forward traffic from a Remote UE to the gNB. The code of SRAP implementation is available under `openair2/LAYER2/nr_srap`, which provides following support:<br>
+Currently, only the U2N mode is implemented, which enables a Relay UE to forward traffic from a Remote UE to the gNB. The SRAP implementation code is available under `openair2/LAYER2/nr_srap`, which provides the following support:<br>
 &emsp;&emsp; ◉ structures and functions to define the SRAP entity.<br>
 &emsp;&emsp; ◉ addition and removal of SRAP headers.<br>
 &emsp;&emsp; ◉ processing of the received pdu.<br>
@@ -207,12 +207,12 @@ Currently, only the U2N mode is implemented, which enables a Relay UE to forward
 ### 6.2 **5G SL Radio Resource Allocation**
 &emsp; To allocate Relay UE Radio Resources and Remote UE Radio Resources from the gNB, we implemented SL-SRB1 control message handling along with CG type 1 resource allocation. The gNB delivers the allocated resource configuration to the UE through an RRC Reconfiguration control message, enabling the UE to apply the configuration for sidelink communication.
 
-For the implementation of CG type 1 resource allocation, we applied the following update::<br>
+For the implementation of CG type 1 resource allocation, we applied the following update:<br>
 
 &emsp;&emsp; ◉ creation of RLC AM entity for SL-SRB1.<br>
 &emsp;&emsp; ◉ RRCReconfiguration message from gNB to UE.<br>
 &emsp;&emsp; ◉ UEAssistanceInformation message from UE to gNB.<br>
-&emsp;&emsp; ◉ parsing of configuration message and adoptation.<br>
+&emsp;&emsp; ◉ parsing of configuration message and adaptation.<br>
 &emsp;&emsp; ◉ RRC message exchange through SL-SRB1 entity over PC5 interface.<br>
 
 Based on the received Configured Grant Type 1 configurations, the SL MAC scheduler determines the transmission opportunities and allocates the corresponding sidelink resources for UE data transmission.
@@ -238,7 +238,7 @@ In the same way, if all machines 1, 2, 3 are different hosts, replace `<MACHINE 
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-softmodem -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf \
---gNBs.[0].min_rxtxtime 6 --sa --rfsim \
+--gNBs.[0].min_rxtxtime 6 --sa --sl-mode 1 --rfsim \
 --rfsimulator.serveraddr server --rfsimulator.serverport 4048 \
  --relay-type 1 --remote-ue-id 1  --ip-demo 1 2>&1 | tee ~/result_gNB.log
 ```
@@ -284,11 +284,11 @@ uhd_find_devices # This will find all USRPs
 uhd_usrp_probe # This will probe the USRP and will ensure the status is ready
 ```
 
-The USRPs can be connected through either cable or over-the-air medium. In a case of cable connectivity, an attenuator can be used in lab environment to simulate real-world signal loss conditions.
+The USRPs can be connected through either cable or over-the-air medium. In the case of cable connectivity, an attenuator can be used in a lab environment to simulate real-world signal loss conditions.
 
 #### 6.5.2 **Setting of attenuation:**
 
-In order to set the attenuation for each channel you have to run this command on the host where attenuator was connected. In this test mode, we assumed the attenuator was connected to gNB.
+In order to set the attenuation for each channel you have to run this command on the host where the attenuator is connected. In this test mode, we assume the attenuator is connected to the gNB.
 ```
 curl http://169.254.10.10/:CHAN:<channel number>:SETATT:<attenuation in dB>
 ```
@@ -311,7 +311,7 @@ Note, the serial field may need to be changed to match the USRPs:
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-softmodem -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf \
---gNBs.[0].min_rxtxtime 6 --sa -E \
+--gNBs.[0].min_rxtxtime 6 --sa  --sl-mode 1 -E \
 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --relay-type 1 --remote-ue-id 1  --ip-demo 1 2>&1 | tee ~/result_gNB.log
 ```
@@ -327,7 +327,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 --usrp-args-sl 'serial=<Relay UE B210_Serial_Number in PC5 interface>,type=b200' \
 --relay-type 1 --is-relay-ue 1 2>&1 | tee ~/result_nrUE_syncref.log
 ```
-As an example, we can set it as following with updated serial fileds:
+As an example, we can set it as following with updated serial fields:
 
 ```
 cd ~/openairinterface5g/cmake_targets/ran_build/build
@@ -358,7 +358,7 @@ ping -I oaitun_ue2 8.8.8.8
 
 ### 6.6 **Launching Sidelink Mode 1 Test via Script:**
 
-&emsp; To launch test via script, locate to the test script as following:
+&emsp; To launch the test via script, navigate to the test script directory as follows:
 ```
 cd ~/openairinterface5g/doc/episys/test_script
 ```
@@ -367,13 +367,13 @@ cd ~/openairinterface5g/doc/episys/test_script
 ```
 ./run_sl_test.sh
 ```
-After test was done, the summury will be displayed. For the detail, navigate to the `latest` folder and check the files created in the `latest` folder.
+After test was done, the summary will be displayed. For the detail, navigate to the `latest` folder and check the files created in the `latest` folder.
 
 ### 6.7 **Performance Test using Iperf3:**
 
 iperf3 is a command-line tool used to measure the maximum achievable bandwidth on IP networks.
 If iperf3 is not available in your system, install it via `sudo apt update && sudo apt install iperf3`.
-If `iperf3 --version` shows older version that 3.16, you may install iperf 3.16 or newer version using the following.
+If `iperf3 --version` shows an older version than 3.16, you may install iperf 3.16 or newer version using the following.
 ```
 git clone https://github.com/esnet/iperf.git && \
 cd iperf && git checkout 3.16 && ./bootstrap.sh && ./configure && make && make install
@@ -389,20 +389,22 @@ Option 1: UPF (Inside case of UPF docker)
 ```
 docker exec -it oai-upf bash
 ```
-Use the following format to run iperf3 server
+
+Use the following command to run iperf3 server:
+```
 iperf3 -s -B <UPF IP address> -p 5001 -i 1
 ```
+
 For example,
 ```
 iperf3 -s -B 192.168.70.134 -p 5001 -i 1
 ```
 
-or
-
 Option 2: UPF (Outside case of UPF docker; in case of iperf3 installed in docker)
 ```
 docker exec -it oai-upf bash -c 'iperf3 -s -B <UPF IP address> -p 5001 -i 1' | tee iperf_output.log
 ```
+
 For example,
 ```
 docker exec -it oai-upf bash -c 'iperf3 -s -B 192.168.70.134 -p 5001 -i 1' | tee iperf_output.log
@@ -410,11 +412,11 @@ docker exec -it oai-upf bash -c 'iperf3 -s -B 192.168.70.134 -p 5001 -i 1' | tee
 
 ##### 6.7.1.2  Launching iperf3 client
 
-Remote UE
-Use the following format to run iperf3 client
+On the Remote UE, use the following command to run iperf3 client:
 ```
 iperf3 -u -c <UPF IP address> --bind-dev <TUN interface name> -p 5001 -i 1 -b 1M
 ```
+
 For example,
 ```
 iperf3 -u -c 192.168.70.134 --bind-dev oaitun_ue2 -p 5001 -i 1 -b 1M
@@ -424,12 +426,11 @@ iperf3 -u -c 192.168.70.134 --bind-dev oaitun_ue2 -p 5001 -i 1 -b 1M
 
 ##### 6.7.2.1  Launching iperf3 server
 
-Remote UE
-
-Use the following format to run iperf3 server
+On the Remote UE, use the following command to run iperf3 server:
 ```
 iperf3 -s --bind-dev <TUN interface name> -p 5001 -i 1
 ```
+
 For example,
 ```
 iperf3 -s --bind-dev oaitun_ue2 -p 5001 -i 1
@@ -443,21 +444,22 @@ Option 1: UPF (Inside case of UPF docker)
 ```
 docker exec -it oai-upf bash
 ```
-Use the following format to run iperf3 client
+
+Use the following command to run iperf3 client:
 ```
 iperf3 -u -c <Remote UE IP address> -B  <UPF IP address> -p 5001 -i 1 -b 1M
 ```
+
 For example,
 ```
 iperf3 -u -c 10.0.0.100 -B 192.168.70.134 -p 5001 -i 1 -b 1M
 ```
 
-or
-
 Option 2: UPF (Outside case of UPF docker; in case of iperf3 installed in docker)
 ```
 docker exec -it oai-upf bash -c 'iperf3 -u -c <Remote UE IP address> -B <UPF IP address>  -p 5001 -i 1 -b 1M' | tee iperf_output.log
 ```
+
 For example,
 ```
 docker exec -it oai-upf bash -c 'iperf3 -u -c 10.0.0.100 -B 192.168.70.134 -p 5001 -i 1 -b 1M' | tee iperf_output.log
@@ -484,19 +486,19 @@ Launch docker compose as following:
 docker compose up -d
 ```
 
-After the docker process activated, launch ffplay using one of the two options.
+After the docker process is activated, launch ffplay using one of the two options.
 
 Option 1 (In the host shell)
 ```
 docker exec -it oai-upf bash -c 'ffplay -fflags nobuffer -flags low_delay udp://0.0.0.0:8090'
 ```
 
-Option 2 (Insider of docker)
+Option 2 (Inside docker)
 ```
 ffplay -flags low_delay -i udp://192.168.70.134:8090
 ```
 
-After video streaming was done, apply the following.
+After video streaming is done, apply the following.
 ```
 xhost -local:docker
 ```
@@ -504,7 +506,7 @@ xhost -local:docker
 #### 6.8.2 Transmitter (Remote UE)
 
 In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
-There are two options for streaming in tramsmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+There are two options for streaming on the transmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
 
 Option 1. Video file streaming in default setting
 ```
@@ -515,7 +517,7 @@ ffmpeg -re -stream_loop -1 -i ~/Videos/file_name.mp4 -f mpegts \
 Option 2. USB camera streaming in 500 Kbps bandwidth
 ```
 ffmpeg -f v4l2 -i /dev/video2 -b:v 500k -vcodec libx264 -preset ultrafast -tune zerolatency -f mpegts \
-       "udp://192.168.70.134:8090?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316
+       "udp://192.168.70.134:8090?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316"
 ```
 
 ## 7. EpiSci's 5G Sidelink Mode 2
@@ -549,7 +551,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 --rfsimulator.serveraddrsl <MACHINE 1 IP Address> --rfsimulator.serverportsl 4048
 ```
 
-Find the destination IP address of `ping` for the tun interface `oaitun_ue1` on the SyncRef UE terminal of Machine 1 as following.
+Find the destination IP address for `ping` on the tun interface `oaitun_ue1` on the SyncRef UE terminal of Machine 1 as follows.
 ```
 ifconfig oaitun_ue1 | awk '/inet / {print $2}' | sed 's/addr://'
 ```
@@ -585,7 +587,7 @@ In each file, update the following variables values provided in given Table 1:
 &emsp; ◉ sl_TxResPools → sl_PSFCH_period<br>
 &emsp; ◉ sl_RxResPools → sl_PSFCH_period<br>
 
-<h>Table 1: Configuration Table</h3>
+<h3>Table 1: Configuration Table</h3>
 <table>
   <thead>
     <tr>
@@ -638,7 +640,7 @@ In each file, update the following variables values provided in given Table 1:
   <tbody>
 </table>
 
-**🔔Note:** Ensure the **sl_CSI_Acquisition** and **sl_PSFCH_period** values are set consistently across both UEs for valid test.
+**🔔Note:** Ensure the **sl_CSI_Acquisition** and **sl_PSFCH_period** values are set consistently across both UEs for a valid test.
 
 **🔔Note:** Changing configurations (CSI Reporting and PSFCH Period) applies to USRP test in the same way as RFSim test.
 
@@ -655,11 +657,11 @@ uhd_find_devices # This will find all USRPs
 uhd_usrp_probe # This will probe the USRP and will ensure the status is ready
 ```
 
-The USRPs can be connected through either cable or over-the-air medium. In a case of cable connectivity, an attenuator can be used in lab environment to simulate real-world signal loss conditions.
+The USRPs can be connected through either cable or over-the-air medium. In the case of cable connectivity, an attenuator can be used in a lab environment to simulate real-world signal loss conditions.
 
 #### 7.2.2 **Setting of attenuation:**
 
-In order to set the attenuation for each channel you have to run this command on the host where attenuator was connected. In this test mode, we assumed the attenuator was connected to SyncRef UE.
+In order to set the attenuation for each channel you have to run this command on the host where the attenuator is connected. In this test mode, we assume the attenuator is connected to the SyncRef UE.
 ```
 curl http://169.254.10.10/:CHAN:<channel number>:SETATT:<attenuation in dB>
 ```
@@ -693,7 +695,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 --thread-pool -1,-1
 ```
 
-Find the destination IP address of `ping` for the tun interface `oaitun_ue2` on the terminal of Machine 2 as following.
+Find the destination IP address for `ping` on the tun interface `oaitun_ue2` on the terminal of Machine 2 as follows.
 ```
 ifconfig oaitun_ue2 | awk '/inet / {print $2}' | sed 's/addr://'
 ```
@@ -706,33 +708,35 @@ ping -I oaitun_ue1 10.0.0.100
 
 ### 7.3 **Launching Sidelink Mode 2 Test via Script:**
 
-&emsp; To launch test via script, locate to the test script as following:
+&emsp; To launch the test via script, navigate to the test script directory as follows:
 ```
 cd ~/openairinterface5g/doc/episys/test_script
 ```
 
-&emsp; To launch the 5G SL mode 1 test via test script, select test profile and then selecte tests among the `slmode2_basic_tests` and `slmode2_csi_psfch_tests` in [run_sl_test_config.sh](./test_script/run_sl_test_config.sh) file. For the details of setting, refer to the [README_sl_test.md](./test_script/README_sl_test.md) file. After setting was done, apply the following:
+&emsp; To launch the 5G SL mode 2 test via test script, select test profile and then select tests among the `slmode2_basic_tests` and `slmode2_csi_psfch_tests` in [run_sl_test_config.sh](./test_script/run_sl_test_config.sh) file. For the details of setting, refer to the [README_sl_test.md](./test_script/README_sl_test.md) file. After setting was done, apply the following:
 ```
 ./run_sl_test.sh
 ```
-After test was done, the summury will be displayed. For the detail, navigate to the `latest` folder and check the files created in the `latest` folder.
+After test was done, the summary will be displayed. For the detail, navigate to the `latest` folder and check the files created in the `latest` folder.
 
 ### 7.4 **Performance Test using Iperf3:**
 
 iperf3 is a command-line tool used to measure the maximum achievable bandwidth on IP networks.
 If iperf3 is not available in your system, install it via `sudo apt update && sudo apt install iperf3`.
-If `iperf3 --version` shows older version that 3.16, you may install iperf 3.16 or newer version using the following.
+If `iperf3 --version` shows an older version than 3.16, you may install iperf 3.16 or newer version using the following.
 ```
 git clone https://github.com/esnet/iperf.git && \
 cd iperf && git checkout 3.16 && ./bootstrap.sh && ./configure && make && make install
 ```
 
-Find SyncRef UE IP address as following.
+Find the UE IP addresses as follows:
+
+SyncRef UE IP address:
 ```
 ifconfig oaitun_ue1 | awk '/inet / {print $2}' | sed 's/addr://'
 ```
 
-Find Nearby UE IP address as following.
+Nearby UE IP address:
 ```
 ifconfig oaitun_ue2 | awk '/inet / {print $2}' | sed 's/addr://'
 ```
@@ -743,19 +747,25 @@ In the following, we assume that SyncRef UE IP address = 10.0.0.1 and Nearby UE 
 
 ##### 7.4.1.1  Launching iperf3 server
 
-SyncRef UE
+On the SyncRef UE, use the following command to run iperf3 server:
 ```
 iperf3 -s -B <SyncRef UE IP address> -p 5001 -i 1
+```
 
+For example,
+```
 iperf3 -s -B 10.0.0.1 -p 5001 -i 1
 ```
 
 ##### 7.4.1.2  Launching iperf3 client
 
-Nearby UE
+On the Nearby UE, use the following command to run iperf3 client:
 ```
 iperf3 -u -c <SyncRef UE IP address> -B <Nearby UE IP address> -p 5001 -i 1 -b 1M
+```
 
+For example,
+```
 iperf3 -u -c 10.0.0.1 -B 10.0.0.100 -p 5001 -i 1 -b 1M
 ```
 
@@ -763,19 +773,25 @@ iperf3 -u -c 10.0.0.1 -B 10.0.0.100 -p 5001 -i 1 -b 1M
 
 ##### 7.4.2.1  Launching iperf3 server
 
-Nearby UE
+On the Nearby UE, use the following command to run iperf3 server:
 ```
 iperf3 -s -B <Nearby UE IP address> -p 5001 -i 1
+```
 
+For example,
+```
 iperf3 -s -B 10.0.0.100 -p 5001 -i 1
 ```
 
 ##### 7.4.2.2  Launching iperf3 client
 
-SyncRef UE
+On the SyncRef UE, use the following command to run iperf3 client:
 ```
 iperf3 -u -c <Nearby UE IP address> -B  <SyncRef UE IP address> -p 5001 -i 1 -b 1M
+```
 
+For example,
+```
 iperf3 -u -c 10.0.0.100 -B 10.0.0.1 -p 5001 -i 1 -b 1M
 ```
 
@@ -792,7 +808,7 @@ ffplay -flags low_delay -i udp://10.0.0.1:1234
 #### 7.5.2 Transmitter (Nearby UE)
 
 In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
-There are two options for streaming in tramsmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
+There are two options for streaming on the transmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
 
 Option 1. Video file streaming in default setting
 ```
@@ -803,5 +819,5 @@ ffmpeg -re -stream_loop -1 -i ~/Videos/file_name.mp4 -f mpegts \
 Option 2. USB camera streaming in 500 Kbps bandwidth
 ```
 ffmpeg -f v4l2 -i /dev/video2 -b:v 500k -vcodec libx264 -preset ultrafast -tune zerolatency -f mpegts \
-       "udp://10.0.0.1:1234?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316
+       "udp://10.0.0.1:1234?localaddr=$(ip -4 addr show oaitun_ue2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')&pkt_size=1316"
 ```
