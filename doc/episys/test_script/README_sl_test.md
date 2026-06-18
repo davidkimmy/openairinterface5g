@@ -334,7 +334,7 @@ Each per-profile test array (`pilot_tests`, `regress_tests`, `stress_tests`) sup
 
 #### Predefined Test Groups
 
-The config file defines four test groups, each containing all tests of that category:
+The config file defines seven test groups, each containing all tests of that category:
 
 | Group Name | Index | Test Case |
 |---|---|---|
@@ -362,6 +362,10 @@ The config file defines four test groups, each containing all tests of that cate
 | | 0 | `rfsim_slmode1_srap_iperf3_test_on_local_host` |
 | | 1 | `rfsim_slmode1_srap_iperf3_test_on_three_hosts` |
 | | 2 | `usrp_B210_slmode1_srap_iperf3_test_on_three_hosts` |
+| `slmode1_csi_psfch_tests`
+| | 0 | `rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host` |
+| | 1 | `rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts` |
+| | 2 | `usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts` |
 
 You can also define your own groups that reference other groups or individual tests:
 
@@ -465,6 +469,13 @@ U2N relay test on local machine (requires 5G Core).
 - Pings 8.8.8.8 from remote UE through relay
 - **Pass criteria:** Internet ping succeeds
 
+#### `rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host`
+Parametric CSI/PSFCH test over the U2N relay path on local machine (requires 5G Core).
+- Topology: Remote UE → Relay UE (via PC5) → gNB → 5G Core → Internet
+- Modifies syncref/relay/gNB config files with specified CSI/PSFCH parameters, restores defaults after test
+- **Parameters:** CSI (0=disabled, 1=enabled), PSFCH period (0,1,2,3)
+- **Pass criteria:** Internet ping from remote UE succeeds
+
 ### Two-Host Tests (RF Simulator)
 
 #### `rfsim_pc5_ping_test_on_two_hosts`
@@ -472,7 +483,7 @@ PC5 Mode 2 connectivity test across two machines.
 - Syncref UE runs locally (RF sim server)
 - Nearby UE runs on `remote_ue` host (RF sim client)
 - Ping executes locally (where syncref creates oaitun_ue1)
-- UE logs automatically copied from remote host via SCP before statistics extraction
+- Remote host UE logs are streamed back live over the SSH session and written locally via `tee`, so statistics extraction reads the local log
 - **Pass criteria:** ≥60% ping success rate
 
 #### `rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts`
@@ -490,6 +501,13 @@ U2N relay test across three machines (requires 5G Core).
 - Remote UE runs on `remote_ue` host
 - **Pass criteria:** Internet ping from remote UE succeeds
 
+#### `rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts`
+Parametric CSI/PSFCH test over the U2N relay path across three machines (requires 5G Core).
+- gNB runs on `gNB` host, relay UE on `relay_ue` host, remote UE on `remote_ue` host
+- Updated CSI/PSFCH config is pushed to the remote relay and nearby hosts before launch; defaults restored after test
+- **Parameters:** CSI (0=disabled, 1=enabled), PSFCH period (0,1,2,3)
+- **Pass criteria:** Internet ping from remote UE succeeds
+
 ### USRP Hardware Tests
 
 Replace `rfsim` prefix with `usrp_B210` for hardware tests:
@@ -497,6 +515,7 @@ Replace `rfsim` prefix with `usrp_B210` for hardware tests:
 - `usrp_B210_pc5_ping_test_on_two_hosts`
 - `usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts`
 - `usrp_B210_slmode1_srap_ping_test_on_three_hosts`
+- `usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts`
 
 **Requirements:**
 - USRP B210 radios on all participating hosts
@@ -695,7 +714,7 @@ For two-host and three-host tests, the script handles log collection differently
 - **Mode 2 two-host:** Syncref (local) + Nearby (remote) → Copy nearby logs from remote host
 - **Mode 1 three-host:** Relay UE and Remote UE on separate hosts → Copy both logs from respective remote hosts
 
-The `evaluate_ping_test()` function accepts `syncref_host` and `nearby_host` parameters to determine which logs need to be copied before statistics extraction. This ensures accurate PSSCH TX/RX rates even when UEs run on different machines.
+The `evaluate_ping_test()` function accepts `syncref_host` and `nearby_host` parameters to determine which local log (captured via `tee`) to read for statistics extraction. This ensures accurate PSSCH TX/RX rates even when UEs run on different machines.
 
 ### CSI Acquisition & PSFCH
 

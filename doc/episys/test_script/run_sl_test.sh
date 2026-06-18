@@ -966,9 +966,10 @@ get_gnb_config_path() {
 
 sync_default_config_params() {
     # Sync sl_PSFCH_Period and sl_CSI_Acquisition across all config files
-    # Args: csi_acq psfch_period
+    # Args: csi_acq psfch_period [sl_mode]
     local csi_acq=${1:-0}
     local psfch_period=${2:-2}
+    local sl_mode=${3:-}   # optional; relay sync only applies to SL mode 1
 
     echo "Syncing default config params: CSI=$csi_acq, PSFCH=$psfch_period"
 
@@ -978,9 +979,9 @@ sync_default_config_params() {
     sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g" "$CONF_PATH/sl_ue1.conf"
     sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g" "$CONF_PATH/sl_ue1.conf"
 
-    # Local gNB relay config
+    # Local gNB relay config — only relevant for SL mode 1 (relay scenario)
     local gnb_conf="$GNB_CONF_RELAY"
-    if [[ -f "$gnb_conf" ]]; then
+    if [[ "$sl_mode" == "1" ]] && [[ -f "$gnb_conf" ]]; then
         sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g" "$gnb_conf"
         sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g" "$gnb_conf"
     fi
@@ -991,6 +992,14 @@ sync_default_config_params() {
         local remote_conf="/home/$remote_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf"
         safe_ssh "$REMOTE_UE_HOST" "sed -i 's/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g' $remote_conf" 2>/dev/null
         safe_ssh "$REMOTE_UE_HOST" "sed -i 's/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g' $remote_conf" 2>/dev/null
+    fi
+
+    # Relay config — only relevant for SL mode 1 (relay scenario)
+    if [[ "$sl_mode" == "1" ]] && [[ -n "$RELAY_UE_HOST" ]] && [[ "$RELAY_UE_HOST" != "local" ]]; then
+        local relay_user=$(find_user_name "$RELAY_UE_HOST")
+        local relay_conf="/home/$relay_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf"
+        safe_ssh "$RELAY_UE_HOST" "sed -i 's/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g' $relay_conf" 2>/dev/null
+        safe_ssh "$RELAY_UE_HOST" "sed -i 's/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g' $relay_conf" 2>/dev/null
     fi
 
     echo "  ✓ Config params synced"
@@ -1083,6 +1092,10 @@ evaluate_ping_test() {
     : ${ping_count:=10}
     : ${ping_interval:=1}
 
+    # ping always exits and prints its summary before the cleanup below SIGKILLs it.
+    local ping_deadline
+    ping_deadline=$(awk "BEGIN { d = $ping_count * $ping_interval + 5; printf \"%d\", (d==int(d)?d:int(d)+1) }")
+
     local user_name
     user_name=$(find_user_name "$host_name")
     # Generate unique filename with timestamp
@@ -1091,7 +1104,7 @@ evaluate_ping_test() {
     if [[ $host_name == "local" ]]; then
         # Run ping locally
         ping_output="$log_dir/ping_result_${test_name}_${timestamp}.txt"
-        cmd="ping -c $ping_count -i $ping_interval -I $src_if $dest_ip"
+        cmd="ping -c $ping_count -i $ping_interval -w $ping_deadline -I $src_if $dest_ip"
         echo "Ping command: $cmd (count=$ping_count, interval=${ping_interval}s)"
 
         # Save command to commands.txt
@@ -1108,17 +1121,22 @@ evaluate_ping_test() {
         local safe_filename="$log_dir/ping_result_${test_name}_${timestamp}.txt"
 
         # Build remote command with proper variable expansion
-        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c $ping_count -i $ping_interval -I $src_if $dest_ip"
+        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c $ping_count -i $ping_interval -w $ping_deadline -I $src_if $dest_ip"
 
         # Save command to commands.txt
         echo "=== Ping Command (host: $host_name) ===" >> "$log_dir/commands.txt"
-        echo "ping -c $ping_count -i $ping_interval -I $src_if $dest_ip" >> "$log_dir/commands.txt"
+        echo "ping -c $ping_count -i $ping_interval -w $ping_deadline -I $src_if $dest_ip" >> "$log_dir/commands.txt"
         echo "" >> "$log_dir/commands.txt"
 
         run_cmd $host_name "$cmd" "$safe_filename"
     fi
 
-    sleep $duration;
+    # Wait for the ping to finish before tearing things down. Wait at least as
+    # long as the ping's own deadline so it can always print its summary, even
+    # when the remaining test duration is short.
+    local kill_wait=$duration
+    [[ $kill_wait -lt $ping_deadline ]] && kill_wait=$ping_deadline
+    sleep $kill_wait
 
     # Give extra time for ping to complete and file to be written
     sleep 3
@@ -2143,7 +2161,7 @@ bler_test() {
     local dest_ip="8.8.8.8"
 
     # Sync CSI and PSFCH config (disable CSI, PSFCH=2)
-    sync_default_config_params $csi_acquisition $psfch_period
+    sync_default_config_params $csi_acquisition $psfch_period $sl_mode
 
     # Restart core network (full cycle: down then up)
     restart_core_network || {
@@ -2450,7 +2468,7 @@ pc5_csi_acquisition_psfch_period_test() {
     # Ensure both local and remote systems start with synchronized baseline
     # This MUST happen for every test run (8 iterations) to ensure consistency
     echo "==> Syncing baseline: CSI=$DEFAULT_CSI_ACQ, PSFCH=$DEFAULT_PSFCH_PERIOD across all systems..."
-    sync_default_config_params $DEFAULT_CSI_ACQ $DEFAULT_PSFCH_PERIOD
+    sync_default_config_params $DEFAULT_CSI_ACQ $DEFAULT_PSFCH_PERIOD $sl_mode
 
     echo "==> Applying test-specific config: CSI=$csi_acq, PSFCH=$period"
 
@@ -2509,10 +2527,19 @@ pc5_csi_acquisition_psfch_period_test() {
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
+    save_softmodem_logs "${test_name}_csi${csi_acq}_psfch${period}"
 
     # Restore configs back to defaults for next test iteration
     echo "==> Restoring baseline: CSI=$DEFAULT_CSI_ACQ, PSFCH=$DEFAULT_PSFCH_PERIOD"
-    sync_default_config_params $DEFAULT_CSI_ACQ $DEFAULT_PSFCH_PERIOD
+    sync_default_config_params $DEFAULT_CSI_ACQ $DEFAULT_PSFCH_PERIOD $sl_mode
+
+    # Push the restored baseline configs back to the remote hosts. The test
+    # scp-copied both config files to each remote host, so we must overwrite
+    # them with the baseline versions to fully revert (sync_default_config_params
+    # only seds the primary file per host).
+    [[ $nearby_host_name != "local" ]] && sync_config_files $nearby_host_name
+    [[ $syncref_host_name != "local" ]] && sync_config_files $syncref_host_name
+
     local end_time=$(date +%s)
     local elapsed=$((end_time - start_time))
     print_runtime $start_time $end_time
@@ -2567,6 +2594,182 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     local nearby_host_name="local"
     local num_hosts=1
     pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+
+slmode1_srap_csi_acquisition_psfch_period_test() {
+    # Argumemt(s): csi_acq, psfch_period, duration, test_type, mcs, iteration
+    [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
+    [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
+    [[ $# -ge 3 ]] && duration=$3
+    [[ $# -ge 4 ]] && test_type=$4
+    [[ $# -ge 5 ]] && mcs=$5
+    [[ $# -ge 6 ]] && iteration=$6
+    [[ $# -ge 7 ]] && gnb_host_name=$7
+    [[ $# -ge 8 ]] && syncref_host_name=$8
+    [[ $# -ge 9 ]] && nearby_host_name=$9
+    [[ $# -ge 10 ]] && num_hosts=${10}
+    [[ $# -ge 11 ]] && test_name=${11} || test_name="${FUNCNAME[0]}"
+
+    # Validate test type for local host execution
+    if [[ $num_hosts -eq 1 ]]; then
+        validate_test_type_for_local_host "$test_type" "${FUNCNAME[0]}" || return 1
+    fi
+    if [[ $nearby_host_name != "local" ]]; then
+        local remote_user=$(find_user_name "$nearby_host_name")
+    fi
+    cleanup_old_logs
+
+    local start_time=$(date +%s)
+    local sl_mode=1
+
+    pre1='docker ps | grep oai-upf | wc -l'
+    act1='echo "core network is required !!!"; cd ~/oai-cn5g; systemctl start docker.service; docker compose up -d; sleep 2'
+    [[ $(eval "$pre1") -eq 1 ]] && echo "Requirements are satisfied !!!" || eval "$act1"
+
+    # Ensure both local and remote systems start with synchronized baseline
+    # This MUST happen for every test run (8 iterations) to ensure consistency
+    echo "==> Syncing baseline: CSI=$DEFAULT_CSI_ACQ, PSFCH=$DEFAULT_PSFCH_PERIOD across all systems..."
+    sync_default_config_params $DEFAULT_CSI_ACQ $DEFAULT_PSFCH_PERIOD $sl_mode
+
+    echo "==> Applying test-specific config: CSI=$csi_acq, PSFCH=$period"
+
+    # Update local syncref config (always runs locally) - updates ALL occurrences
+    sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$csi_acq/g" "$CONF_PATH/sl_sync_ref.conf"
+    sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$period/g" "$CONF_PATH/sl_sync_ref.conf"
+
+    # Keep the local gNB relay config (SL mode 1) in sync with the test-specific
+    # values so the gNB's sidelink resource pool matches the UEs'. The gNB runs
+    # locally, so no scp is needed.
+    if [[ "$sl_mode" == "1" ]] && [[ -f "$GNB_CONF_RELAY" ]]; then
+        sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$csi_acq/g" "$GNB_CONF_RELAY"
+        sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$period/g" "$GNB_CONF_RELAY"
+    fi
+
+    # Update nearby config (local or remote depending on nearby_host_name) - updates ALL occurrences
+    if [[ $nearby_host_name == "local" ]]; then
+        # Local nearby: update local sl_ue1.conf
+        sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$csi_acq/g" "$CONF_PATH/sl_ue1.conf"
+        sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$period/g" "$CONF_PATH/sl_ue1.conf"
+    else
+        # Remote nearby: update local sl_ue1.conf first, then sync to remote
+        # This ensures both syncref and nearby configs have matching values before copying
+        sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$csi_acq/g" "$CONF_PATH/sl_ue1.conf"
+        sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1$period/g" "$CONF_PATH/sl_ue1.conf"
+
+        # Now sync both config files to remote (this will copy the updated values)
+        sync_config_files $nearby_host_name
+    fi
+
+    # Push updated configs to remote syncref/relay host if applicable
+    if [[ $syncref_host_name != "local" ]]; then
+        sync_config_files $syncref_host_name
+    fi
+
+    # For SL mode 1 three-host tests: gNB runs locally, syncref and nearby run remotely
+    run_gNB_cmd $test_type $sl_mode $gnb_host_name
+    sleep 1
+    run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+    sleep 1
+    run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+
+    local wait_start=$(date +%s)
+    wait_for_tun_interface "oaitun_ue1" "$syncref_host_name" "$duration"
+    local remaining=$(( duration - $(date +%s) + wait_start ))
+    if [[ "$ensure_ping_test_time" == "1" ]]; then
+        [[ $remaining -lt 5 ]] && remaining=5
+        wait_for_pc5_sync $remaining
+        remaining=$(( duration - $(date +%s) + wait_start ))
+        [[ $remaining -lt 16 ]] && remaining=16
+        duration=$remaining
+    else
+        [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
+        duration=$(( duration - $(date +%s) + wait_start ))
+        [[ $duration -lt 0 ]] && duration=0
+    fi
+
+    # Additional wait time for sidelink synchronization to complete
+    if [[ "$use_extended_delays" == "1" ]]; then
+        echo "Waiting additional ${sleep_timing[sync_stab_45s_v2]} seconds for sidelink sync to stabilize..."
+        sleep ${sleep_timing[sync_stab_45s_v2]}
+    fi
+    sleep 3
+    evaluate_ping_test $nearby_host_name "oaitun_ue2" "8.8.8.8" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}"
+
+    # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
+    kill_all $nearby_host_name nr-uesoftmodem
+    kill_all $syncref_host_name nr-uesoftmodem
+    kill_all $gnb_host_name nr-softmodem
+    save_softmodem_logs "${test_name}_csi${csi_acq}_psfch${period}"
+
+
+    # Restore configs back to defaults for next test iteration
+    echo "==> Restoring baseline: CSI=$DEFAULT_CSI_ACQ, PSFCH=$DEFAULT_PSFCH_PERIOD"
+    sync_default_config_params $DEFAULT_CSI_ACQ $DEFAULT_PSFCH_PERIOD $sl_mode
+
+    # Push the restored baseline configs back to the remote hosts. The test
+    # scp-copied both config files to each remote host, so we must overwrite
+    # them with the baseline versions to fully revert (sync_default_config_params
+    # only seds the primary file per host).
+    [[ $nearby_host_name != "local" ]] && sync_config_files $nearby_host_name
+    [[ $syncref_host_name != "local" ]] && sync_config_files $syncref_host_name
+
+    local end_time=$(date +%s)
+    local elapsed=$((end_time - start_time))
+    print_runtime $start_time $end_time
+
+    # Print test summary
+    print_test_summary "${test_name}_csi${csi_acq}_psfch${period}" "$iteration" "$num_hosts" "$mcs" "$elapsed" "$LAST_TX_PACKETS" "$LAST_RX_PACKETS" "$LAST_TEST_RESULT"
+}
+#############################################################
+rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
+#############################################################
+    # Argumemt(s): csi_acq, psfch_period, duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
+    [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
+    [[ $# -ge 3 ]] && duration=$3
+    [[ $# -ge 4 ]] && mcs=$4
+    [[ $# -ge 5 ]] && iteration=$5
+    local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
+#############################################################
+    # Argumemt(s): csi_acq, psfch_period, duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
+    [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
+    [[ $# -ge 3 ]] && duration=$3
+    [[ $# -ge 4 ]] && mcs=$4
+    [[ $# -ge 5 ]] && iteration=$5
+    local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name=$RELAY_UE_HOST
+    local nearby_host_name=$REMOTE_UE_HOST
+    local num_hosts=3
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
+#############################################################
+    # Argumemt(s): csi_acq, psfch_period, duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
+    [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
+    [[ $# -ge 3 ]] && duration=$3
+    [[ $# -ge 4 ]] && mcs=$4
+    [[ $# -ge 5 ]] && iteration=$5
+    local test_type="usrp"
+    local gnb_host_name="local"
+    local syncref_host_name=$RELAY_UE_HOST
+    local nearby_host_name=$REMOTE_UE_HOST
+    local num_hosts=3
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
 }
 
 #############################################################

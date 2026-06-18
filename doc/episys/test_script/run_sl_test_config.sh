@@ -178,6 +178,11 @@ slmode1_basic_tests=(
     rfsim_slmode1_srap_ping_test_on_three_hosts
     usrp_B210_slmode1_srap_ping_test_on_three_hosts
 )
+slmode1_csi_psfch_tests=( # Each item includes 8 sub-test cases.
+    rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host
+    rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts
+    usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts
+)
 slmode1_iperf3_tests=(
     rfsim_slmode1_srap_iperf3_test_on_local_host
     rfsim_slmode1_srap_iperf3_test_on_three_hosts
@@ -187,6 +192,7 @@ regress_tests=(
     uu_basic_tests
     slmode1_basic_tests
     slmode2_basic_tests
+    slmode1_csi_psfch_tests
     slmode2_csi_psfch_tests
     slmode1_iperf3_tests
     slmode2_iperf3_tests
@@ -197,6 +203,7 @@ stress_tests=(
 pilot_tests=(
     slmode1_basic_tests[2]
     #slmode2_basic_tests[2]
+    #slmode1_csi_psfch_tests[1]
     #slmode2_csi_psfch_tests[2]
     #slmode1_iperf3_tests[2]
     #slmode2_iperf3_tests[2]
@@ -231,9 +238,13 @@ if [[ $test_profile == "pilot" ]]; then
     duration=30
     iperf3_bw_array=(6M)
     group_specific_mcs["slmode1_iperf3_tests"]="9"
+    group_specific_duration["slmode1_basic_tests"]=40
+    group_specific_duration["slmode1_csi_psfch_tests"]=40
     group_specific_duration["slmode1_iperf3_tests"]=40
     if [[ "$use_extended_delays" == "1" ]]; then
         duration=90
+        group_specific_duration["slmode1_basic_tests"]=90
+        group_specific_duration["slmode1_csi_psfch_tests"]=90
         group_specific_duration["slmode1_iperf3_tests"]=90
     fi
     max_ldpc_iterations=30
@@ -255,9 +266,13 @@ elif [[ $test_profile == "regress" ]]; then
     mcs_array=(10) # ($(seq 0 1 10)) # [start, step, end]
     duration=30
     group_specific_mcs["slmode1_iperf3_tests"]="9"
+    group_specific_duration["slmode1_basic_tests"]=40
+    group_specific_duration["slmode1_csi_psfch_tests"]=40
     group_specific_duration["slmode1_iperf3_tests"]=40
     if [[ "$use_extended_delays" == "1" ]]; then
         duration=90
+        group_specific_duration["slmode1_basic_tests"]=90
+        group_specific_duration["slmode1_csi_psfch_tests"]=90
         group_specific_duration["slmode1_iperf3_tests"]=90
     fi
     max_ldpc_iterations=30
@@ -276,9 +291,13 @@ elif [[ $test_profile == "stress" ]]; then
     mcs_array=(9 13)
     duration=300
     group_specific_mcs["slmode1_iperf3_tests"]="9"
+    group_specific_duration["slmode1_basic_tests"]=360
+    group_specific_duration["slmode1_csi_psfch_tests"]=300
     group_specific_duration["slmode1_iperf3_tests"]=300
     if [[ "$use_extended_delays" == "1" ]]; then
         duration=360
+        group_specific_duration["slmode1_basic_tests"]=360
+        group_specific_duration["slmode1_csi_psfch_tests"]=360
         group_specific_duration["slmode1_iperf3_tests"]=360
     fi
     max_ldpc_iterations=30
