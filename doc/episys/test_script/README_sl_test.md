@@ -576,7 +576,7 @@ U2N relay bandwidth sweep with USRP B210 hardware across three machines (require
 
 Results are saved to `<test_log_dir>/`:
 - `iperf3_summary_<timestamp>.csv` — Per-step results with target/actual bandwidth, jitter, loss, and result
-- `iperf3_summary_<timestamp>.png` — Plot of actual bandwidth and packet loss vs target bandwidth
+- `iperf3_summary_<timestamp>.png` — Plot of actual bandwidth and packet loss vs target bit rate
 - `iperf3_server_<timestamp>.txt` — Server-side iperf3 log
 - `iperf3_client_<bw>_<timestamp>.txt` — Client-side iperf3 log per bandwidth step
 
@@ -627,9 +627,11 @@ For detailed instructions, see [README_BLER_test.md](bler_scripts/README_BLER_te
 After all tests complete, a summary table is displayed and saved to `<base_dir>/test_<timestamp>/test_summary_<timestamp>.csv`:
 
 ```
-Test Name                                                              | Itrn | Hosts | MCS | Runtime | Ping Rate | PSSCH Rate1        | PSSCH Rate2        | PSSCH Total | Result
-========================================================================================================================================================================================
-rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |     1 |   1 |    35s  |      100% | 1234/1200 (97%)    | 1150/1234 (93%)    |          95% |   PASS
+Test Name                                                           | Itrn | Hosts | MCS | Runtime | Ping Rate | PSSCH Rate1        | PSSCH Rate2        | PSSCH Total | Result
+===============================================================================================================================================================================
+rfsim_pc5_ping_test_on_local_host                                   |    1 |     1 |   9 |     40s |      100% | 33/33 (100%)       | 33/33 (100%)       |        100% |   PASS
+rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1|    1 |     2 |   9 |     44s |      100% | 12/12 (100%)       | 8/8 (100%)         |        100% |   PASS
+rfsim_slmode1_srap_ping_test_on_local_host                          |    1 |     1 |   9 |     58s |      100% | 36/36 (100%)       | 38/38 (100%)       |        100% |   PASS
 ```
 
 **Columns:**
@@ -639,8 +641,8 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts_csi0_psfch1  |    1 |  
 - **MCS:** Modulation and coding scheme
 - **Runtime:** Test duration in seconds
 - **Ping Rate:** ICMP ping success rate (RX/TX packets)
-- **PSSCH Rate1:** Syncref TX → Nearby RX (TX_syncref/RX_nearby with percentage)
-- **PSSCH Rate2:** Nearby TX → Syncref RX (TX_nearby/RX_syncref with percentage)
+- **PSSCH Rate1:** Syncref TX → Nearby RX (RX_nearby/TX_syncref with percentage)
+- **PSSCH Rate2:** Nearby TX → Syncref RX (RX_syncref/TX_nearby with percentage)
 - **PSSCH Total:** Aggregated PSSCH success rate across both directions
 - **Result:** PASS/FAIL based on ping threshold (≥60%)
 

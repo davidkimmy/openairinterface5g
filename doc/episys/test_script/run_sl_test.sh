@@ -785,43 +785,43 @@ print_test_summary() {
         local ping_rate_str="N/A"
     fi
 
-    # Calculate PSSCH pass rates (RX/TX format for success rate)
+    # Calculate PSSCH pass rates (RX/TX format for success rate).
+    # RX and TX counts come from each node's last "PSSCH Stats" log line, which
+    # are sampled at slightly different times across nodes. This can make a
+    # receiver's count exceed the paired transmitter's (RX > TX), producing
+    # impossible >100% rates. Clamp each RX to its paired TX to avoid that.
+    local rx_nearby_c=${LAST_PSSCH_RX_NEARBY:-0}
+    [ "$rx_nearby_c" -gt "${LAST_PSSCH_TX_SYNCREF:-0}" ] && rx_nearby_c=${LAST_PSSCH_TX_SYNCREF:-0}
+    local rx_syncref_c=${LAST_PSSCH_RX_SYNCREF:-0}
+    [ "$rx_syncref_c" -gt "${LAST_PSSCH_TX_NEARBY:-0}" ] && rx_syncref_c=${LAST_PSSCH_TX_NEARBY:-0}
+
     # Rate1: syncref TX -> nearby RX
     if [ -n "$LAST_PSSCH_TX_SYNCREF" ] && [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
-        local pssch_rate1=$((${LAST_PSSCH_RX_NEARBY:-0} * 100 / LAST_PSSCH_TX_SYNCREF))
-        local pssch_rate1_str="${LAST_PSSCH_RX_NEARBY:-0}/${LAST_PSSCH_TX_SYNCREF} (${pssch_rate1}%)"
+        local pssch_rate1=$((rx_nearby_c * 100 / LAST_PSSCH_TX_SYNCREF))
+        local pssch_rate1_str="${rx_nearby_c}/${LAST_PSSCH_TX_SYNCREF} (${pssch_rate1}%)"
     else
         local pssch_rate1_str="N/A"
     fi
 
     # Rate2: nearby TX -> syncref RX
     if [ -n "$LAST_PSSCH_TX_NEARBY" ] && [ "$LAST_PSSCH_TX_NEARBY" -gt 0 ]; then
-        local pssch_rate2=$((${LAST_PSSCH_RX_SYNCREF:-0} * 100 / LAST_PSSCH_TX_NEARBY))
-        local pssch_rate2_str="${LAST_PSSCH_RX_SYNCREF:-0}/${LAST_PSSCH_TX_NEARBY} (${pssch_rate2}%)"
+        local pssch_rate2=$((rx_syncref_c * 100 / LAST_PSSCH_TX_NEARBY))
+        local pssch_rate2_str="${rx_syncref_c}/${LAST_PSSCH_TX_NEARBY} (${pssch_rate2}%)"
     else
         local pssch_rate2_str="N/A"
     fi
 
-    # Calculate total PSSCH rate (aggregated both directions)
-    # For single-host tests, only count syncref; for multi-host, aggregate both
-    if [ "$num_hosts" -eq 1 ]; then
-        # Single host: only syncref direction exists
-        if [ -n "$LAST_PSSCH_TX_SYNCREF" ] && [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
-            local pssch_total=$((${LAST_PSSCH_RX_NEARBY:-0} * 100 / LAST_PSSCH_TX_SYNCREF))
-            local pssch_total_str="${pssch_total}%"
-        else
-            local pssch_total_str="N/A"
-        fi
+    # Calculate total PSSCH rate (aggregated both directions).
+    # Both syncref->nearby and nearby->syncref links exist on single- and
+    # multi-host tests, so aggregate RX/TX over both directions in all cases.
+    # Use the clamped RX values so the total also stays <= 100%.
+    local total_tx=$((${LAST_PSSCH_TX_SYNCREF:-0} + ${LAST_PSSCH_TX_NEARBY:-0}))
+    local total_rx=$((rx_syncref_c + rx_nearby_c))
+    if [ "$total_tx" -gt 0 ]; then
+        local pssch_total=$((total_rx * 100 / total_tx))
+        local pssch_total_str="${pssch_total}%"
     else
-        # Multi-host: aggregate both directions
-        local total_tx=$((${LAST_PSSCH_TX_SYNCREF:-0} + ${LAST_PSSCH_TX_NEARBY:-0}))
-        local total_rx=$((${LAST_PSSCH_RX_SYNCREF:-0} + ${LAST_PSSCH_RX_NEARBY:-0}))
-        if [ "$total_tx" -gt 0 ]; then
-            local pssch_total=$((total_rx * 100 / total_tx))
-            local pssch_total_str="${pssch_total}%"
-        else
-            local pssch_total_str="N/A"
-        fi
+        local pssch_total_str="N/A"
     fi
 
     # Print header if this is the first test
@@ -1254,18 +1254,25 @@ get_iperf3_stats() {
     local bw_unit=$(echo "$summary" | grep -oP '[\d.]+\s+\K[KMG](?=bits/sec)' | tail -1)
     local loss_pct=$(echo "$summary" | grep -oP '[\d.]+(?=%)' | tail -1)
     local jitter=$(echo "$summary" | grep -oP '[\d.]+(?=\s+ms)' | tail -1)
+    local transfer=$(echo "$summary" | grep -oP '[\d.]+(?=\s+[KMG]Bytes)' | tail -1)
+    local transfer_unit=$(echo "$summary" | grep -oP '[\d.]+\s+\K[KMG](?=Bytes)' | tail -1)
     # Normalize to Mbps
     case "$bw_unit" in
         K) bw=$(printf "%.3f" "$(echo "$bw / 1000" | bc -l 2>/dev/null || echo "0")") ;;
         G) bw=$(printf "%.3f" "$(echo "$bw * 1000" | bc -l 2>/dev/null || echo "0")") ;;
     esac
-    echo "${bw:-0} ${loss_pct:-0} ${jitter:-0}"
+    # Normalize transfer to MB
+    case "$transfer_unit" in
+        K) transfer=$(printf "%.3f" "$(echo "${transfer:-0} / 1024" | bc -l 2>/dev/null || echo "0")") ;;
+        G) transfer=$(printf "%.3f" "$(echo "${transfer:-0} * 1024" | bc -l 2>/dev/null || echo "0")") ;;
+    esac
+    echo "${bw:-0} ${loss_pct:-0} ${jitter:-0} ${transfer:-0}"
 }
 
 print_iperf3_summary_header() {
     local summary_file=$1
     if [ ! -f "$summary_file" ]; then
-        echo "Test Name,Itrn,Num Hosts,MCS,BW Target,BW Actual (Mbps),Jitter (ms),Loss%,Result" \
+        echo "Test Name,Itrn,Num Hosts,MCS,BW Target,BW Actual (Mbps),Transfer (MB),Jitter (ms),Loss%,Result" \
             | tee -a "$summary_file"
     fi
 }
@@ -1278,12 +1285,13 @@ print_iperf3_summary() {
     local mcs=$5
     local bw_target=$6
     local bw_actual=$7
-    local jitter=$8
-    local loss_pct=$9
-    local result=${10}
+    local transfer=$8
+    local jitter=$9
+    local loss_pct=${10}
+    local result=${11}
 
     print_iperf3_summary_header "$summary_file"
-    echo "$test_name,$iteration,$num_hosts,${mcs:-N/A},$bw_target,${bw_actual}Mbps,${jitter}ms,${loss_pct}%,$result" \
+    echo "$test_name,$iteration,$num_hosts,${mcs:-N/A},$bw_target,${bw_actual}Mbps,${transfer}MB,${jitter}ms,${loss_pct}%,$result" \
         | tee -a "$summary_file"
 }
 
@@ -1411,7 +1419,7 @@ evaluate_iperf3_sweep() {
             echo "" >> "$log_dir/commands.txt"
             echo "WARNING: ping to $server_bind_ip failed before $bw_target — link is down"
             print_iperf3_summary "$iperf3_summary_file" "$test_name" "$iteration" "$num_hosts" "$mcs" \
-                "$bw_target" "0" "0" "0" "FAIL"
+                "$bw_target" "0" "0" "0" "0" "FAIL"
             break
         fi
         echo "Result: PASSED" >> "$log_dir/commands.txt"
@@ -1444,6 +1452,7 @@ evaluate_iperf3_sweep() {
         local bw_actual=$(echo "$stats" | awk '{print $1}')
         local loss_pct=$(echo "$stats" | awk '{print $2}')
         local jitter=$(echo "$stats" | awk '{print $3}')
+        local transfer=$(echo "$stats" | awk '{print $4}')
 
         # Determine result
         local result="PASS"
@@ -1466,7 +1475,7 @@ evaluate_iperf3_sweep() {
         fi
 
         print_iperf3_summary "$iperf3_summary_file" "$test_name" "$iteration" "$num_hosts" "$mcs" \
-            "$bw_target" "$bw_actual" "$jitter" "$loss_pct" "$result"
+            "$bw_target" "$bw_actual" "$transfer" "$jitter" "$loss_pct" "$result"
 
         prev_bw=$bw_actual
 
