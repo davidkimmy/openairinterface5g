@@ -9,6 +9,7 @@ int decode_t_reordering(int v);
 int decode_sn_size_ul(int v);
 int decode_sn_size_dl(int v);
 int decode_discard_timer(int v);
+int decode_discard_timer_sl(long v); /* sidelink PDCP discard timer (episys SL data-plane port) */
 
 int encode_t_reordering(int v);
 int encode_sn_size_ul(int v);

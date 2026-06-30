@@ -37,6 +37,14 @@ void nr_pdcp_add_drb(int is_gnb,
                      const struct sdap_configuration_s *sdap,
                      const nr_pdcp_entity_security_keys_and_algos_t *security_parameters);
 
+/* Sidelink (PC5) SL-DRB PDCP setup (episys SL data-plane port). */
+void add_drb_sl(ue_id_t srcid,
+                NR_SL_RadioBearerConfig_r16_t *s,
+                int ciphering_algorithm,
+                int integrity_algorithm,
+                unsigned char *ciphering_key,
+                unsigned char *integrity_key);
+
 void nr_pdcp_remove_UE(ue_id_t ue_id);
 void nr_pdcp_reestablishment(ue_id_t ue_id,
                              int rb_id,

@@ -616,6 +616,44 @@ void nr_pdcp_add_drb(int is_gnb,
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 }
 
+/* ---- Sidelink (PC5) SL-DRB: PDCP entity (episys SL data-plane port onto develop) ----
+ * develop creates the SDAP entity separately in RRC (nr_sdap_addmod_entity); this sets up only the
+ * SL DRB's PDCP entity. SL bearers carry no PDCP ciphering/integrity (zeroed security struct). */
+void add_drb_sl(ue_id_t srcid,
+                NR_SL_RadioBearerConfig_r16_t *s,
+                int ciphering_algorithm,
+                int integrity_algorithm,
+                unsigned char *ciphering_key,
+                unsigned char *integrity_key)
+{
+  (void)ciphering_algorithm; (void)integrity_algorithm; (void)ciphering_key; (void)integrity_key;
+  AssertFatal(s->sl_PDCP_Config_r16 != NULL, "SL PDCP config missing\n");
+  int slrb_id = s->slrb_Uu_ConfigIndex_r16;
+  int sn_size = decode_sn_size_ul(*s->sl_PDCP_Config_r16->sl_PDCP_SN_Size_r16);
+  int discard_timer = decode_discard_timer_sl(*s->sl_PDCP_Config_r16->sl_DiscardTimer_r16);
+  int t_reordering = 20;
+  int pdusession_id = 10;
+  bool has_sdap = s->sl_SDAP_Config_r16
+                  && s->sl_SDAP_Config_r16->sl_SDAP_Header_r16 == NR_SL_SDAP_Config_r16__sl_SDAP_Header_r16_present;
+  nr_pdcp_entity_security_keys_and_algos_t sec = {0}; /* SL: no ciphering/integrity */
+
+  nr_pdcp_manager_lock(nr_pdcp_ue_manager);
+  nr_pdcp_ue_t *ue = nr_pdcp_manager_get_ue(nr_pdcp_ue_manager, srcid);
+  if (nr_pdcp_get_rb(ue, slrb_id, false) != NULL) {
+    LOG_W(PDCP, "SL DRB %d already exists for UE ID %ld, do nothing\n", slrb_id, srcid);
+  } else {
+    nr_pdcp_entity_t *pdcp_drb = new_nr_pdcp_entity(NR_PDCP_DRB_AM, 0, slrb_id, pdusession_id,
+                                                    has_sdap, has_sdap,
+                                                    deliver_sdu_drb, ue, deliver_pdu_drb_ue, ue,
+                                                    sn_size, t_reordering, discard_timer, &sec);
+    nr_pdcp_ue_add_drb_pdcp_entity(ue, slrb_id, pdcp_drb);
+    LOG_I(PDCP, "added SL DRB %d (slrb) to UE ID %ld\n", slrb_id, srcid);
+    /* DEFER (SRAP wiring step): add_srap_entity(srcid);
+       DEFER (RRC step): SDAP entity via nr_sdap_addmod_entity() -> brings up the sidelink TUN/IP. */
+  }
+  nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
+}
+
 void nr_pdcp_add_srbs(eNB_flag_t enb_flag,
                       ue_id_t UEid,
                       NR_SRB_ToAddModList_t *const srb2add_list,
