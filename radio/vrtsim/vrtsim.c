@@ -56,6 +56,11 @@ typedef enum { ROLE_SERVER = 1, ROLE_CLIENT } role;
 #define CONNECTION_DESCRIPTOR_HLP "Path to the file written by the server that the client can use to connect."
 #define DEFAULT_CHANNEL_NAME "vrtsim_channel"
 #define DEFAULT_DESCRIPTOR "/tmp/vrtsim_connection"
+// Max seconds a vrtsim client waits for its peer server before giving up. Makes launch order
+// irrelevant (like rfsimulator): the peer may come up later than the client (e.g. two sidelink
+// UEs, or a relay opening PC5 only after Uu reaches RRC CONNECTED). Bounded, not infinite.
+// (episys feature re-port, Goal-2 F-gate)
+#define VRTSIM_PEER_WAIT_SEC 120
 #define TPOOL_HLP "Thread pool for channel modelling. Only used if CUDA support is disabled."
 
 // clang-format off
@@ -381,7 +386,8 @@ static client_info_t client_read_info(char *socket_path)
   addr.sun_family = AF_UNIX;
   strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
 
-  while (tries < 10) {
+  // Retry once per second so launch order does not matter (see VRTSIM_PEER_WAIT_SEC).
+  while (tries < VRTSIM_PEER_WAIT_SEC) {
     int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock_fd >= 0) {
       if (connect(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
@@ -394,10 +400,12 @@ static client_info_t client_read_info(char *socket_path)
         close(sock_fd);
       }
     }
+    if ((tries % 10) == 0)
+      LOG_I(HW, "VRTSIM: waiting for peer server on %s (launch-order independent)...\n", socket_path);
     sleep(1);
     tries++;
   }
-  AssertFatal(0, "Timeout waiting for client info on socket %s\n", socket_path);
+  AssertFatal(0, "VRTSIM: no peer server on socket %s after %d s\n", socket_path, VRTSIM_PEER_WAIT_SEC);
   return client_info;
 }
 
