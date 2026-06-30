@@ -142,6 +142,13 @@ typedef enum frequency_range_e {
   FR2
 } frequency_range_t;
 
+// Interface type tag for an RLC entity: Uu (gNB<->UE) vs PC5 (sidelink). Used by the
+// sidelink data plane (SL-DRB) and SRAP relay forwarding. (episys SL data-plane port)
+typedef enum {
+  UU,
+  PC5
+} nr_intf_type_t;
+
 typedef enum {
   pusch_dmrs_type1 = 0,
   pusch_dmrs_type2 = 1

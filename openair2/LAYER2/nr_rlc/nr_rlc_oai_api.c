@@ -904,6 +904,126 @@ void nr_rlc_add_drb(int ue_id, int drb_id, const NR_RLC_BearerConfig_t *rlc_Bear
   LOG_I(RLC, "Added DRB to UE %d\n", ue_id);
 }
 
+/* ---- Sidelink (PC5) SL-DRB setup (episys SL data-plane port onto develop) ----
+ * Mirror of add_drb_am/um for the sidelink NR_SL_RLC_BearerConfig_r16. Adapted to develop's
+ * entity-creation API: develop's new_nr_rlc_entity_am/um take no intf_type arg, so we set
+ * entity->intf_type = PC5 after creation (vs episys which extended the constructor signature). */
+static void add_drb_am_sl(int src_id, int drb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)
+{
+  nr_rlc_entity_t *nr_rlc_am;
+  nr_rlc_ue_t *ue;
+  struct NR_SL_RLC_Config_r16 *r = rlc_BearerConfig->sl_RLC_Config_r16;
+  struct NR_SL_LogicalChannelConfig_r16 *l = rlc_BearerConfig->sl_MAC_LogicalChannelConfig_r16;
+  int t_status_prohibit, t_poll_retransmit, poll_pdu, poll_byte, max_retx_threshold, t_reassembly, sn_field_length;
+
+  AssertFatal(drb_id >= 1 && drb_id <= MAX_DRBS_PER_UE, "bad SL drb id %d\n", drb_id);
+  int logical_channel_group = *l->sl_LogicalChannelGroup_r16;
+  if (logical_channel_group != 1)
+    LOG_E(RLC, "%s:%d:%s: unexpected SL LCG %d\n", __FILE__, __LINE__, __FUNCTION__, logical_channel_group);
+
+  struct NR_SL_RLC_Config_r16__sl_AM_RLC_r16 *am = r->choice.sl_AM_RLC_r16;
+  t_reassembly       = 35;
+  t_status_prohibit  = 35;
+  t_poll_retransmit  = decode_t_poll_retransmit(am->sl_T_PollRetransmit_r16);
+  poll_pdu           = decode_poll_pdu(am->sl_PollPDU_r16);
+  poll_byte          = decode_poll_byte(am->sl_PollByte_r16);
+  max_retx_threshold = decode_max_retx_threshold(am->sl_MaxRetxThreshold_r16);
+  sn_field_length    = decode_sn_field_length_am(*am->sl_SN_FieldLengthAM_r16);
+
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  if (ue->sl_drb[drb_id - 1] != NULL) {
+    LOG_W(RLC, "SL DRB %d already exists for src_id %04x, do nothing\n", drb_id, src_id);
+  } else {
+    nr_rlc_am = new_nr_rlc_entity_am(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE,
+                                     deliver_sdu, ue, successful_delivery, ue, max_retx_reached, ue,
+                                     t_poll_retransmit, t_reassembly, t_status_prohibit,
+                                     poll_pdu, poll_byte, max_retx_threshold, sn_field_length);
+    nr_rlc_am->intf_type = PC5;
+    nr_rlc_ue_add_drb_rlc_entity(ue, drb_id, nr_rlc_am);
+    LOG_I(RLC, "added SL(AM) DRB %d to UE with SRCID 0x%x\n", drb_id, src_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+}
+
+static void add_drb_um_sl(int src_id, int drb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)
+{
+  nr_rlc_entity_t *nr_rlc_um;
+  nr_rlc_ue_t *ue;
+  struct NR_SL_RLC_Config_r16 *r = rlc_BearerConfig->sl_RLC_Config_r16;
+  struct NR_SL_LogicalChannelConfig_r16 *l = rlc_BearerConfig->sl_MAC_LogicalChannelConfig_r16;
+  int t_reassembly, sn_field_length;
+
+  AssertFatal(drb_id >= 1 && drb_id <= MAX_DRBS_PER_UE, "bad SL drb id %d\n", drb_id);
+  int logical_channel_group = *l->sl_LogicalChannelGroup_r16;
+  if (logical_channel_group != 1)
+    LOG_E(RLC, "%s:%d:%s: unexpected SL LCG %d\n", __FILE__, __LINE__, __FUNCTION__, logical_channel_group);
+
+  struct NR_SL_RLC_Config_r16__sl_UM_RLC_r16 *um = r->choice.sl_UM_RLC_r16;
+  t_reassembly    = 35; /* up to UE implementation */
+  sn_field_length = decode_sn_field_length_um(*um->sl_SN_FieldLengthUM_r16);
+
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  if (ue->sl_drb[drb_id - 1] != NULL) {
+    LOG_W(RLC, "SL DRB %d already exists for src_id %04x, do nothing\n", drb_id, src_id);
+  } else {
+    nr_rlc_um = new_nr_rlc_entity_um(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE, deliver_sdu, ue, t_reassembly, sn_field_length);
+    nr_rlc_um->intf_type = PC5;
+    nr_rlc_ue_add_drb_rlc_entity(ue, drb_id, nr_rlc_um);
+    LOG_I(RLC, "added SL(UM) DRB %d to UE with SRCID 0x%x\n", drb_id, src_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+}
+
+void nr_rlc_add_drb_sl(int srcid, int drb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)
+{
+  switch (rlc_BearerConfig->sl_RLC_Config_r16->present) {
+  case NR_SL_RLC_Config_r16_PR_sl_AM_RLC_r16:
+    add_drb_am_sl(srcid, drb_id, rlc_BearerConfig);
+    break;
+  case NR_SL_RLC_Config_r16_PR_sl_UM_RLC_r16:
+    add_drb_um_sl(srcid, drb_id, rlc_BearerConfig);
+    break;
+  default:
+    LOG_E(RLC, "%s:%d:%s: fatal: unhandled SL DRB type\n", __FILE__, __LINE__, __FUNCTION__);
+    exit(1);
+  }
+  LOG_I(RLC, "added SL_DRB %d to UE with SRCID 0x%x\n", drb_id, srcid);
+}
+
+/* Sidelink (PC5) SL-SRB (signalling) setup. Uses standard NR SRB AM params (as episys). */
+void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)
+{
+  nr_rlc_entity_t *nr_rlc_am;
+  nr_rlc_ue_t *ue;
+  struct NR_SL_LogicalChannelConfig_r16 *l = rlc_BearerConfig->sl_MAC_LogicalChannelConfig_r16;
+
+  AssertFatal(srb_id >= 1 && srb_id <= 3, "bad SL srb id %d\n", srb_id);
+  int logical_channel_group = *l->sl_LogicalChannelGroup_r16;
+  if (logical_channel_group != 0)
+    LOG_E(RLC, "%s:%d:%s: unexpected SL SRB LCG %d\n", __FILE__, __LINE__, __FUNCTION__, logical_channel_group);
+
+  /* hardcode standard NR SRB AM params (matches episys) */
+  int t_poll_retransmit = 45, t_reassembly = 35, t_status_prohibit = 0;
+  int poll_pdu = -1, poll_byte = -1, max_retx_threshold = 8, sn_field_length = 12;
+
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rnti);
+  if (ue->sl_srb[srb_id - 1] != NULL) {
+    LOG_W(RLC, "SL SRB %d already exists for RNTI %04x, do nothing\n", srb_id, rnti);
+  } else {
+    nr_rlc_am = new_nr_rlc_entity_am(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE,
+                                     deliver_sdu, ue, successful_delivery, ue, max_retx_reached, ue,
+                                     t_poll_retransmit, t_reassembly, t_status_prohibit,
+                                     poll_pdu, poll_byte, max_retx_threshold, sn_field_length);
+    nr_rlc_am->intf_type = PC5;
+    nr_rlc_ue_add_srb_rlc_entity(ue, srb_id, nr_rlc_am);
+    LOG_I(RLC, "added SL SRB %d to UE with RNTI 0x%x\n", srb_id, rnti);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+}
+
 struct srb0_data {
   int ue_id;
   void *data;

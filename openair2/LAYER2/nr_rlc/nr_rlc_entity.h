@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "common/utils/time_stat.h"
+#include "common/utils/nr/nr_common.h" // nr_intf_type_t (Uu/PC5) for the SL data plane (episys SL port)
 
 #define NR_SDU_MAX 16000   /* max NR PDCP SDU size is 9000, let's take more */
 
@@ -116,6 +117,7 @@ typedef struct nr_rlc_entity_s {
   nr_rlc_statistics_t stats;
   time_average_t *txsdu_avg_time_to_tx;
   int             avg_time_is_on;
+  nr_intf_type_t  intf_type;     /* Uu vs PC5 (sidelink); set by SL-DRB creation (episys SL port) */
 } nr_rlc_entity_t;
 
 nr_rlc_entity_t *new_nr_rlc_entity_am(int rx_maxsize,

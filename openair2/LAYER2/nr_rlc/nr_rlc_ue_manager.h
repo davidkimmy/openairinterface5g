@@ -24,6 +24,10 @@ typedef struct nr_rlc_ue_t {
   nr_rlc_entity_t *srb0;
   nr_rlc_entity_t *srb[3];
   nr_rlc_entity_t *drb[MAX_DRBS_PER_UE];
+  /* Sidelink (PC5) bearers, routed by entity->intf_type==PC5 (episys SL data-plane port) */
+  nr_rlc_entity_t *sl_srb0;
+  nr_rlc_entity_t *sl_srb[3];
+  nr_rlc_entity_t *sl_drb[MAX_DRBS_PER_UE];
   nr_lcid_rb_t lcid2rb[32];
   rlf_handler_t rlf_handler;
 } nr_rlc_ue_t;

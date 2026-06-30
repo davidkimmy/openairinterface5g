@@ -172,7 +172,11 @@ void nr_rlc_ue_add_srb_rlc_entity(nr_rlc_ue_t *ue, int srb_id, nr_rlc_entity_t *
     exit(1);
   }
 
-  ue->srb[srb_id] = entity;
+  /* sidelink (PC5) SRBs live in a separate array, selected by interface type (episys SL port) */
+  if (entity->intf_type == PC5)
+    ue->sl_srb[srb_id] = entity;
+  else
+    ue->srb[srb_id] = entity;
 }
 
 /* must be called with lock acquired */
@@ -191,5 +195,9 @@ void nr_rlc_ue_add_drb_rlc_entity(nr_rlc_ue_t *ue, int drb_id, nr_rlc_entity_t *
     exit(1);
   }
 
-  ue->drb[drb_id] = entity;
+  /* sidelink (PC5) DRBs live in a separate array, selected by interface type (episys SL port) */
+  if (entity->intf_type == PC5)
+    ue->sl_drb[drb_id] = entity;
+  else
+    ue->drb[drb_id] = entity;
 }
