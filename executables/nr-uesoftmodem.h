@@ -13,6 +13,16 @@
 extern int NB_UE_INST;
 extern uint16_t ue_id_g;
 
+/* Sidelink (PC5) per-UE info read from the SL conf's sl_UEINFO section (episys SL data-plane port).
+ * srcid = SL L2 source id; thirdOctet/fourthOctet form the SL TUN IP 10.0.<third>.<fourth>. */
+typedef struct ueinfo {
+  int srcid;
+  int thirdOctet;
+  int fourthOctet;
+  uint8_t remote_ue_id;
+  uint8_t is_relay_ue;
+} ueinfo_t;
+
 #define  CONFIG_HLP_IF_FREQ                "IF frequency for RF, if needed\n"
 #define  CONFIG_HLP_IF_FREQ_OFF            "UL IF frequency offset for RF, if needed\n"
 #define  CONFIG_HLP_DLSCH_PARA             "number of threads for dlsch processing 0 for no parallelization\n"

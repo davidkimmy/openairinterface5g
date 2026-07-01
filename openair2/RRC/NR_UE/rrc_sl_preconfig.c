@@ -11,6 +11,11 @@
 #include "rrc_defs.h"
 #include "LAYER2/NR_MAC_UE/mac_proto.h"
 #include "nr-uesoftmodem.h"
+// episys SL data-plane port: SL DRB (PDCP/RLC) + SDAP entity + sidelink TUN setup for mode-2.
+#include "openair2/LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
+#include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"
+#include "openair2/SDAP/nr_sdap/nr_sdap.h"
+#include "openair2/SDAP/nr_sdap/nr_sdap_entity.h"
 
 void free_sl_rrc(NR_UE_RRC_INST_t *rrc)
 {
@@ -332,11 +337,64 @@ NR_SL_PreconfigurationNR_r16_t *prepare_NR_SL_PRECONFIGURATION(uint16_t num_tx_p
   // EUTRA Frequency list
   sl_preconfig->sl_PreconfigEUTRA_AnchorCarrierFreqList_r16 = NULL;
 
-  // NR sidelink radio bearer(s) configuration(s)
-  sl_preconfig->sl_RadioBearerPreConfigList_r16 = NULL; // fill later
+  // NR sidelink radio bearer(s) configuration(s) (episys SL data-plane port: fill the SL DRB config)
+  sl_preconfig->sl_RadioBearerPreConfigList_r16 = calloc(1,sizeof(*sl_preconfig->sl_RadioBearerPreConfigList_r16));
+  struct NR_SL_RadioBearerConfig_r16 *sl_RadioBearerConfig_r16 = calloc(1,sizeof(*sl_RadioBearerConfig_r16));
 
-  // NR sidelink RLC bearer(s) configuration(s)
-  sl_preconfig->sl_RLC_BearerPreConfigList_r16 = NULL; // fill later
+  sl_RadioBearerConfig_r16->slrb_Uu_ConfigIndex_r16 = 1;
+  sl_RadioBearerConfig_r16->sl_SDAP_Config_r16 = calloc(1, sizeof(*sl_RadioBearerConfig_r16->sl_SDAP_Config_r16));
+  struct NR_SL_SDAP_Config_r16* sl_SDAP_Config = sl_RadioBearerConfig_r16->sl_SDAP_Config_r16;
+  sl_SDAP_Config->sl_SDAP_Header_r16 = NR_SL_SDAP_Config_r16__sl_SDAP_Header_r16_absent;
+  sl_SDAP_Config->sl_DefaultRB_r16 = true;
+  sl_SDAP_Config->sl_CastType_r16 = calloc(1, sizeof(*sl_SDAP_Config->sl_CastType_r16));
+  *sl_SDAP_Config->sl_CastType_r16 = NR_SL_SDAP_Config_r16__sl_CastType_r16_unicast;
+  sl_SDAP_Config->sl_MappedQoS_Flows_r16 = calloc(1, sizeof(*sl_SDAP_Config->sl_MappedQoS_Flows_r16));
+
+  sl_SDAP_Config->sl_MappedQoS_Flows_r16->choice.sl_MappedQoS_FlowsListDedicated_r16 = calloc(1, sizeof(*sl_SDAP_Config->sl_MappedQoS_Flows_r16->choice.sl_MappedQoS_FlowsListDedicated_r16));
+  struct NR_SL_MappedQoS_FlowsListDedicated_r16 *sl_MappedQoS_FlowsListDedicated = sl_SDAP_Config->sl_MappedQoS_Flows_r16->choice.sl_MappedQoS_FlowsListDedicated_r16;
+  sl_MappedQoS_FlowsListDedicated->sl_MappedQoS_FlowsToAddList_r16 = calloc(1, sizeof(*sl_MappedQoS_FlowsListDedicated->sl_MappedQoS_FlowsToAddList_r16));
+  NR_SL_QoS_FlowIdentity_r16_t *sl_qfi = calloc(1, sizeof(*sl_qfi));
+  *sl_qfi = 2;
+  ASN_SEQUENCE_ADD(&sl_MappedQoS_FlowsListDedicated->sl_MappedQoS_FlowsToAddList_r16->list, sl_qfi);
+  LOG_D(SDAP, "SDAP qfi %ld\n", *sl_MappedQoS_FlowsListDedicated->sl_MappedQoS_FlowsToAddList_r16->list.array[0]);
+
+  sl_RadioBearerConfig_r16->sl_TransRange_r16 = NULL;
+  sl_RadioBearerConfig_r16->sl_PDCP_Config_r16 = calloc(1,sizeof(*sl_RadioBearerConfig_r16->sl_PDCP_Config_r16));
+  sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_DiscardTimer_r16 = calloc(1,sizeof(*sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_DiscardTimer_r16));
+  *sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_DiscardTimer_r16 = NR_SL_PDCP_Config_r16__sl_DiscardTimer_r16_infinity;
+  sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_PDCP_SN_Size_r16 = calloc(1,sizeof(*sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_PDCP_SN_Size_r16));
+  *sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_PDCP_SN_Size_r16 = NR_SL_PDCP_Config_r16__sl_PDCP_SN_Size_r16_len18bits;
+  sl_RadioBearerConfig_r16->sl_PDCP_Config_r16->sl_OutOfOrderDelivery = NULL;
+  ASN_SEQUENCE_ADD(&sl_preconfig->sl_RadioBearerPreConfigList_r16->list,sl_RadioBearerConfig_r16);
+
+  // NR sidelink RLC bearer(s) configuration(s) (episys SL data-plane port)
+  sl_preconfig->sl_RLC_BearerPreConfigList_r16 = calloc(1,sizeof(*sl_preconfig->sl_RLC_BearerPreConfigList_r16));
+  struct NR_SL_RLC_BearerConfig_r16 *sl_RLC_BearerConfig_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16));
+  // initialize with UM for now
+  sl_RLC_BearerConfig_r16->sl_RLC_BearerConfigIndex_r16 = 0;
+  sl_RLC_BearerConfig_r16->sl_ServedRadioBearer_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16->sl_ServedRadioBearer_r16));
+  *sl_RLC_BearerConfig_r16->sl_ServedRadioBearer_r16 = 1;
+  sl_RLC_BearerConfig_r16->sl_RLC_Config_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16->sl_RLC_Config_r16));
+  sl_RLC_BearerConfig_r16->sl_RLC_Config_r16->present = NR_SL_RLC_Config_r16_PR_sl_UM_RLC_r16;
+  sl_RLC_BearerConfig_r16->sl_RLC_Config_r16->choice.sl_UM_RLC_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16->sl_RLC_Config_r16->choice.sl_UM_RLC_r16));
+  sl_RLC_BearerConfig_r16->sl_RLC_Config_r16->choice.sl_UM_RLC_r16->sl_SN_FieldLengthUM_r16 = calloc(1, sizeof(*sl_RLC_BearerConfig_r16->sl_RLC_Config_r16->choice.sl_UM_RLC_r16->sl_SN_FieldLengthUM_r16));
+
+  *sl_RLC_BearerConfig_r16->sl_RLC_Config_r16->choice.sl_UM_RLC_r16->sl_SN_FieldLengthUM_r16 = NR_SN_FieldLengthUM_size6;
+  // Logical Channel Config for default link
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16));
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_Priority_r16 = 1;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_PrioritisedBitRate_r16 = NR_SL_LogicalChannelConfig_r16__sl_PrioritisedBitRate_r16_infinity;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_BucketSizeDuration_r16 = NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_ConfiguredGrantType1Allowed_r16 = NULL;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_HARQ_FeedbackEnabled_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_HARQ_FeedbackEnabled_r16));
+  *sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_HARQ_FeedbackEnabled_r16 = NR_SL_LogicalChannelConfig_r16__sl_HARQ_FeedbackEnabled_r16_enabled;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_AllowedCG_List_r16 = NULL;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_AllowedSCS_List_r16 = NULL;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_LogicalChannelGroup_r16 = calloc(1,sizeof(*sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_LogicalChannelGroup_r16));
+  *sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_LogicalChannelGroup_r16 = 1;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_SchedulingRequestId_r16 = NULL;
+  sl_RLC_BearerConfig_r16->sl_MAC_LogicalChannelConfig_r16->sl_LogicalChannelSR_DelayTimerApplied_r16 = NULL;
+  ASN_SEQUENCE_ADD(&sl_preconfig->sl_RLC_BearerPreConfigList_r16->list,sl_RLC_BearerConfig_r16);
 
   //Measurement and reporting configuration
   sl_preconfig->sl_MeasPreConfig_r16 = NULL;
@@ -484,6 +542,23 @@ void nr_rrc_ue_decode_NR_SBCCH_SL_BCH_Message(NR_UE_RRC_INST_t *rrc,
   return;
 }
 
+/* episys SL data-plane port: read the SL L2 source id + static TUN IP octets from the conf's
+ * sl_UEINFO section (SIDELINK_PRECONFIGURATION.[0].sl_UEINFO.[0]). Defaults if the section is absent. */
+static void read_sl_ueinfo(ueinfo_t *ueinfo)
+{
+  char aprefix[MAX_OPTNAME_SIZE * 2 + 8];
+  paramdef_t SL_UEINFOPARAMS[] = {
+    {"srcid",       "SL L2 source id\n",          0, .iptr = &ueinfo->srcid,       .defintval = 1, TYPE_INT, 0},
+    {"thirdOctet",  "SL TUN IP third octet\n",    0, .iptr = &ueinfo->thirdOctet,  .defintval = 0, TYPE_INT, 0},
+    {"fourthOctet", "SL TUN IP fourth octet\n",   0, .iptr = &ueinfo->fourthOctet, .defintval = 1, TYPE_INT, 0},
+  };
+  paramlist_def_t SL_UEINFOList = {"sl_UEINFO", NULL, 0};
+  sprintf(aprefix, "%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0);
+  config_getlist(config_get_if(), &SL_UEINFOList, NULL, 0, aprefix);
+  sprintf(aprefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0, "sl_UEINFO", 0);
+  config_get(config_get_if(), SL_UEINFOPARAMS, sizeofArray(SL_UEINFOPARAMS), aprefix);
+}
+
 void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
                                               sl_sync_source_enum_t sync_source)
 {
@@ -496,6 +571,31 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
   AssertFatal(sync_source != SL_SYNC_SOURCE_GNBENB, "Sync source GNB not supported\n");
 
   nr_rrc_mac_config_req_sl_preconfig(rrc_inst->ue_id, sl_preconfig, sync_source);
+
+  /* episys SL data-plane port: for SL mode-2, set up the SL data radio bearer (PDCP+RLC), its SDAP
+   * entity, and a sidelink TUN so PSSCH user data / IP flows. srcid + the static SL IP
+   * (10.0.<thirdOctet>.<fourthOctet>) come from the conf's sl_UEINFO section. Relay (mode-1/SRAP)
+   * DRB handling is deferred. */
+  if (get_softmodem_params()->sl_mode == 2) {
+    NR_SidelinkPreconfigNR_r16_t *slp = &sl_preconfig->sidelinkPreconfigNR_r16;
+    if (slp->sl_RadioBearerPreConfigList_r16 && slp->sl_RLC_BearerPreConfigList_r16) {
+      ueinfo_t ueinfo = {0};
+      read_sl_ueinfo(&ueinfo);
+      for (int i = 0; i < slp->sl_RadioBearerPreConfigList_r16->list.count; i++)
+        add_drb_sl(ueinfo.srcid, slp->sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
+      for (int i = 0; i < slp->sl_RLC_BearerPreConfigList_r16->list.count; i++)
+        nr_rlc_add_drb_sl(ueinfo.srcid, 1, slp->sl_RLC_BearerPreConfigList_r16->list.array[i]);
+      sdap_config_t sdap = {0};
+      sdap.pdusession_id = 10;
+      sdap.drb_id = 1;
+      sdap.defaultDRB = true;
+      nr_sdap_addmod_entity(GNB_FLAG_NO, ueinfo.srcid, &sdap);
+      char sl_ip[24];
+      snprintf(sl_ip, sizeof(sl_ip), "10.0.%d.%d", ueinfo.thirdOctet, ueinfo.fourthOctet);
+      create_ue_ip_if(sl_ip, NULL, ueinfo.srcid, 10, true);
+      LOG_I(NR_RRC, "SL mode-2 data plane up: SL DRB + SDAP + TUN %s (srcid 0x%x)\n", sl_ip, ueinfo.srcid);
+    }
+  }
 
   //TBD.. These should be chosen by RRC according to 3GPP 38.331 RRC specification.
   //Currently hardcoding the values to these
