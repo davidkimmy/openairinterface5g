@@ -542,6 +542,13 @@ static void rfsimulator_readconfig(rfsimulator_state_t *rfsimulator)
     rfsimuParam = rfsimuParamList.paramarray[ru_id];
   }
 
+  /* CLI overrides conf: apply the scalar --rfsimulator.<param> command-line options onto the selected
+   * paramdef so they override the values read from the conf file (list or scalar) AND are marked consumed.
+   * config_getlist only applies the indexed form (--rfsimulator.[i].<param>), so without this a scalar CLI
+   * option like --rfsimulator.serverport would be ignored (conf wins) and then rejected by
+   * config_check_unknown_cmdlineopt, aborting the softmodem. Mirrors episys's scalar config_get behaviour. */
+  config_process_cmdline(cfg, rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SECTION);
+
   /* Per-RU link selection: a device instance flagged as the sidelink (PC5) RU uses the dedicated SL endpoint
    * (serveraddrsl/serverportsl); all others use the Uu endpoint (serveraddr/serverport). This lets a relay run
    * a Uu RU and a PC5 RU as two independent device instances/ports simultaneously (mode-1), while mode-2's
