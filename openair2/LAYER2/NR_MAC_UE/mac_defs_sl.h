@@ -7,6 +7,8 @@
 
 #include "sidelink_nr_ue_interface.h"
 #include "NR_SL-ResourcePool-r16.h"
+#include "NR_SL-BWP-ConfigCommon-r16.h"  // episys SL port: NR_SL_BWP_ConfigCommon_r16_t (mac->sl_bwp)
+#include "NR_SL-BWP-Config-r16.h"        // episys SL port: NR_SL_BWP_Config_r16_t (mac->sl_bwp_dedicated)
 #include "NR_TDD-UL-DL-ConfigCommon.h"
 #include "NR_MAC_COMMON/nr_mac.h"
 #include "NR_UE_PHY_INTERFACE/NR_IF_Module.h"
@@ -130,6 +132,10 @@ typedef struct sl_nr_ue_mac_params {
   //Holds either the TDD config from RRC
   //or TDD config decoded from SL-MIB
   NR_TDD_UL_DL_ConfigCommon_t *sl_TDD_config;
+
+  // episys SL data-plane port: cached SL BWP generic config (sl_LengthSymbols/sl_StartSymbol), used by the
+  // SLSCH scheduler (nr_ue_scheduler_sl.c) to size PSSCH. Set in config_ue_sl.c from the SL BWP list.
+  struct NR_SL_BWP_Generic_r16 *sl_bwp_generic;
 
   //Configured from RRC
   uint32_t sl_MaxNumConsecutiveDTX;

@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 
 #include "PHY/defs_nr_UE.h"
+#include "PHY/nr_phy_common/inc/nr_sl_decode_defs.h"  // episys SL port: shared LDPC decode struct for SLSCH RX fill
 #include <openair1/PHY/TOOLS/phy_scope_interface.h>
 #include "common/utils/LOG/log.h"
 #include "UTIL/OPT/opt.h"
@@ -62,7 +63,18 @@ void nr_fill_sl_rx_indication(sl_nr_rx_indication_t *rx_ind,
 
   switch (pdu_type) {
     case SL_NR_RX_PDU_TYPE_SLSCH:
-      break;
+    case SL_NR_RX_PDU_TYPE_SLSCH_PSFCH: {
+      // episys SL data-plane port: deliver a decoded SLSCH (PSSCH) transport block up to MAC.
+      sl_nr_slsch_pdu_t *rx_slsch_pdu = &rx_ind->rx_indication_body[n_pdus - 1].rx_slsch_pdu;
+      slsch_status_t *slsch_status = (slsch_status_t *)typeSpecific;
+      rx_slsch_pdu->pdu        = slsch_status->rdata->ulsch_harq->b;
+      rx_slsch_pdu->pdu_length = slsch_status->rdata->ulsch_harq->TBS;
+      rx_slsch_pdu->harq_pid   = slsch_status->rdata->harq_pid;
+      rx_slsch_pdu->ack_nack   = (slsch_status->rxok == true) ? 1 : 0;
+      LOG_D(NR_MAC, "%4d.%2d Received %s SLSCH\n", rx_ind->sfn, rx_ind->slot, rx_slsch_pdu->ack_nack ? "Correct" : "Incorrect");
+      if (slsch_status->rxok == true) sl_phy_params->pssch.rx_ok++;
+      else                            sl_phy_params->pssch.rx_errors[0]++;
+    } break;
     case FAPI_NR_RX_PDU_TYPE_SSB: {
       sl_nr_ssb_pdu_t *ssb_pdu = &rx_ind->rx_indication_body[n_pdus - 1].ssb_pdu;
       if (typeSpecific) {
@@ -205,6 +217,9 @@ int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr
   const uint32_t rxdataF_sz = fp->samples_per_slot_wCP;
   __attribute__((aligned(32))) c16_t rxdataF[fp->nb_antennas_rx][rxdataF_sz];
 
+  // Dual-card relay (mode-1): the PC5 device fills rxdata_sl; single-card (mode-2) SL reuses rxdata.
+  c16_t **sl_rxdata = ue->sl_dual_card ? ue->common_vars.rxdata_sl : ue->common_vars.rxdata;
+
   if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSBCH) {
     LOG_D(NR_PHY, " ----- PSBCH RX TTI: frame.slot %d.%d ------  \n", frame_rx % 1024, nr_slot_rx);
 
@@ -215,7 +230,7 @@ int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr
     int e_rx_offset = 0;
     /* TODO: Remove loop over symbols in later commit. */
     for (int sym = 0; sym < NR_SYMBOLS_PER_SLOT; sym++) {
-      nr_slot_fep(ue, fp, proc->nr_slot_rx, sym, rxdataF, link_type_sl, 0, ue->common_vars.rxdata);
+      nr_slot_fep(ue, fp, proc->nr_slot_rx, sym, rxdataF, link_type_sl, 0, sl_rxdata);
       __attribute__((aligned(32))) c16_t rxdataF_symb[fp->nb_antennas_rx][fp->ofdm_symbol_size];
       for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
         /* TODO: Remove this buffer reshaping in later commit after rxdataF is in right format */
@@ -238,6 +253,41 @@ int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr
             sl_phy_params->psbch.rx_errors);
 
       LOG_I(NR_PHY, "============================================\n");
+    }
+  }
+  // episys SL data-plane port: PSSCH (SLSCH) receive. develop's SL was sync-only; this is the data plane.
+  else if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SCI
+           || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH
+           || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH) {
+    sl_nr_rx_config_pssch_sci_pdu_t *pssch_pdu = &phy_data->nr_sl_pssch_sci_pdu;
+    LOG_D(NR_PHY, " ----- PSSCH RX TTI: frame.slot %d.%d pssch_numsym %d ------\n",
+          frame_rx % 1024, nr_slot_rx, pssch_pdu->pssch_numsym);
+
+    // OFDM front-end for the PSSCH symbols (symbol 0 is AGC/guard).
+    for (int sym = 1; sym <= pssch_pdu->pssch_numsym; sym++)
+      nr_slot_fep(ue, fp, proc->nr_slot_rx, sym, rxdataF, link_type_sl, 0, sl_rxdata);
+
+    // UE-native PSSCH demod -> ue->pssch_vars[0].llr_layers + per-antenna RX/noise power.
+    nr_rx_pssch(ue, proc, fp, phy_data, rxdataF_sz, rxdataF, 0);
+
+    NR_gNB_PUSCH *pssch_vars = ue->pssch_vars;
+    pssch_vars->ulsch_power_tot = 0;
+    pssch_vars->ulsch_noise_power_tot = 0;
+    for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
+      pssch_vars->ulsch_power_tot += pssch_vars->ulsch_power[aarx];
+      pssch_vars->ulsch_noise_power_tot += pssch_vars->ulsch_noise_power[aarx];
+    }
+    bool detected = dB_fixed_x10(pssch_vars->ulsch_power_tot)
+                    >= dB_fixed_x10(pssch_vars->ulsch_noise_power_tot) + ue->pssch_thres;
+    if (!detected) {
+      pssch_vars->DTX = 1;
+      LOG_D(NR_PHY, "%d.%d PSSCH not detected (pwr %d < noise %d + thr %d)\n", frame_rx, nr_slot_rx,
+            dB_fixed_x10(pssch_vars->ulsch_power_tot), dB_fixed_x10(pssch_vars->ulsch_noise_power_tot), ue->pssch_thres);
+    } else {
+      pssch_vars->DTX = 0;
+      int ret = nr_slsch_procedures(ue, proc, phy_data, 0);
+      LOG_D(NR_PHY, "%d.%d PSSCH SLSCH decode returned %d (pwr %d noise %d)\n", frame_rx, nr_slot_rx, ret,
+            dB_fixed_x10(pssch_vars->ulsch_power_tot), dB_fixed_x10(pssch_vars->ulsch_noise_power_tot));
     }
   }
   return sampleShift;
@@ -282,6 +332,20 @@ void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc
 
       LOG_I(NR_PHY, "============================================\n");
     }
+    tx_action = 1;
+  }
+  // episys SL data-plane port: PSCCH+PSSCH transmit. PSCCH (SCI-1) is encoded UE-native (nr_generate_sci1).
+  else if (phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH
+           || phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSFCH) {
+    LOG_D(NR_PHY, "(%d.%d) Sidelink TX PSCCH(+PSSCH)\n", frame_tx, slot_tx);
+    // PSCCH SCI-1 (PC5). nr_generate_sci1 writes the PSCCH and returns its CRC (spec: low 16 bits would be the
+    // PSSCH DMRS/SLSCH-scrambling Nid). F1 BRING-UP: the RX does a blind PSSCH config with a FIXED Nid=0
+    // (nr_ue_scheduler_sl.c), so force the TX to the same fixed Nid=0 here to align PSSCH DMRS + SLSCH + SCI-2
+    // scrambling on both sides. TODO(reconcile): compute crc24c(SCI1)>>8 on BOTH ends for spec/multi-UE.
+    nr_generate_sci1(ue, txdataF[0], fp, AMP, slot_tx, &phy_data->nr_sl_pssch_pscch_pdu);
+    phy_data->pscch_Nid = 0;
+    // PSSCH data: SLSCH encode + SCI-2 polar encode + PSSCH DMRS + SL RE map (SCI-1 REs already written above).
+    nr_ue_slsch_procedures(ue, frame_tx, slot_tx, phy_data, txdataF);
     tx_action = 1;
   }
 

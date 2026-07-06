@@ -32,7 +32,8 @@ void nr_generate_pucch0(c16_t **txdataF,
                         const NR_DL_FRAME_PARMS *frame_parms,
                         const int16_t amp16,
                         const int nr_slot_tx,
-                        const fapi_nr_ul_config_pucch_pdu *pucch_pdu)
+                        const fapi_nr_ul_config_pucch_pdu *pucch_pdu,
+                        nr_intf_type_t intf_type)
 {
 #ifdef DEBUG_NR_PUCCH_TX
   printf("\t [nr_generate_pucch0] start function at slot(nr_slot_tx)=%d\n",nr_slot_tx);
@@ -79,9 +80,9 @@ void nr_generate_pucch0(c16_t **txdataF,
 
   // we proceed to calculate alpha according to TS 38.211 Subclause 6.3.2.2.2
   int prb_offset[2]={startingPRB,startingPRB};
-  nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, 0, nr_slot_tx, u, v); // calculating u and v value
+  nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, 0, nr_slot_tx, u, v, intf_type); // calculating u and v value
   if (pucch_pdu->freq_hop_flag == 1) {
-    nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, 1, nr_slot_tx, u + 1, v + 1); // calculating u and v value
+    nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, 1, nr_slot_tx, u + 1, v + 1, intf_type); // calculating u and v value
     prb_offset[1] = pucch_pdu->second_hop_prb + pucch_pdu->bwp_start;
   }
   /*
@@ -92,7 +93,7 @@ void nr_generate_pucch0(c16_t **txdataF,
     const double alpha = nr_cyclic_shift_hopping(pucch_pdu->hopping_id,
                                                  pucch_pdu->initial_cyclic_shift,
                                                  pucch_pdu->mcs,
-                                                 l,
+                                                 intf_type == PC5 ? 0 : l, // PSFCH uses a single symbol (l=0) for the shift
                                                  pucch_pdu->start_symbol_index,
                                                  nr_slot_tx);
     int l2 = l + pucch_pdu->start_symbol_index;
@@ -231,7 +232,7 @@ void nr_generate_pucch1(c16_t **txdataF,
            n_hop,nr_slot_tx);
 #endif
     pucch_GroupHopping_t pucch_GroupHopping = pucch_pdu->group_hop_flag + (pucch_pdu->sequence_hop_flag<<1);
-    nr_group_sequence_hopping(pucch_GroupHopping,pucch_pdu->hopping_id,n_hop,nr_slot_tx,&u,&v); // calculating u and v value
+    nr_group_sequence_hopping(pucch_GroupHopping,pucch_pdu->hopping_id,n_hop,nr_slot_tx,&u,&v,UU); // calculating u and v value
     // mcs = 0 except for PUCCH format 0
     int mcs = 0;
     double alpha = nr_cyclic_shift_hopping(pucch_pdu->hopping_id, m0, mcs, l, lprime, nr_slot_tx);
@@ -1114,7 +1115,7 @@ void nr_generate_pucch3_4(c16_t **txdataF,
       n_hop = 1; // n_hop = 1 for second hop
 
     pucch_GroupHopping_t pucch_GroupHopping = pucch_pdu->group_hop_flag + (pucch_pdu->sequence_hop_flag<<1);
-    nr_group_sequence_hopping(pucch_GroupHopping,pucch_pdu->hopping_id,n_hop,nr_slot_tx,&u,&v); // calculating u and v value
+    nr_group_sequence_hopping(pucch_GroupHopping,pucch_pdu->hopping_id,n_hop,nr_slot_tx,&u,&v,UU); // calculating u and v value
 
     // Next we proceed to calculate base sequence for DM-RS signal, according to TS 38.211 subclause 6.4.1.33
     if (nrofPRB >= 3) { // TS 38.211 subclause 5.2.2.1 (Base sequences of length 36 or larger) applies

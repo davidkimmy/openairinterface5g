@@ -29,3 +29,18 @@ void sl_init_psbch_dmrs_gold_sequences(PHY_VARS_NR_UE *UE)
     }
   }
 }
+
+// episys SL data-plane port: PSSCH DMRS gold sequence for one (slot, symbol), scrambled by N_id
+// (from the PSCCH CRC, 38.211 8.4.1.1). One-shot generation (no precompute table). Used by the
+// PSSCH TX RE mapper (nr_ue_slsch_procedures).
+void nr_init_pssch_dmrs_oneshot(const NR_DL_FRAME_PARMS *fp, uint16_t N_id, uint32_t *pssch_dmrs, int slot, int symb)
+{
+  uint32_t x1 = 0;
+  uint32_t x2 = ((1U << 17) * (fp->symbols_per_slot * slot + symb + 1) * ((N_id << 1) + 1) + (N_id << 1));
+  const int len = ((fp->N_RB_UL * 12) >> 5) + 1;
+  int reset = 1;
+  for (int n = 0; n < len; n++) {
+    pssch_dmrs[n] = gold_generic(&x1, &x2, reset);
+    reset = 0;
+  }
+}

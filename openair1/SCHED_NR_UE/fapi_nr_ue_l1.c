@@ -433,12 +433,22 @@ void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
     sl_nr_rx_config_request_t *sl_rx_config = scheduled_response->sl_rx_config;
     nr_phy_data_t *phy_data = (nr_phy_data_t *)scheduled_response->phy_data;
 
-    AssertFatal(sl_rx_config->number_pdus == SL_NR_RX_CONFIG_LIST_NUM, "sl_rx_config->number_pdus incorrect\n");
+    AssertFatal(sl_rx_config->number_pdus >= 1 && sl_rx_config->number_pdus <= SL_NR_RX_CONFIG_LIST_NUM,
+                "sl_rx_config->number_pdus %d incorrect\n", sl_rx_config->number_pdus);
 
     switch (sl_rx_config->sl_rx_config_list[0].pdu_type) {
       case SL_NR_CONFIG_TYPE_RX_PSBCH:
         phy_data->sl_rx_action = SL_NR_CONFIG_TYPE_RX_PSBCH;
         LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSBCH\n");
+        break;
+      case SL_NR_CONFIG_TYPE_RX_PSSCH_SCI:
+      case SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH:
+        // episys SL data-plane port: carry PSSCH RX config to PHY. The scheduler fills list[0] with the SCI-2/PSSCH
+        // demod config and list[1] with the SLSCH transport-block config (see nr_ue_scheduler_sl.c).
+        phy_data->sl_rx_action = sl_rx_config->sl_rx_config_list[0].pdu_type;
+        phy_data->nr_sl_pssch_sci_pdu = sl_rx_config->sl_rx_config_list[0].rx_sci2_config_pdu;
+        phy_data->nr_sl_pssch_pdu = sl_rx_config->sl_rx_config_list[1].rx_pssch_config_pdu;
+        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSSCH (pssch_numsym %d)\n", phy_data->nr_sl_pssch_sci_pdu.pssch_numsym);
         break;
       default:
         AssertFatal(0, "Incorrect sl_rx config req pdutype \n");
@@ -466,6 +476,13 @@ void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
             *((uint32_t *)sl_tx_config->tx_config_list[0].tx_psbch_config_pdu.psbch_payload);
         phy_data_tx->psbch_vars.psbch_tx_power = sl_tx_config->tx_config_list[0].tx_psbch_config_pdu.psbch_tx_power;
         phy_data_tx->psbch_vars.tx_slss_id = sl_tx_config->tx_config_list[0].tx_psbch_config_pdu.tx_slss_id;
+        break;
+      case SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH:
+        // episys SL data-plane port: carry the PSCCH+PSSCH TX PDU (SCI-1/SCI-2 payloads + TB params) to PHY.
+        phy_data_tx->sl_tx_action = SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH;
+        phy_data_tx->nr_sl_pssch_pscch_pdu = sl_tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu;
+        LOG_D(PHY, "Recvd CONFIG_TYPE_TX_PSCCH_PSSCH (tb_size %d)\n",
+              phy_data_tx->nr_sl_pssch_pscch_pdu.tb_size);
         break;
       default:
         AssertFatal(0, "Incorrect sl_tx config req pdutype \n");

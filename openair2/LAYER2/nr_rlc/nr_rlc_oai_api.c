@@ -431,6 +431,15 @@ static void deliver_sdu(void *_ue, nr_rlc_entity_t *entity, char *buf, int size)
     }
   }
 
+  /* maybe a sidelink (PC5) DRB? SL entities live in a separate array (episys SL data-plane port). */
+  for (i = 0; i < sizeofArray(ue->sl_drb); i++) {
+    if (entity == ue->sl_drb[i]) {
+      is_srb = 0;
+      rb_id = i + 1;
+      goto rb_found;
+    }
+  }
+
   LOG_E(RLC, "Fatal, no RB found for ue %d\n", ue->ue_id);
   exit(1);
 
@@ -902,6 +911,74 @@ void nr_rlc_add_drb(int ue_id, int drb_id, const NR_RLC_BearerConfig_t *rlc_Bear
     exit(1);
   }
   LOG_I(RLC, "Added DRB to UE %d\n", ue_id);
+}
+
+/* ---- Sidelink (PC5) MAC<->RLC data accessors (episys SL data-plane port) ----
+ * SL DRBs live in ue->sl_drb[] (see nr_rlc_ue_add_drb_rlc_entity), keyed by the local src_id, and are NOT
+ * reachable through the Uu lcid path (get_rlc_entity_from_lcid -> ue->drb[]). These address them directly.
+ * The UM SL entity serves both directions: generate_pdu (TX) and recv_pdu (RX) under the local src_id. */
+mac_rlc_status_resp_t nr_mac_rlc_status_ind_sl(int src_id, int drb_id, frame_t frame)
+{
+  (void)frame; // SL DRB buffer-status is time-driven via set_time(); frame kept for Uu-parity signature
+  mac_rlc_status_resp_t ret = {0};
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = (ue && drb_id >= 1 && drb_id <= MAX_DRBS_PER_UE) ? ue->sl_drb[drb_id - 1] : NULL;
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    nr_rlc_entity_buffer_status_t bs = rb->buffer_status(rb, 1000 * 1000);
+    ret.bytes_in_buffer = bs.status_size + bs.retx_size + bs.tx_size;
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  return ret;
+}
+
+tbs_size_t nr_mac_rlc_data_req_sl(int src_id, int drb_id, tb_size_t tb_size, char *buffer)
+{
+  int ret = 0;
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = (ue && drb_id >= 1 && drb_id <= MAX_DRBS_PER_UE) ? ue->sl_drb[drb_id - 1] : NULL;
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    ret = rb->generate_pdu(rb, buffer, tb_size);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  return ret;
+}
+
+void nr_mac_rlc_data_ind_sl(int src_id, int drb_id, char *buf, int len)
+{
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = (ue && drb_id >= 1 && drb_id <= MAX_DRBS_PER_UE) ? ue->sl_drb[drb_id - 1] : NULL;
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    rb->recv_pdu(rb, buf, len);
+  } else {
+    LOG_W(RLC, "SL RX: no sl_drb %d for src_id 0x%x\n", drb_id, src_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+}
+
+/* PDCP->RLC TX buffer-fill for SL DRBs. Mirror of nr_rlc_data_req (Uu) but targets ue->sl_drb[]
+ * keyed by the local src_id, since SL bearers are not reachable through the Uu drb[] path. The
+ * buffered SDU is later pulled by the MAC SL scheduler via nr_mac_rlc_data_req_sl. */
+rlc_op_status_t nr_rlc_data_req_sl(int src_id, int drb_id, mui_t muiP, sdu_size_t sdu_sizeP, uint8_t *sdu_pP)
+{
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = (ue && drb_id >= 1 && drb_id <= MAX_DRBS_PER_UE) ? ue->sl_drb[drb_id - 1] : NULL;
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    rb->recv_sdu(rb, (char *)sdu_pP, sdu_sizeP, muiP);
+    LOG_D(RLC, "SL TX: buffered %d bytes into sl_drb %d for src_id 0x%x\n", sdu_sizeP, drb_id, src_id);
+  } else {
+    LOG_E(RLC, "SL TX: SDU sent to unknown sl_drb %d for src_id 0x%x\n", drb_id, src_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  free(sdu_pP);
+  return RLC_OP_STATUS_OK;
 }
 
 /* ---- Sidelink (PC5) SL-DRB setup (episys SL data-plane port onto develop) ----

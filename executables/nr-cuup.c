@@ -96,6 +96,14 @@ rlc_op_status_t nr_rlc_data_req(const protocol_ctxt_t *const ctxt_pP,
   return 0;
 }
 
+/* Sidelink SL-DRB path is UE-only; the CU-UP never routes to it. Stub so the
+ * shared PDCP rlc_data_req queue links (mirrors the nr_rlc_data_req stub above). */
+rlc_op_status_t nr_rlc_data_req_sl(int src_id, int drb_id, mui_t muiP, sdu_size_t sdu_sizeP, uint8_t *sdu_pP)
+{
+  abort();
+  return 0;
+}
+
 int nr_rlc_get_available_tx_space(const rnti_t rntiP, const logical_chan_id_t channel_idP)
 {
   abort();

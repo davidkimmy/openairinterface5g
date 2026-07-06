@@ -58,6 +58,13 @@ rlc_op_status_t nr_rlc_data_req(const protocol_ctxt_t *const ctxt_pP,
                                 uint8_t *sdu_pP);
 void nr_mac_rlc_status_ind(uint16_t ue_id, frame_t frame, int n_ch, const logical_chan_id_t *ch, mac_rlc_status_resp_t *ret);
 
+/* Sidelink (PC5) MAC<->RLC data accessors (episys SL data-plane port). Address ue->sl_drb[drb_id-1] under the
+ * local src_id (SL DRBs are not in the Uu lcid map). status/data_req = TX (scheduler); data_ind = RX push. */
+mac_rlc_status_resp_t nr_mac_rlc_status_ind_sl(int src_id, int drb_id, frame_t frame);
+tbs_size_t nr_mac_rlc_data_req_sl(int src_id, int drb_id, tb_size_t tb_size, char *buffer);
+void nr_mac_rlc_data_ind_sl(int src_id, int drb_id, char *buf, int len);
+rlc_op_status_t nr_rlc_data_req_sl(int src_id, int drb_id, mui_t muiP, sdu_size_t sdu_sizeP, uint8_t *sdu_pP);
+
 void nr_rlc_add_srb(int ue_id, int srb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig);
 void nr_rlc_add_drb(int ue_id, int drb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig);
 /* Sidelink (PC5) SL-DRB / SL-SRB setup (episys SL data-plane port). */

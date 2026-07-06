@@ -242,6 +242,32 @@ static void UE_synch(void *arg) {
   }
 }
 
+/* Sidelink (PC5) initial-sync task for the mode-1 dual-card SL thread: SLSS search on the SL device,
+ * sets is_synchronized_sl (not the Uu is_synchronized) and retunes the PC5 card. */
+static void UE_synch_sl(void *arg)
+{
+  syncData_t *syncD = (syncData_t *)arg;
+  PHY_VARS_NR_UE *UE = syncD->UE;
+  UE->is_synchronized_sl = 0;
+
+  LOG_I(PHY, "[UE thread Synch] Running Sidelink (PC5) Initial Synch\n");
+  const NR_DL_FRAME_PARMS *fp = &UE->SL_UE_PHY_PARAMS.sl_frame_params;
+  const uint64_t carrier = fp->sl_CarrierFreq;
+
+  nr_initial_sync_t ret = sl_nr_slss_search(UE, &syncD->proc, SL_NR_SSB_REPETITION_IN_FRAMES);
+  if (ret.cell_detected) {
+    syncD->rx_offset = ret.rx_offset;
+    const int freq_offset = UE->SL_UE_PHY_PARAMS.sync_params.freq_offset;
+    // Update the PC5 card's carrier config. rfsim does not retune; for USRP mode-1 the device retune via
+    // nrue_ru_set_freq_sl() should be added when that path is exercised.
+    nr_rf_card_config_freq(&openair0_cfg[UE->rf_map_sl.card], carrier, carrier, freq_offset);
+    LOG_I(PHY, "Got sidelink synch: carrier off %d Hz\n", freq_offset);
+    UE->is_synchronized_sl = 1;
+  } else {
+    LOG_E(PHY, "Sidelink (PC5) synch failed\n");
+  }
+}
+
 static int nr_ue_slot_select(const fapi_nr_config_request_t *cfg, int nr_slot)
 {
   if (cfg->cell_config.frame_duplex_type == FDD)
@@ -384,11 +410,19 @@ void processSlotTX(void *arg)
 
   LOG_D(PHY, "SlotTx %d.%d => slot type %d\n", proc->frame_tx, proc->nr_slot_tx, proc->tx_slot_type);
 
-  const NR_DL_FRAME_PARMS *fp = &UE->frame_parms;
+  // Sidelink uses its own frame_params; use it for the SL TX buffer offset/size (matches RU_write).
+  const NR_DL_FRAME_PARMS *fp = (UE->sl_mode == 2) ? &UE->SL_UE_PHY_PARAMS.sl_frame_params : &UE->frame_parms;
   c16_t *txp[fp->nb_antennas_tx];
   for (int i = 0; i < fp->nb_antennas_tx; i++) {
     txp[i] = UE->common_vars.txData[i] + get_samples_slot_timestamp(fp, proc->nr_slot_tx);
   }
+
+  // Sidelink: PSSCH is only written into txData on actual TX slots; clear this slot's TX buffer up front so
+  // idle SL slots transmit nothing. Otherwise the stale PSSCH from the previous frame's same slot is re-sent
+  // every frame and the RX re-decodes/re-delivers the same TB (PDCP duplicate flood, ping never completes).
+  if (UE->sl_mode == 2)
+    for (int i = 0; i < fp->nb_antennas_tx; i++)
+      memset(txp[i], 0, get_samples_per_slot(proc->nr_slot_tx, fp) * sizeof(c16_t));
 
   if (proc->tx_slot_type == NR_UPLINK_SLOT || proc->tx_slot_type == NR_MIXED_SLOT) {
     if (UE->sl_mode == 2 && proc->tx_slot_type == NR_SIDELINK_SLOT) {
@@ -701,6 +735,75 @@ static void syncInFrame(PHY_VARS_NR_UE *UE, openair0_timestamp_t *timestamp, int
       const openair0_timestamp_t writeTimestamp =
           *timestamp + get_samples_slot_duration(fp, 0, duration_rx_to_tx) - UE->N_TA_offset - ta;
       dummyWrite(UE, writeTimestamp, unitTransfer);
+    }
+    size -= unitTransfer;
+  }
+}
+
+/* ---- Sidelink (PC5) dual-card relay: card-1 variants of the sync helpers (mode-1) ----
+ * Same logic as dummyWrite/readFrame/syncInFrame but drive the SL device (nrue_ru_*_sl -> rf_map_sl.card)
+ * and fill the SL buffer (rxdata_sl), using SL frame params. Kept separate so the Uu loop is untouched. */
+static void dummyWrite_sl(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, int writeBlockSize)
+{
+  const NR_DL_FRAME_PARMS *fp = &UE->SL_UE_PHY_PARAMS.sl_frame_params;
+  c16_t *dummy_tx[fp->nb_antennas_tx];
+  c16_t dummy_tx_data[writeBlockSize];
+  memset(dummy_tx_data, 0, sizeof(dummy_tx_data));
+  for (int i = 0; i < fp->nb_antennas_tx; i++)
+    dummy_tx[i] = dummy_tx_data;
+  int tmp = nrue_ru_write_sl(UE, timestamp, (void **)dummy_tx, writeBlockSize, fp->nb_antennas_tx, 4);
+  AssertFatal(writeBlockSize == tmp, "");
+}
+
+static void readFrame_sl(PHY_VARS_NR_UE *UE, openair0_timestamp_t *timestamp, int duration_rx_to_tx, bool toTrash)
+{
+  const NR_DL_FRAME_PARMS *fp = &UE->SL_UE_PHY_PARAMS.sl_frame_params;
+  int num_frames = SL_NR_PSBCH_REPETITION_IN_FRAMES; // SL-SSB can appear once per 16 frames
+
+  c16_t *rxp[fp->nb_antennas_rx];
+  if (toTrash) {
+    rxp[0] = malloc16(get_samples_per_slot(0, fp) * sizeof(c16_t));
+    for (int i = 1; i < fp->nb_antennas_rx; i++)
+      rxp[i] = rxp[0];
+  }
+
+  for (int x = 0; x < num_frames * NR_NUMBER_OF_SUBFRAMES_PER_FRAME; x++) {
+    for (int slot_rx = 0; slot_rx < fp->slots_per_subframe; slot_rx++) {
+      if (!toTrash)
+        for (int i = 0; i < fp->nb_antennas_rx; i++)
+          rxp[i] = &UE->common_vars.rxdata_sl[i][x * fp->samples_per_subframe + get_samples_slot_timestamp(fp, slot_rx)];
+
+      int readBlockSize = get_samples_per_slot(slot_rx, fp);
+      int tmp = nrue_ru_read_sl(UE, timestamp, (void **)rxp, readBlockSize, fp->nb_antennas_rx);
+      AssertFatal(readBlockSize == tmp, "");
+
+      if (IS_SOFTMODEM_RFSIM) {
+        int slot_tx = (slot_rx + duration_rx_to_tx) % fp->slots_per_frame;
+        int writeBlockSize = get_samples_per_slot(slot_tx, fp);
+        const openair0_timestamp_t writeTimestamp =
+            *timestamp + get_samples_slot_duration(fp, slot_rx, duration_rx_to_tx) - UE->N_TA_offset;
+        dummyWrite_sl(UE, writeTimestamp, writeBlockSize);
+      }
+    }
+  }
+
+  if (toTrash)
+    free(rxp[0]);
+}
+
+static void syncInFrame_sl(PHY_VARS_NR_UE *UE, openair0_timestamp_t *timestamp, int duration_rx_to_tx, openair0_timestamp_t rx_offset)
+{
+  const NR_DL_FRAME_PARMS *fp = &UE->SL_UE_PHY_PARAMS.sl_frame_params;
+  LOG_I(PHY, "Resynchronizing SL RX by %ld samples\n", rx_offset);
+  int size = rx_offset;
+  while (size > 0) {
+    const int unitTransfer = min(get_samples_per_slot(0, fp), size);
+    const int res = nrue_ru_read_sl(UE, timestamp, (void **)UE->common_vars.rxdata_sl, unitTransfer, fp->nb_antennas_rx);
+    DevAssert(unitTransfer == res);
+    if (IS_SOFTMODEM_RFSIM) {
+      const openair0_timestamp_t writeTimestamp =
+          *timestamp + get_samples_slot_duration(fp, 0, duration_rx_to_tx) - UE->N_TA_offset;
+      dummyWrite_sl(UE, writeTimestamp, unitTransfer);
     }
     size -= unitTransfer;
   }
@@ -1084,6 +1187,171 @@ void *UE_thread(void *arg)
   return NULL;
 }
 
+/* ---- Sidelink (PC5) driving thread for the mode-1 dual-card relay ----
+ * Self-contained: drives ONLY the PC5 card (nrue_ru_*_sl -> rf_map_sl.card, rxdata_sl/txData_sl) and runs the
+ * SL RX/TX processing inline, deliberately NOT using the Uu dl_actors / process_slot_tx_barriers machinery, so
+ * PC5 sync/processing can never delay the Uu UE_thread (they are independent threads on independent devices).
+ * Reuses the same SL processing the mode-2 path uses (sl_indication scheduler + psbch_pscch_processing RX +
+ * phy_procedures_nrUE_SL_TX). Runtime-unverified for mode-1 until the SRAP + 3-node harness exists. */
+void *UE_thread_sl(void *arg)
+{
+  PHY_VARS_NR_UE *UE = (PHY_VARS_NR_UE *)arg;
+  const NR_DL_FRAME_PARMS *fp = &UE->SL_UE_PHY_PARAMS.sl_frame_params;
+  sl_nr_phy_config_request_t *sl_cfg = &UE->SL_UE_PHY_PARAMS.sl_config;
+  const int duration_rx_to_tx = NR_UE_CAPABILITY_SLOT_RX_TO_TX;
+  const int nb_slot_frame = fp->slots_per_frame;
+
+  notifiedFIFO_t nf;
+  initNotifiedFIFO(&nf);
+
+  UE->is_synchronized_sl = 0;
+  int absolute_slot = 0, decoded_frame_rx = MAX_FRAME_NUMBER - 1, trashed_frames = 0;
+  int initialSyncOffset = 0;
+  bool syncRunning = false, synced_in = false;
+  openair0_timestamp_t sync_timestamp;
+
+  // A SyncRef relay is the PC5 timing source: skip SLSS search and start streaming from slot 0.
+  const bool is_sync_ref = get_softmodem_params()->sync_ref;
+
+  // mode-1 ordering: Uu must synchronize FIRST. Wait passively for the Uu link before touching the PC5 card,
+  // so PC5 bring-up never delays the (independent) Uu UE_thread. SyncRef relays don't wait (timing source).
+  while (!oai_exit && !is_sync_ref && !UE->is_synchronized)
+    usleep(1000);
+
+  if (is_sync_ref) {
+    UE->is_synchronized_sl = 1;
+    synced_in = true;
+  } else {
+    openair0_timestamp_t tmp;
+    for (int i = 0; i < 10; i++)
+      readFrame_sl(UE, &tmp, duration_rx_to_tx, true);
+  }
+
+  LOG_I(NR_PHY, "Launching sidelink (PC5) thread on card %d\n", UE->rf_map_sl.card);
+
+  while (!oai_exit) {
+    if (syncRunning) {
+      notifiedFIFO_elt_t *res = pollNotifiedFIFO(&nf);
+      if (res) {
+        syncRunning = false;
+        if (UE->is_synchronized_sl) {
+          decoded_frame_rx = UE->SL_UE_PHY_PARAMS.sync_params.DFN;
+          decoded_frame_rx = (decoded_frame_rx + UE->init_sync_frame + trashed_frames) % MAX_FRAME_NUMBER;
+          syncData_t *syncMsg = (syncData_t *)NotifiedFifoData(res);
+          initialSyncOffset = syncMsg->rx_offset;
+          LOG_A(PHY, "Sidelink UE synchronized! decoded_frame_rx=%d trashed_frames=%d\n", decoded_frame_rx, trashed_frames);
+        }
+        delNotifiedFIFO_elt(res);
+      } else {
+        readFrame_sl(UE, &sync_timestamp, duration_rx_to_tx, true);
+        trashed_frames += SL_NR_PSBCH_REPETITION_IN_FRAMES;
+        continue;
+      }
+    }
+
+    if (!UE->is_synchronized_sl) {
+      readFrame_sl(UE, &sync_timestamp, duration_rx_to_tx, false);
+      notifiedFIFO_elt_t *Msg = newNotifiedFIFO_elt(sizeof(syncData_t), 0, &nf, UE_synch_sl);
+      syncData_t *syncMsg = (syncData_t *)NotifiedFifoData(Msg);
+      *syncMsg = (syncData_t){0};
+      syncMsg->UE = UE;
+      memset(&syncMsg->proc, 0, sizeof(syncMsg->proc));
+      pushNotifiedFIFO(&UE->sync_actor_sl.fifo, Msg);
+      trashed_frames = 0;
+      syncRunning = true;
+      continue;
+    }
+
+    if (!synced_in) {
+      synced_in = true;
+      syncInFrame_sl(UE, &sync_timestamp, duration_rx_to_tx, initialSyncOffset);
+      // read first symbol of next frame
+      const int first_symbols = fp->ofdm_symbol_size + fp->nb_prefix_samples0;
+      openair0_timestamp_t ignore;
+      nrue_ru_read_sl(UE, &ignore, (void **)UE->common_vars.rxdata_sl, first_symbols, fp->nb_antennas_rx);
+      decoded_frame_rx = (decoded_frame_rx + 1) % MAX_FRAME_NUMBER;
+      absolute_slot = decoded_frame_rx * nb_slot_frame - 1 + UE->SL_UE_PHY_PARAMS.sync_params.slot_offset;
+      continue;
+    }
+
+    // ---- steady state: one SL slot ----
+    absolute_slot++;
+    const int slot_nr = absolute_slot % nb_slot_frame;
+    UE_nr_rxtx_proc_t proc = {0};
+    proc.nr_slot_rx = slot_nr;
+    proc.nr_slot_tx = (absolute_slot + duration_rx_to_tx) % nb_slot_frame;
+    proc.frame_rx   = (absolute_slot / nb_slot_frame) % MAX_FRAME_NUMBER;
+    proc.frame_tx   = ((absolute_slot + duration_rx_to_tx) / nb_slot_frame) % MAX_FRAME_NUMBER;
+    proc.rx_slot_type = sl_nr_ue_slot_select(sl_cfg, proc.nr_slot_rx, TDD);
+    proc.tx_slot_type = sl_nr_ue_slot_select(sl_cfg, proc.nr_slot_tx, TDD);
+
+    // RX: pull this slot's samples from the PC5 device into rxdata_sl
+    const int firstSymSamp = get_firstSymSamp(slot_nr, fp);
+    c16_t *rxp[fp->nb_antennas_rx];
+    for (int i = 0; i < fp->nb_antennas_rx; i++)
+      rxp[i] = &UE->common_vars.rxdata_sl[i][firstSymSamp + get_samples_slot_timestamp(fp, slot_nr)];
+    const int readBlockSize = get_readBlockSize(slot_nr, fp);
+    openair0_timestamp_t rx_timestamp;
+    int rd = nrue_ru_read_sl(UE, &rx_timestamp, (void **)rxp, readBlockSize, fp->nb_antennas_rx);
+    AssertFatal(rd == readBlockSize, "");
+    if (slot_nr == nb_slot_frame - 1) {
+      const int first_symbols = fp->ofdm_symbol_size + fp->nb_prefix_samples0;
+      openair0_timestamp_t ignore;
+      nrue_ru_read_sl(UE, &ignore, (void **)UE->common_vars.rxdata_sl, first_symbols, fp->nb_antennas_rx);
+    }
+
+    // SL RX processing (psbch_pscch_processing reads rxdata_sl via the sl_dual_card routing)
+    nr_phy_data_t phy_data = {0};
+    if (proc.rx_slot_type == NR_SIDELINK_SLOT) {
+      phy_data.sl_rx_action = 0;
+      if (UE->if_inst && UE->if_inst->sl_indication) {
+        nr_sidelink_indication_t sl_ind;
+        nr_fill_sl_indication(&sl_ind, NULL, NULL, &proc, UE, &phy_data);
+        UE->if_inst->sl_indication(&sl_ind);
+      }
+      if (phy_data.sl_rx_action)
+        psbch_pscch_processing(UE, &proc, &phy_data);
+    }
+
+    // SL TX
+    const openair0_timestamp_t writeTimestamp =
+        rx_timestamp + get_samples_slot_duration(fp, slot_nr, duration_rx_to_tx) - firstSymSamp - UE->N_TA_offset;
+    const int writeBlockSize = get_samples_per_slot(proc.nr_slot_tx, fp);
+    c16_t *txp[fp->nb_antennas_tx];
+    for (int i = 0; i < fp->nb_antennas_tx; i++)
+      txp[i] = UE->common_vars.txData_sl[i] + get_samples_slot_timestamp(fp, proc.nr_slot_tx);
+    bool sl_tx_action = false;
+    nr_phy_data_tx_t phy_data_tx = {0};
+    if (proc.tx_slot_type == NR_SIDELINK_SLOT) {
+      if (UE->if_inst && UE->if_inst->sl_indication) {
+        nr_sidelink_indication_t sl_ind = {.module_id = UE->Mod_id,
+                                           .gNB_index = proc.gNB_id,
+                                           .cc_id = UE->CC_id,
+                                           .hfn_tx = proc.hfn_tx,
+                                           .frame_tx = proc.frame_tx,
+                                           .slot_tx = proc.nr_slot_tx,
+                                           .hfn_rx = proc.hfn_rx,
+                                           .frame_rx = proc.frame_rx,
+                                           .slot_rx = proc.nr_slot_rx,
+                                           .slot_type = SIDELINK_SLOT_TYPE_TX,
+                                           .phy_data = &phy_data_tx};
+        UE->if_inst->sl_indication(&sl_ind);
+      }
+      if (phy_data_tx.sl_tx_action) {
+        phy_procedures_nrUE_SL_TX(UE, &proc, &phy_data_tx, txp);
+        sl_tx_action = true;
+      }
+    }
+    if (sl_tx_action || IS_SOFTMODEM_RFSIM)
+      nrue_ru_write_sl(UE, writeTimestamp, (void **)txp, writeBlockSize, fp->nb_antennas_tx,
+                       sl_tx_action ? TX_BURST_START_AND_END : TX_BURST_INVALID);
+    for (int i = 0; i < fp->nb_antennas_tx; i++)
+      memset(txp[i], 0, writeBlockSize * sizeof(c16_t));
+  }
+  LOG_W(NR_PHY, "UE sidelink thread is ending\n");
+  return NULL;
+}
+
 void init_NR_UE(int nb_inst, char *uecap_file, char *reconfig_file, char *rbconfig_file, int numerology)
 {
   for (int instance_id = 0; instance_id < nb_inst; instance_id++) {
@@ -1106,6 +1374,11 @@ void init_NR_UE_threads(PHY_VARS_NR_UE *UE) {
   char thread_name[16];
   sprintf(thread_name, "UEthread_%d", UE->Mod_id);
   threadCreate(&UE->main_thread, UE_thread, (void *)UE, thread_name, -1, OAI_PRIORITY_RT_MAX);
+  // mode-1 dual-card relay: launch the independent sidelink (PC5) driving thread on the second card.
+  if (UE->sl_dual_card) {
+    sprintf(thread_name, "UEthreadSL_%d", UE->Mod_id);
+    threadCreate(&UE->sl_thread, UE_thread_sl, (void *)UE, thread_name, -1, OAI_PRIORITY_RT_MAX);
+  }
   if (!IS_SOFTMODEM_NOSTATS) {
     sprintf(thread_name, "L1_UE_stats_%d", UE->Mod_id);
     threadCreate(&UE->stat_thread, nrL1_UE_stats_thread, UE, thread_name, -1, OAI_PRIORITY_RT_LOW);

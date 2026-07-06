@@ -130,3 +130,40 @@ uint32_t nr_compute_tbslbrm(uint16_t table, uint16_t nb_rb, uint8_t Nl)
   }
   return nr_tbs;
 }
+
+// episys SL data-plane port: TB size for SLSCH (38.214-style, nb_re given directly since SL RE accounting
+// (SCI-1/SCI-2/DMRS) is computed by the caller). Mirrors nr_compute_tbs but takes nb_re instead of RB/symbol/DMRS.
+uint32_t nr_compute_tbs_sl(uint16_t Qm, uint16_t R, uint16_t nb_re, uint8_t Nl)
+{
+  const uint32_t R_5 = R / 5; // R is x10 (and can be fractional), so avoid /10
+  const uint32_t Ninfo = ((nb_re * R_5 * Qm * Nl) >> 11); // >>11 = /1024 (x1024) and /2 (the extra /5 vs /10)
+
+  uint32_t nr_tbs = 0;
+  uint32_t Np_info, C, n;
+
+  if (Ninfo <= 3824) {
+    n = max(3, floor(log2(Ninfo)) - 6);
+    Np_info = max(24, (Ninfo >> n) << n);
+    for (int i = 0; i < INDEX_MAX_TBS_TABLE; i++) {
+      if (Tbstable_nr[i] >= Np_info) {
+        nr_tbs = Tbstable_nr[i];
+        break;
+      }
+    }
+  } else {
+    n = log2(Ninfo - 24) - 5;
+    Np_info = max(3840, (ROUNDIDIV((Ninfo - 24), (1 << n))) << n);
+    if (R <= 2560) {
+      C = CEILIDIV((Np_info + 24), 3816);
+      nr_tbs = (C << 3) * CEILIDIV((Np_info + 24), (C << 3)) - 24;
+    } else {
+      if (Np_info > 8424) {
+        C = CEILIDIV((Np_info + 24), 8424);
+        nr_tbs = (C << 3) * CEILIDIV((Np_info + 24), (C << 3)) - 24;
+      } else {
+        nr_tbs = ((CEILIDIV((Np_info + 24), 8)) << 3) - 24;
+      }
+    }
+  }
+  return nr_tbs;
+}

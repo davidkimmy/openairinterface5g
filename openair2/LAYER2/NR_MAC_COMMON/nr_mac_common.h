@@ -16,6 +16,61 @@
 #define NB_SRS_PERIOD         (18)
 static const uint16_t srs_period[NB_SRS_PERIOD] = { 0, 1, 2, 4, 5, 8, 10, 16, 20, 32, 40, 64, 80, 160, 320, 640, 1280, 2560};
 
+/* ---- moved from NR_MAC_gNB/nr_mac_gNB.h to common so the UE sidelink MAC scheduler can reuse them ---- */
+/*! \brief NR_list_t is a "list" (of users, HARQ processes, slices, ...).
+ * Especially useful in the scheduler and to keep "classes" of users. */
+typedef struct {
+  int head;
+  int *next;
+  int tail;
+  int len;
+} NR_list_t;
+
+//! fixme : need to enhace for the multiple TB CQI report
+typedef struct NR_bler_stats {
+  frame_t last_frame;
+  float bler;
+  uint8_t mcs;
+  uint64_t rounds[8];
+  int last_num_sched; // scheduling count at last BLER update (for activity guard)
+} NR_bler_stats_t;
+
+/* ---- episys SL data-plane port: sidelink MAC common defs (macros, frameslot, stats) ---- */
+#define MAX_REMOTE_UES        1
+#define MAX_SL_HARQ_PROCESSES (NR_MAX_HARQ_PROCESSES)
+#define MAX_GRANTS            8
+#define MAX_PSFCH_TO_PUCCH_OFFSET 16
+
+typedef struct {
+  int16_t frame;
+  int16_t slot;
+} frameslot_t;
+
+// Directional MAC stats (moved here from NR_MAC_gNB/nr_mac_gNB.h so UE sidelink MAC stats can reuse it).
+typedef struct NR_mac_dir_stats {
+  uint64_t lc_bytes[64];
+  uint64_t rounds[8];
+  uint64_t errors;
+  uint64_t total_bytes;
+  uint32_t current_bytes;
+  uint64_t total_sdu_bytes;
+  uint32_t total_rbs;
+  uint32_t total_rbs_retx;
+  uint32_t num_mac_sdu;
+  uint32_t current_rbs;
+  uint64_t prev_sdu_bytes;
+  frame_t last_goodput_frame;
+} NR_mac_dir_stats_t;
+
+typedef struct NR_UE_sl_mac_stats {
+  NR_mac_dir_stats_t sl;
+  uint32_t slsch_DTX;
+  uint64_t slsch_total_bytes_scheduled;
+  int cumul_rsrp;
+  uint8_t num_rsrp_meas;
+  uint32_t cumul_round[5];
+} NR_UE_sl_mac_stats_t;
+
 // TS 38.212
 static const uint16_t table_7_3_1_1_2_2_1layer[28] = {0,  1,  2,  3,  12, 13, 14, 15, 16, 17, 18, 19, 32, 33,
                                                       34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47};
@@ -270,6 +325,9 @@ uint32_t nr_compute_tbs(uint16_t Qm,
                         uint16_t nb_rb_oh,
                         uint8_t tb_scaling,
 			uint8_t Nl);
+
+// episys SL data-plane port: TB size for SLSCH (nb_re passed directly; caller does SL RE accounting).
+uint32_t nr_compute_tbs_sl(uint16_t Qm, uint16_t R, uint16_t nb_re, uint8_t Nl);
 
 /** \brief Computes Q based on I_MCS PDSCH and table_idx for downlink. Implements MCS Tables from 38.214. */
 uint8_t nr_get_Qm_dl(uint8_t Imcs, uint8_t table_idx);

@@ -67,7 +67,8 @@ typedef enum { ROLE_SERVER = 1, ROLE_CLIENT } role;
 #define VRTSIM_PARAMS_DESC \
   { \
      {"connection_descriptor",  CONNECTION_DESCRIPTOR_HLP,   0, .strptr = &vrtsim_state->connection_descriptor,  .defstrval = DEFAULT_DESCRIPTOR, TYPE_STRING, 0}, \
-     {"role",                   "either client or server\n", 0, .strptr = &role,                                 .defstrval = ROLE_CLIENT_STRING, TYPE_STRING, 0}, \
+     {"role",                   "either client or server (Uu link)\n", 0, .strptr = &role,                        .defstrval = ROLE_CLIENT_STRING, TYPE_STRING, 0}, \
+     {"role_sl",                "either client or server (PC5/sidelink link)\n", 0, .strptr = &role_sl,             .defstrval = ROLE_CLIENT_STRING, TYPE_STRING, 0}, \
      {"timescale",              TIME_SCALE_HLP,              0, .dblptr = &vrtsim_state->timescale,              .defdblval = 1.0,                TYPE_DOUBLE, 0}, \
      {"chanmod",                "Enable channel modelling",  0, .iptr = &vrtsim_state->chanmod,                  .defintval = 0,                  TYPE_INT,    0}, \
      {"taps-socket",            TAPS_SOCKET_HLP,             0, .strptr = &vrtsim_state->taps_socket,            .defstrval = NULL,               TYPE_STRING, 0}, \
@@ -228,18 +229,32 @@ static void load_channel_model(vrtsim_state_t *vrtsim_state, int nb_rx)
   }
 }
 
-static void vrtsim_readconfig(vrtsim_state_t *vrtsim_state)
+static void vrtsim_readconfig(vrtsim_state_t *vrtsim_state, bool sl_link)
 {
   char *role = NULL;
+  char *role_sl = NULL;
   paramdef_t vrtsim_params[] = VRTSIM_PARAMS_DESC;
   int ret = config_get(config_get_if(), vrtsim_params, sizeofArray(vrtsim_params), VRTSIM_SECTION);
   AssertFatal(ret >= 0, "configuration couldn't be performed\n");
-  if (strncmp(role, ROLE_CLIENT_STRING, strlen(ROLE_CLIENT_STRING)) == 0) {
+  // The PC5 (sidelink) link is driven by --vrtsim.role_sl; --vrtsim.role stays for the Uu link. This keeps
+  // the two links independent for the mode-1 relay (Uu + PC5 simultaneously on one host); mode-2's lone card
+  // is the SL card so it also reads role_sl. sl_link is the per-card flag set by nr-ue-ru.c (odd card = PC5).
+  char *sel_role = sl_link ? role_sl : role;
+  if (strncmp(sel_role, ROLE_CLIENT_STRING, strlen(ROLE_CLIENT_STRING)) == 0) {
     vrtsim_state->role = ROLE_CLIENT;
-  } else if (strncmp(role, ROLE_SERVER_STRING, strlen(ROLE_SERVER_STRING)) == 0) {
+  } else if (strncmp(sel_role, ROLE_SERVER_STRING, strlen(ROLE_SERVER_STRING)) == 0) {
     vrtsim_state->role = ROLE_SERVER;
   } else {
-    AssertFatal(false, "Invalid role configuration\n");
+    AssertFatal(false, "Invalid %s configuration\n", sl_link ? "role_sl" : "role");
+  }
+  // Give the PC5 link its own shm channel + connection file (only when the user left them at default) so a
+  // co-located Uu link (mode-1) never shares the sidelink's rendezvous. Both mode-2 SL UEs append the same
+  // "_sl" suffix, so they still meet on the same channel.
+  if (sl_link) {
+    if (strcmp(vrtsim_state->shm_channel_name, DEFAULT_CHANNEL_NAME) == 0)
+      vrtsim_state->shm_channel_name = DEFAULT_CHANNEL_NAME "_sl";
+    if (strcmp(vrtsim_state->connection_descriptor, DEFAULT_DESCRIPTOR) == 0)
+      vrtsim_state->connection_descriptor = DEFAULT_DESCRIPTOR "_sl";
   }
 #ifdef OAI_VRTSIM_TAPS_CLIENT
   if (vrtsim_state->taps_socket) {
@@ -1120,7 +1135,7 @@ __attribute__((__visibility__("default"))) int device_init(openair0_device_t *de
 {
   randominit();
   vrtsim_state_t *vrtsim_state = calloc_or_fail(1, sizeof(vrtsim_state_t));
-  vrtsim_readconfig(vrtsim_state);
+  vrtsim_readconfig(vrtsim_state, openair0_cfg->sl_link);
   LOG_I(HW,
         "Running as %s\n",
         vrtsim_state->role == ROLE_SERVER ? "server: waiting for client to connect" : "client: will connect to a vrtsim server");

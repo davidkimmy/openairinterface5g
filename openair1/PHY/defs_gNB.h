@@ -18,7 +18,10 @@
 #include "PHY/CODING/nrLDPC_extern.h"
 #include "PHY/CODING/nrLDPC_decoder/nrLDPC_types.h"
 #include "nfapi_nr_interface_scf.h"
+#include "nfapi/open-nFAPI/nfapi/public_inc/sidelink_nr_ue_interface.h"  // episys SL port: SLSCH RX pdu types in NR_UL_gNB_HARQ_t
 #include "common/utils/threadPool/task_ans.h"
+// episys SL data-plane port: shared LDPC decode-job / UL-HARQ / ULSCH structs (also used by UE PSSCH RX).
+#include "PHY/nr_phy_common/inc/nr_sl_decode_defs.h"
 #include "openair1/PHY/defs_RU.h"
 #include "common/utils/ds/spsc_q.h"
 
@@ -121,58 +124,9 @@ typedef struct {
   prs_config_t prs_cfg[NR_MAX_PRS_RESOURCES_PER_SET];
 } NR_gNB_PRS;
 
-typedef struct {
-  /// Nfapi ULSCH PDU
-  nfapi_nr_pusch_pdu_t ulsch_pdu; // !!
-  /// Index of current HARQ round for this DLSCH
-  uint8_t round;
-  bool new_rx;
-  /////////////////////// ulsch decoding ///////////////////////
-  /// flag used to clear d properly
-  /// set to true in nr_fill_ulsch() when new_data_indicator is received
-  bool harq_to_be_cleared;
-  /// Pointer to the payload (38.212 V15.4.0 section 5.1)
-  uint8_t *b;
-  /// Pointer to aggregated code blocks after code block segmentation and CRC attachment (38.212 V15.4.0 section 5.2.2)
-  uint8_t *c;
-  /// Number of bits in each code block (38.212 V15.4.0 section 5.2.2)
-  uint32_t K;
-  /// Number of "Filler" bits added in the code block segmentation (38.212 V15.4.0 section 5.2.2)
-  uint32_t F;
-  /// Number of code blocks after code block segmentation (38.212 V15.4.0 section 5.2.2)
-  uint32_t C;
-  /// Pointers to aggregated code blocks after LDPC coding (38.212 V15.4.0 section 5.3.2)
-  int16_t *d;
-  /// LDPC lifting size (38.212 V15.4.0 table 5.3.2-1)
-  uint32_t Z;
-  /// Number of bits in each code block after rate matching for LDPC code (38.212 V15.4.0 section 5.4.2.1)
-  uint32_t E;
-  /// Number of segments processed so far
-  uint32_t processedSegments;
-  decode_abort_t abort_decode;
-  /// Last index of LLR buffer that contains information.
-  /// Used for computing LDPC decoder R
-  int llrLen;
-  //////////////////////////////////////////////////////////////
-} NR_UL_gNB_HARQ_t;
+/* NR_UL_gNB_HARQ_t moved to PHY/nr_phy_common/inc/nr_sl_decode_defs.h (shared with UE PSSCH RX). */
 
-typedef struct {
-  uint32_t frame;
-  uint32_t slot;
-  uint32_t unav_res;
-  /// Pointers to 16 HARQ processes for the ULSCH
-  NR_UL_gNB_HARQ_t *harq_process;
-  /// HARQ process mask, indicates which processes are currently active
-  int harq_pid;
-  /// Allocated RNTI for this ULSCH
-  uint16_t rnti;
-  /// Maximum number of LDPC iterations
-  uint8_t max_ldpc_iterations;
-  /// number of iterations used in last LDPC decoding
-  int8_t last_iteration_cnt;
-  /// Status Flag indicating for this ULSCH
-  bool active;
-} NR_gNB_ULSCH_t;
+/* NR_gNB_ULSCH_t moved to PHY/nr_phy_common/inc/nr_sl_decode_defs.h (shared with UE PSSCH RX). */
 
 typedef struct {
   /// Frame where current PUSCH pdu was sent
@@ -227,48 +181,7 @@ typedef struct {
   int32_t debugBuff_sample_offset;
 } NR_gNB_COMMON;
 
-typedef struct {
-  /// \brief Hold the channel estimates in frequency domain based on DRS.
-  /// - first index: rx antenna id [0..nb_antennas_rx[
-  /// - second index: ? [0..12*N_RB_UL*frame_parms->symbols_per_tti[
-  int32_t **ul_ch_estimates;
-  /// \brief Holds the compensated signal.
-  /// - first index: rx antenna id [0..nb_antennas_rx[
-  /// - second index: ? [0..12*N_RB_UL*frame_parms->symbols_per_tti[
-  c16_t **rxdataF_comp;
-  /// \f$\log_2(\max|H_i|^2)\f$
-  int16_t log2_maxh;
-  /// measured RX power based on DRS
-  uint32_t ulsch_power[8];
-  /// total signal over antennas
-  uint32_t ulsch_power_tot;
-  /// measured RX noise power
-  uint32_t ulsch_noise_power[8];
-  /// total noise over antennas
-  uint32_t ulsch_noise_power_tot;
-  /// \brief llr values.
-  /// - first index: ? [0..1179743] (hard coded)
-  int16_t *llr;
-  // PTRS symbol index, to be updated every PTRS symbol within a slot.
-  uint8_t ptrs_symbol_index;
-  /// bit mask of PT-RS ofdm symbol indicies
-  uint16_t ptrs_symbols;
-  // PTRS subcarriers per OFDM symbol
-  int32_t ptrs_re_per_slot;
-  /// \brief Estimated phase error based upon PTRS on each symbol .
-  /// - first index: ? [0..7] Number of Antenna
-  /// - second index: ? [0...14] smybol per slot
-  int32_t **ptrs_phase_per_slot;
-  /// \brief Total RE count after DMRS/PTRS RE's are extracted from respective symbol.
-  /// - first index: ? [0...14] smybol per slot
-  int16_t *ul_valid_re_per_slot;
-  /// \brief offset for llr corresponding to each symbol
-  int llr_offset[14];
-  /// flag to indicate DTX on reception
-  int DTX;
-  /// delay estimation
-  delay_t delay;
-} NR_gNB_PUSCH;
+/* NR_gNB_PUSCH moved to PHY/nr_phy_common/inc/nr_sl_decode_defs.h (shared with UE PSSCH RX vars). */
 
 /// Context data structure for RX/TX portion of slot processing
 typedef struct {
@@ -508,28 +421,8 @@ union puschAntennaReqUnion {
   uint64_t p;
 };
 
-typedef struct LDPCDecode_s {
-  PHY_VARS_gNB *gNB;
-  NR_UL_gNB_HARQ_t *ulsch_harq;
-  t_nrLDPC_dec_params decoderParms;
-  NR_gNB_ULSCH_t *ulsch;
-  int16_t *ulsch_llr;
-  int ulsch_id;
-  int harq_pid;
-  int rv_index;
-  int A;
-  int E;
-  int Kc;
-  int Qm;
-  int Kr_bytes;
-  int nbSegments;
-  int segment_r;
-  int r_offset;
-  int offset;
-  int decodeIterations;
-  uint32_t tbslbrm;
-  task_ans_t *ans;
-} ldpcDecode_t;
+/* ldpcDecode_t moved to PHY/nr_phy_common/inc/nr_sl_decode_defs.h (shared with UE PSSCH RX; gNB
+   back-pointer kept opaque there). */
 
 struct ldpcReqId {
   uint16_t rnti;

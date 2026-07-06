@@ -132,6 +132,26 @@ void trs_freq_correction(PHY_VARS_NR_UE *ue, int cfo);
 
 int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data);
 void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_tx_t *phy_data, c16_t **txp);
+
+/* episys SL data-plane port: UE-native PSSCH demodulator (fills ue->pssch_vars[].llr_layers) and the
+   SLSCH decode entry (layer-demap -> unscramble -> LDPC decode). Both defined in nr_pscch_pssch_rx.c. */
+void nr_rx_pssch(PHY_VARS_NR_UE *ue,
+                 const UE_nr_rxtx_proc_t *proc,
+                 NR_DL_FRAME_PARMS *fp,
+                 nr_phy_data_t *phy_data,
+                 int rxFsize,
+                 c16_t rxdataF[][rxFsize],
+                 uint8_t slsch_id);
+int nr_slsch_procedures(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data, uint8_t slsch_id);
+/* episys SL data-plane port: PSCCH SCI-1 encode (PC5). Defined in nr_pscch_tx.c. Returns pscch Nid (low 16b). */
+uint32_t nr_generate_sci1(const PHY_VARS_NR_UE *ue,
+                          c16_t *txdataF,
+                          const NR_DL_FRAME_PARMS *frame_parms,
+                          const int16_t amp,
+                          const int nr_slot_tx,
+                          const sl_nr_tx_config_pscch_pssch_pdu_t *pscch_pssch_pdu);
+/* episys SL data-plane port: UE-native PSSCH data transmit (SLSCH encode + SCI-2 + DMRS + RE map). In nr_pscch_tx.c. */
+void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr_phy_data_tx_t *phy_data, c16_t **txdataF);
 /*! \brief This function prepares the sl indication to pass to the MAC
  */
 void nr_fill_sl_indication(nr_sidelink_indication_t *sl_ind,
@@ -146,6 +166,21 @@ void nr_fill_sl_rx_indication(sl_nr_rx_indication_t *rx_ind,
                               uint16_t n_pdus,
                               void *typeSpecific,
                               uint16_t rx_slss_id);
+
+/* episys SL data-plane port: PSSCH (SLSCH) receive-decode status + post-decode delivery.
+   rdata points into the gNB LDPC decode job (struct LDPCDecode_s, defs_gNB.h) reused for SLSCH RX. */
+struct LDPCDecode_s;
+typedef struct {
+  struct LDPCDecode_s *rdata;
+  bool rxok;
+} slsch_status_t;
+
+void nr_postDecode_slsch(PHY_VARS_NR_UE *UE,
+                         notifiedFIFO_elt_t *req,
+                         UE_nr_rxtx_proc_t *proc,
+                         nr_phy_data_t *phy_data,
+                         int8_t *ack_nack_rcvd,
+                         uint8_t num_acks);
 
 #endif
 /** @}*/

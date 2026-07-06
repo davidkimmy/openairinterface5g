@@ -107,6 +107,26 @@ typedef struct SL_NR_UE_PSBCH {
 
 } SL_NR_UE_PSBCH_t;
 
+// episys SL data-plane port: PSSCH PHY stats (reception/transmission).
+typedef struct SL_NR_UE_PSSCH {
+  // AVG POWER OF PSSCH DMRS in dB/RE
+  int16_t rsrp_dB_per_RE;
+  // AVG POWER OF PSSCH DMRS in dBm/RE
+  int16_t rsrp_dBm_per_RE;
+  // STATS - CRC Errors observed during PSSCH reception (per HARQ round)
+  uint32_t rx_errors[8];
+  // STATS - CRC Errors observed during PSSCH SCI2 reception
+  uint32_t rx_sci2_errors;
+  // STATS - Receptions with CRC OK
+  uint32_t rx_ok;
+  // STATS - SCI2 receptions with CRC OK
+  uint32_t rx_sci2_ok;
+  // STATS - transmissions of PSSCH by the UE
+  uint32_t num_pssch_tx;
+  // STATS - SCI2 transmissions of PSSCH by the UE
+  uint32_t num_pssch_sci2_tx;
+} SL_NR_UE_PSSCH_t;
+
 typedef struct sl_nr_ue_phy_params {
   SL_NR_UE_INIT_PARAMS_t init_params;
 
@@ -114,6 +134,9 @@ typedef struct sl_nr_ue_phy_params {
 
   // Sidelink PHY PARAMETERS USED FOR PSBCH reception/Txn
   SL_NR_UE_PSBCH_t psbch;
+
+  // Sidelink PHY PARAMETERS USED FOR PSSCH reception/Txn (episys SL data-plane port)
+  SL_NR_UE_PSSCH_t pssch;
 
   // Configuration parameters from MAC
   sl_nr_phy_config_request_t sl_config;

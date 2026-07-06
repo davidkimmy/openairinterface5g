@@ -1312,6 +1312,64 @@ void nr_pdsch_channel_estimation(PHY_VARS_NR_UE *ue,
   }
 }
 
+// UE-native sidelink PSSCH DMRS channel estimation (episys SL data-plane port).
+// PSSCH DMRS is 38.211 config type 1 (comb-2, 6 REs/RB, single CDM group, port p=0, delta=0);
+// the RS sequence is scrambled from Nid (derived from the PSCCH CRC, 38.211 8.4.1.1). This mirrors
+// nr_pdsch_channel_estimation but (a) uses the SL frame parameters (passed in), (b) generates the
+// gold sequence from Nid via nr_gold_pusch, and (c) writes into pssch_vars->ul_ch_estimates. It
+// reuses the same static type-1 linear interpolation as PDSCH so no gNB PHY code is linked.
+void nr_pssch_channel_estimation(PHY_VARS_NR_UE *ue,
+                                 const UE_nr_rxtx_proc_t *proc,
+                                 NR_DL_FRAME_PARMS *fp,
+                                 uint16_t Nid,
+                                 int start_rb,
+                                 int nb_rb,
+                                 unsigned char symbol,
+                                 int32_t **sl_ch_estimates,
+                                 int rxdataFsize,
+                                 c16_t rxdataF[][rxdataFsize],
+                                 uint32_t *nvar)
+{
+  const int slot = proc->nr_slot_rx;
+  const int ch_offset = fp->ofdm_symbol_size * symbol;
+  const int symbol_offset = fp->ofdm_symbol_size * symbol;
+  const int config_type = NFAPI_NR_DMRS_TYPE1; // PSSCH DMRS: comb-2, 6 REs/RB
+  const int rb_offset = start_rb;
+  const int bwp_size = start_rb + nb_rb;
+  const int bwp_start_subcarrier = fp->first_carrier_offset + start_rb * NR_NB_SC_PER_RB;
+
+  // Contiguous RB allocation bitmap covering the PSSCH subchannels.
+  freq_alloc_bitmap_t freq_alloc = {0};
+  freq_alloc.first_rb = start_rb;
+  freq_alloc.last_rb = start_rb + nb_rb - 1;
+  freq_alloc.num_rbs = nb_rb;
+  for (int rb = start_rb; rb < start_rb + nb_rb; rb++)
+    freq_alloc.bitmap[rb / 32] |= (1u << (rb % 32));
+
+  c16_t pilot[3280] __attribute__((aligned(16)));
+  const float beta_dmrs = get_beta_dmrs(1, false); // 1 CDM group, type1
+  const int16_t dmrs_scaling = (int16_t)((1 / beta_dmrs) * (1 << 14));
+  // pilot is returned already conjugated; Nid selects the PSSCH DMRS scrambling (nscid = 0)
+  const uint32_t *gold = nr_gold_pusch(fp->N_RB_UL, fp->symbols_per_slot, Nid, 0, slot, symbol);
+  nr_pdsch_dmrs_rx(fp->Ncp, gold, pilot, 1000, 0, nb_rb + rb_offset, config_type, dmrs_scaling);
+
+  delay_t delay = {0};
+  for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
+    c16_t *rxF = &rxdataF[aarx][symbol_offset];
+    c16_t *sl_ch = (c16_t *)&sl_ch_estimates[aarx][ch_offset];
+    memset(sl_ch, 0, sizeof(*sl_ch) * fp->ofdm_symbol_size);
+    NFAPI_NR_DMRS_TYPE1_linear_interp(fp,
+                                      rxF,
+                                      &pilot[6 * rb_offset],
+                                      sl_ch,
+                                      bwp_start_subcarrier,
+                                      &freq_alloc,
+                                      bwp_size,
+                                      &delay,
+                                      nvar);
+  }
+}
+
 /*******************************************************************
  *
  * NAME :         nr_pdsch_ptrs_processing

@@ -3862,7 +3862,11 @@ void start_sidelink(int instance)
   if (get_softmodem_params()->sl_mode == 2) {
 
     //Process the Sidelink Preconfiguration
-    rrc_ue_process_sidelink_Preconfiguration(rrc, get_softmodem_params()->sync_ref);
+    // --sync-ref is a boolean flag; map it to the SL sync-source enum (a bare 1 would otherwise
+    // be misread as SL_SYNC_SOURCE_GNBENB, which is unsupported). Matches init_sidelink().
+    sl_sync_source_enum_t sync_source =
+        get_softmodem_params()->sync_ref ? SL_SYNC_SOURCE_LOCAL_TIMING : SL_SYNC_SOURCE_NONE;
+    rrc_ue_process_sidelink_Preconfiguration(rrc, sync_source);
 
   }
 }

@@ -10,6 +10,7 @@
 
 #include "PHY/TOOLS/tools_defs.h"
 #include "PHY/defs_common.h"
+#include "executables/softmodem-common.h"
 #include "utils.h"
 #include <cstdint>
 #include <sys/socket.h>
@@ -48,6 +49,7 @@ extern int get_currentchannels_type(const char *buf,
 #include <numeric>
 
 #define PORT 4043 // default TCP port for this simulator
+#define PORT_SL 4043 // default TCP port for the sidelink (PC5) rfsim endpoint
 #define sampleToByte(a, b) ((a) * (b) * sizeof(sample_t))
 #define byteToSample(a, b) ((a) / (sizeof(sample_t) * (b)))
 
@@ -64,6 +66,10 @@ typedef enum { SIMU_ROLE_SERVER = 1, SIMU_ROLE_CLIENT } simuRole;
 #define RFSIMU_SECTION "rfsimulator"
 #define RFSIMU_SERVER_ADDR "serveraddr"
 #define RFSIMU_SERVER_PORT "serverport"
+/* Sidelink (PC5) uses a distinct rfsim endpoint so mode-2 UEs link to each other rather than to a
+ * (non-existent) gNB on the Uu default port. In SL mode the device's ip/port are taken from these. */
+#define RFSIMU_SERVER_ADDR_SL "serveraddrsl"
+#define RFSIMU_SERVER_PORT_SL "serverportsl"
 #define RFSIMU_OPTIONS_PARAMNAME "options"
 #define RFSIMU_IQFILE "IQfile"
 #define RFSIMU_MODELNAME "modelname"
@@ -93,6 +99,8 @@ typedef enum { SIMU_ROLE_SERVER = 1, SIMU_ROLE_CLIENT } simuRole;
 #define RFSIMULATOR_PARAMS_DESC {					\
   STRINGPARAM(RFSIMU_SERVER_ADDR,       "<ip address to connect to>\n",             simOpt, NULL,                             "127.0.0.1"),           \
   UINT16PARAM(RFSIMU_SERVER_PORT,       "<port to connect to>\n",                   simOpt, NULL,                             PORT),                  \
+  STRINGPARAM(RFSIMU_SERVER_ADDR_SL,    "<sidelink ip address to connect to>\n",    simOpt, NULL,                             "127.0.0.1"),           \
+  UINT16PARAM(RFSIMU_SERVER_PORT_SL,    "<sidelink port to connect to>\n",          simOpt, NULL,                             PORT_SL),               \
   STRLISTPARAM(RFSIMU_OPTIONS_PARAMNAME, RFSIM_CONFIG_HELP_OPTIONS,                 simOpt, NULL,                             NULL),                  \
   STRINGPARAM(RFSIMU_IQFILE,            "<file path to use when saving IQs>\n",     simOpt, NULL,                             "/tmp/rfsimulator.iqs"),\
   STRINGPARAM(RFSIMU_MODELNAME,         "<channel model name>\n",                   simOpt, NULL,                             "AWGN"),                \
@@ -180,6 +188,7 @@ typedef struct {
   openair0_timestamp_t nextRxTstamp;
   openair0_timestamp_t lastWroteTS;
   simuRole role;
+  bool sl_link;   /* true: this device instance is the sidelink (PC5) RU -> use serveraddrsl/serverportsl */
   char *ip;
   uint16_t port;
   int saveIQfile;
@@ -533,8 +542,18 @@ static void rfsimulator_readconfig(rfsimulator_state_t *rfsimulator)
     rfsimuParam = rfsimuParamList.paramarray[ru_id];
   }
 
-  rfsimulator->ip = strdup(*(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SERVER_ADDR)->strptr));
-  rfsimulator->port = *(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SERVER_PORT)->u16ptr);
+  /* Per-RU link selection: a device instance flagged as the sidelink (PC5) RU uses the dedicated SL endpoint
+   * (serveraddrsl/serverportsl); all others use the Uu endpoint (serveraddr/serverport). This lets a relay run
+   * a Uu RU and a PC5 RU as two independent device instances/ports simultaneously (mode-1), while mode-2's
+   * single SL RU still points at the SL endpoint. rfsimulator->sl_link is set from openair0_cfg->sl_link. */
+  if (rfsimulator->sl_link) {
+    rfsimulator->ip = strdup(*(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SERVER_ADDR_SL)->strptr));
+    rfsimulator->port = *(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SERVER_PORT_SL)->u16ptr);
+    LOG_I(HW, "rfsimulator: sidelink (PC5) RU, using SL endpoint %s:%d\n", rfsimulator->ip, rfsimulator->port);
+  } else {
+    rfsimulator->ip = strdup(*(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SERVER_ADDR)->strptr));
+    rfsimulator->port = *(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_SERVER_PORT)->u16ptr);
+  }
   char *saveF = strdup(*(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_IQFILE)->strptr));
 //char *modelname = strdup(*(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_MODELNAME)->strptr));
   rfsimulator->chan_pathloss = *(gpd(rfsimuParam, sizeofArray(rfsimuParams), RFSIMU_PLOSS)->dblptr);
@@ -1599,6 +1618,7 @@ extern "C" __attribute__((__visibility__("default"))) int device_init(openair0_d
   rfsimulator->sample_rate = openair0_cfg->sample_rate;
   rfsimulator->rx_freq = openair0_cfg->rx_freq[0];
   rfsimulator->tx_bw = openair0_cfg->tx_bw;
+  rfsimulator->sl_link = openair0_cfg->sl_link;
   rfsimulator->beam_ctrl = new rfsim_beam_ctrl_t;
   rfsimulator_readconfig(rfsimulator);
   if (rfsimulator->prop_delay_ms > 0.0)

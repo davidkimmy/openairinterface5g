@@ -71,6 +71,19 @@ void nr_pdsch_channel_estimation(PHY_VARS_NR_UE *ue,
                                  c16_t rxdataF[][rxdataFsize],
                                  uint32_t *nvar);
 
+// UE-native sidelink PSSCH DMRS channel estimation (episys SL data-plane port). See nr_dl_channel_estimation.c.
+void nr_pssch_channel_estimation(PHY_VARS_NR_UE *ue,
+                                 const UE_nr_rxtx_proc_t *proc,
+                                 NR_DL_FRAME_PARMS *fp,
+                                 uint16_t Nid,
+                                 int start_rb,
+                                 int nb_rb,
+                                 unsigned char symbol,
+                                 int32_t **sl_ch_estimates,
+                                 int rxdataFsize,
+                                 c16_t rxdataF[][rxdataFsize],
+                                 uint32_t *nvar);
+
 int nr_adjust_synch_ue(const NR_DL_FRAME_PARMS *frame_parms,
                        PHY_VARS_NR_UE *ue,
                        const c16_t dl_ch_estimates_time[][frame_parms->ofdm_symbol_size],

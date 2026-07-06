@@ -9,6 +9,8 @@
 #include "PHY/defs_nr_UE.h"
 #include "NR_IF_Module.h"
 #include "NR_MAC_UE/mac_proto.h"
+#include "NR_MAC_UE/nr_ue_sci.h"                    // SL_SCH_SUBHEADER_LEN (SL-SCH MAC subheader)
+#include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h" // nr_mac_rlc_data_ind_sl (SL RX -> SL DRB)
 #include "assertions.h"
 #include "SCHED_NR_UE/fapi_nr_ue_l1.h"
 #include "bits.h"
@@ -493,8 +495,24 @@ void sl_nr_process_rx_ind(int ue_id,
       }
 
       break;
-    case SL_NR_RX_PDU_TYPE_SLSCH:
+    case SL_NR_RX_PDU_TYPE_SLSCH: {
+      // episys SL data-plane port (F1 minimal): deliver the decoded SLSCH TB up to the SL DRB RLC entity.
+      // ack_nack==CRC-OK. No SLSCH MAC subheader yet -> deliver the whole TB as the RLC PDU (single SL DRB).
+      sl_nr_slsch_pdu_t *slsch = &rx_ind->rx_indication_body[num_pdus - 1].rx_slsch_pdu;
+      if (slsch->ack_nack && slsch->pdu && slsch->pdu_length > SL_SCH_SUBHEADER_LEN) {
+        NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
+        // Strip the 2-byte SL-SCH subheader (big-endian RLC-PDU length) and deliver exactly that many bytes,
+        // discarding the transport-block padding. Guard against a corrupt length exceeding the decoded TB.
+        int sdu_len = ((int)slsch->pdu[0] << 8) | (int)slsch->pdu[1];
+        if (sdu_len > 0 && sdu_len <= slsch->pdu_length - SL_SCH_SUBHEADER_LEN) {
+          nr_mac_rlc_data_ind_sl(mac->src_id, 1 /*SL DRB id*/, (char *)slsch->pdu + SL_SCH_SUBHEADER_LEN, sdu_len);
+          LOG_D(NR_MAC, "[UE%d] SL RX SLSCH %d bytes -> SL DRB\n", ue_id, sdu_len);
+        } else {
+          LOG_W(NR_MAC, "[UE%d] SL RX SLSCH bad subheader len %d (TB %d)\n", ue_id, sdu_len, slsch->pdu_length);
+        }
+      }
       break;
+    }
 
     default:
       AssertFatal(1 == 0, "Incorrect type received. %s\n", __FUNCTION__);

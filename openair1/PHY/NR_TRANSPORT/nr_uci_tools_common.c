@@ -9,7 +9,8 @@ void nr_group_sequence_hopping(pucch_GroupHopping_t PUCCH_GroupHopping,
                                int n_hop,
                                int nr_slot_tx,
                                uint8_t *u,
-                               uint8_t *v)
+                               uint8_t *v,
+                               nr_intf_type_t intf_type)
 {
   /*
    * Implements TS 38.211 subclause 6.3.2.2.1 Group and sequence hopping
@@ -34,6 +35,12 @@ void nr_group_sequence_hopping(pucch_GroupHopping_t PUCCH_GroupHopping,
   uint8_t f_ss=0,f_gh=0;
   *u=0;
   *v = 0;
+  // Sidelink (PC5): PSFCH/PSCCH sequence group is derived directly from the hopping id (38.211 8.x);
+  // no Uu-style group/sequence hopping gold sequence. (episys SL data-plane port)
+  if (intf_type == PC5) {
+    *u = n_id % 30;
+    return;
+  }
 #ifdef DEBUG_NR_PUCCH_TX
   printf("\t\t [nr_group_sequence_hopping] calculating u,v -> ");
 #endif

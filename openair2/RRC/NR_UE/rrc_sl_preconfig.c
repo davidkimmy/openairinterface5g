@@ -95,6 +95,15 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
   sl_res_pool->sl_PSSCH_Config_r16 = calloc(1, sizeof(NR_SetupRelease_SL_PSSCH_Config_r16_t));
   sl_res_pool->sl_PSSCH_Config_r16->present = NR_SetupRelease_SL_PSSCH_Config_r16_PR_setup;
   sl_res_pool->sl_PSSCH_Config_r16->choice.setup = calloc(1, sizeof(NR_SL_PSSCH_Config_r16_t));
+  // episys SL data-plane port: 2nd-stage-SCI beta offsets (selected by SCI-1A beta_offset_indicator, 2 bits ->
+  // 4 entries). fill_pssch_pscch_pdu / config_pssch_*_rx index list.array[indicator]; leaving it NULL segfaults.
+  sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16 =
+                      calloc(1, sizeof(*sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16));
+  for (int i = 0; i < 4; i++) {
+    long *p = calloc(1, sizeof(long));
+    *p = i << 2; // valid values 0..15; choose 0,4,8,12
+    ASN_SEQUENCE_ADD(&sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16->list, p);
+  }
   sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_PSSCH_DMRS_TimePatternList_r16 =
                       calloc(1, sizeof(*sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_PSSCH_DMRS_TimePatternList_r16));
   for(int i=0; i<3; i++) {
@@ -139,7 +148,13 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
   sl_res_pool->sl_TimeWindowSizeCBR_r16 = NULL;
   sl_res_pool->sl_TimeWindowSizeCR_r16 = NULL;
   sl_res_pool->sl_PTRS_Config_r16 = NULL;
-  sl_res_pool->sl_UE_SelectedConfigRP_r16 = NULL;
+  // episys SL data-plane port: the mode-2 SL scheduler (nr_schedule_slsch / nr_sci_size / convNRFRIV) needs
+  // sl_MaxNumPerReserve to compute the SCI-1A frequency-resource assignment (FRIV). Populate it (n2, matching
+  // the conf's rsrc_selection_params default) so TX and RX derive the same FRIV; leaving it NULL segfaults.
+  sl_res_pool->sl_UE_SelectedConfigRP_r16 = calloc(1, sizeof(*sl_res_pool->sl_UE_SelectedConfigRP_r16));
+  sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16 = calloc(1, sizeof(long));
+  *sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16 =
+      NR_SL_UE_SelectedConfigRP_r16__sl_MaxNumPerReserve_r16_n2;
   sl_res_pool->sl_RxParametersNcell_r16 = NULL;
   sl_res_pool->sl_ZoneConfigMCR_List_r16 = NULL;
   sl_res_pool->sl_FilterCoefficient_r16 = NULL;
@@ -581,6 +596,10 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
     if (slp->sl_RadioBearerPreConfigList_r16 && slp->sl_RLC_BearerPreConfigList_r16) {
       ueinfo_t ueinfo = {0};
       read_sl_ueinfo(&ueinfo);
+      // The MAC SL source id keys the SL DRB (RLC) used for BOTH the TX pull (nr_mac_rlc_data_req_sl) and the
+      // RX delivery (nr_mac_rlc_data_ind_sl). It was never set (defaulted 0), so a UE whose conf srcid != 0
+      // (e.g. the Nearby, srcid 1) couldn't find its own sl_drb on RX ("no sl_drb"). Set it from the conf.
+      get_mac_inst(rrc_inst->ue_id)->src_id = ueinfo.srcid;
       for (int i = 0; i < slp->sl_RadioBearerPreConfigList_r16->list.count; i++)
         add_drb_sl(ueinfo.srcid, slp->sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
       for (int i = 0; i < slp->sl_RLC_BearerPreConfigList_r16->list.count; i++)
@@ -633,11 +652,14 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
 //For Sidelink mode 2 operation this prepares the sidelink preconfiguration
 void init_sidelink(NR_UE_RRC_INST_t *rrc)
 {
-  int sync_ref = get_softmodem_params()->sync_ref;
+  // episys SL data-plane port: `--sync-ref` is a bare boolean flag (all SL test scripts use it without a value).
+  // A UE launched as sync reference uses LOCAL_TIMING as its sync source (GNB timing is unsupported for SL, see
+  // configure_NR_SL_Preconfig AssertFatal); a UE without the flag has no sync source and syncs to a received SSB.
+  int sync_source = get_softmodem_params()->sync_ref ? SL_SYNC_SOURCE_LOCAL_TIMING : SL_SYNC_SOURCE_NONE;
 
   if (get_softmodem_params()->sl_mode == 2) {
     //Preparation of the Sidelink PRE-Configuration message
-    configure_NR_SL_Preconfig(rrc, sync_ref);
+    configure_NR_SL_Preconfig(rrc, sync_source);
 
   }
 }

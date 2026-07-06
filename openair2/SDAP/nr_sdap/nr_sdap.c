@@ -319,6 +319,17 @@ void create_ue_ip_if(const char *ipv4, const char *ipv6, int ue_id, int pdu_sess
   tun_config(ifname, ipv4, ipv6);
   if (ipv4) {
     setup_ue_ipv4_route(ifname, ue_id, pdu_session_id, ipv4);
+    /* Sidelink same-host bring-up (episys/sl-mode1-relay port): when two UEs run in the same network
+     * namespace with same-subnet TUNs (e.g. SL mode-2 rfsim local-host ping), the ICMP request that
+     * crosses PC5 arrives at the peer TUN bearing a source IP that is *local* to this host (the other
+     * oaitun_ue). The kernel drops it as a martian source unless accept_local=1, so no reply is ever
+     * generated. Enable accept_local and disable rp_filter on the SL TUN so the peer replies (the reply
+     * is then forced back over the radio by the setup_ue_ipv4_route policy table above). */
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "sysctl -w net.ipv4.conf.%s.accept_local=1 >/dev/null 2>&1", ifname);
+    background_system(cmd);
+    snprintf(cmd, sizeof(cmd), "sysctl -w net.ipv4.conf.%s.rp_filter=0 >/dev/null 2>&1", ifname);
+    background_system(cmd);
   }
 }
 

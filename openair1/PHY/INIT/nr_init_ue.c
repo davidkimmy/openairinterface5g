@@ -9,6 +9,7 @@
 #include "PHY/MODULATION/nr_modulation.h"
 #include "PHY/NR_UE_TRANSPORT/nr_transport_ue.h"
 #include "PHY/NR_UE_TRANSPORT/nr_transport_proto_ue.h"
+#include "PHY/nr_phy_common/inc/nr_sl_decode_defs.h" // episys SL port: NR_gNB_PUSCH / NR_gNB_ULSCH_t (pssch_vars/slsch alloc)
 #include "PHY/NR_REFSIG/pss_nr.h"
 #include "PHY/NR_REFSIG/ul_ref_seq_nr.h"
 #include "PHY/NR_REFSIG/sl_refsig_defs.h"
@@ -238,6 +239,20 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
 
   for (int i = 0; i < fp->nb_antennas_rx; i++) {
     common_vars->rxdata[i] = malloc16_clear(num_samples * sizeof(c16_t));
+  }
+
+  // Sidelink (PC5) dual-card relay (mode-1): separate TX/RX time-domain buffers for the second (SL) device.
+  // Only allocated when the UE drives a distinct PC5 card; mode-2 (single SL card) leaves these NULL and
+  // reuses txData/rxdata.
+  common_vars->txData_sl = NULL;
+  common_vars->rxdata_sl = NULL;
+  if (ue->sl_dual_card) {
+    common_vars->txData_sl = malloc16(fp->nb_antennas_tx * sizeof(c16_t *));
+    for (int i = 0; i < fp->nb_antennas_tx; i++)
+      common_vars->txData_sl[i] = malloc16_clear((fp->samples_per_frame) * sizeof(c16_t));
+    common_vars->rxdata_sl = malloc16(fp->nb_antennas_rx * sizeof(c16_t *));
+    for (int i = 0; i < fp->nb_antennas_rx; i++)
+      common_vars->rxdata_sl[i] = malloc16_clear(num_samples * sizeof(c16_t));
   }
 
   // DLSCH
@@ -549,6 +564,12 @@ void sl_ue_phy_init(PHY_VARS_NR_UE *UE)
 
   NR_DL_FRAME_PARMS *sl_fp = &UE->SL_UE_PHY_PARAMS.sl_frame_params;
 
+  // The SL frame params need their own delay_table: the PSSCH DMRS channel estimator
+  // (nr_pssch_channel_estimation -> NFAPI_NR_DMRS_TYPE1_linear_interp) delay-compensates with
+  // fp->delay_table[]. phy_init_nr_top only initializes the Uu frame_parms table, so without this the SL
+  // table is all zeros and every channel estimate collapses to 0 (PSSCH "not detected" / no SLSCH decode).
+  init_delay_table(sl_fp->ofdm_symbol_size, MAX_DELAY_COMP, NR_MAX_OFDM_SYMBOL_SIZE, sl_fp->delay_table);
+
   if (!UE->SL_UE_PHY_PARAMS.init_params.sl_pss_for_correlation) {
     UE->SL_UE_PHY_PARAMS.init_params.sl_pss_for_correlation = malloc16_clear(SL_NR_NUM_IDs_IN_PSS * sizeof(int32_t *));
     UE->SL_UE_PHY_PARAMS.init_params.sl_pss_for_correlation[0] = malloc16_clear(sizeof(int32_t) * sl_fp->ofdm_symbol_size);
@@ -570,4 +591,39 @@ void sl_ue_phy_init(PHY_VARS_NR_UE *UE)
   // Generate PSS time domain samples used for correlation during SLSS reception.
   sl_generate_pss_ifft_samples(&UE->SL_UE_PHY_PARAMS, &UE->SL_UE_PHY_PARAMS.init_params);
 
+  // episys SL data-plane port: allocate PSSCH receive vars (channel estimates + LLR buffers) and the
+  // SLSCH HARQ state used by nr_rx_pssch / nr_slsch_procedures. Single SL connection (index 0) for now.
+  if (!UE->pssch_vars) {
+    const int nrx = sl_fp->nb_antennas_rx;
+    const int est_size = sl_fp->symbols_per_slot * sl_fp->ofdm_symbol_size;
+    const int num_rb = sl_fp->ofdm_symbol_size / NR_NB_SC_PER_RB;      // upper bound on PSSCH RBs
+    const int max_llr = 14 * num_rb * NR_NB_SC_PER_RB * 8;             // symbols * REs * max Qm(=8)
+    const int max_layers = 2;                                         // SL uses 1; alloc 2 defensively
+    uint16_t a_segments = MAX_NUM_NR_DLSCH_SEGMENTS;
+    if (num_rb != 273) {
+      a_segments = a_segments * num_rb;
+      a_segments = (a_segments / 273) + 1;
+    }
+
+    NR_gNB_PUSCH *pv = malloc16_clear(sizeof(*pv));
+    pv->ul_ch_estimates = malloc16(nrx * sizeof(int32_t *));
+    for (int aarx = 0; aarx < nrx; aarx++)
+      pv->ul_ch_estimates[aarx] = malloc16_clear(est_size * sizeof(int32_t));
+    pv->llr = malloc16_clear(max_llr * sizeof(int16_t));
+    pv->llr_layers = malloc16(max_layers * sizeof(int16_t *));
+    for (int l = 0; l < max_layers; l++)
+      pv->llr_layers[l] = malloc16_clear(max_llr * sizeof(int16_t));
+    UE->pssch_vars = pv;
+
+    NR_gNB_ULSCH_t *sl = malloc16_clear(sizeof(*sl));
+    sl->harq_process = malloc16_clear(sizeof(NR_UL_gNB_HARQ_t));
+    sl->harq_process->b = malloc16_clear(a_segments * 1056);
+    sl->harq_process->c = malloc16_clear(a_segments * 1056);
+    sl->harq_process->d = malloc16_clear(a_segments * 68 * 384 * sizeof(int16_t));
+    UE->slsch = sl;
+
+    UE->pssch_thres = 10; // PSSCH energy-detection threshold (dB x10) for the DTX test; tunable
+    LOG_I(PHY, "SIDELINK INIT: allocated PSSCH vars (%d rx ant, est %d) + SLSCH HARQ (a_segments %d)\n",
+          nrx, est_size, a_segments);
+  }
 }

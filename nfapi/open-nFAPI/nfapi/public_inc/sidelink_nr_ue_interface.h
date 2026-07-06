@@ -7,12 +7,15 @@
 
 #include "fapi_nr_ue_interface.h"
 
-#define SL_NR_RX_CONFIG_LIST_NUM 1
+// episys SL data-plane port: PSSCH RX needs 2 config PDUs (SCI-2/demod cfg + SLSCH transport cfg); PSBCH uses 1.
+#define SL_NR_RX_CONFIG_LIST_NUM 2
 #define SL_NR_TX_CONFIG_LIST_NUM 1
 #define SL_NR_RX_IND_MAX_PDU 1
 #define SL_NR_MAX_PSCCH_SCI_LENGTH_IN_BYTES 8
 #define SL_NR_MAX_PSSCH_SCI_LENGTH_IN_BYTES 8
 #define SL_NR_MAX_SCI_LENGTH_IN_BYTES 8
+// episys SL data-plane port: bound for the SLSCH TB carried in the TX config PDU (F1 minimal path).
+#define SL_NR_MAX_SLSCH_PAYLOAD_BYTES 4096
 
 typedef enum sl_sci_format_type_enum {
   SL_SCI_INVALID_FORMAT,
@@ -24,7 +27,8 @@ typedef enum sl_sci_format_type_enum {
 typedef enum sl_rx_pdu_type_enum {
   SL_NR_RX_PDU_TYPE_NONE,
   SL_NR_RX_PDU_TYPE_SSB,
-  SL_NR_RX_PDU_TYPE_SLSCH
+  SL_NR_RX_PDU_TYPE_SLSCH,
+  SL_NR_RX_PDU_TYPE_SLSCH_PSFCH  // episys SL data-plane port: PSSCH+PSFCH RX pdu type
 } sl_rx_pdu_type_enum_t;
 
 //Type of SL-RX CONFIG requests from MAC to PHY
@@ -33,6 +37,7 @@ typedef enum sl_nr_rx_config_type_enum {
   SL_NR_CONFIG_TYPE_RX_PSCCH,
   SL_NR_CONFIG_TYPE_RX_PSSCH_SCI,
   SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH,
+  SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH,  // episys SL data-plane port: PSSCH+SLSCH with PSFCH feedback
   SL_NR_CONFIG_TYPE_RX_PSFCH,
   SL_NR_CONFIG_TYPE_RX_MAXIMUM
 } sl_nr_rx_config_type_enum_t;
@@ -278,6 +283,12 @@ typedef struct sl_nr_tx_config_pscch_pssch_pdu {
   // from this value according to 38.213 section 16
   int16_t pssch_tx_power;
 
+  // episys SL data-plane port: SLSCH transport block carried MAC->PHY by value (the SL tx path has no
+  // separate tx_request PDU like Uu). PHY copies slsch_payload[0..slsch_payload_len) into
+  // ue->ul_harq_processes[harq_pid].payload_AB before encoding. Bounded for the F1 minimal path.
+  uint32_t slsch_payload_len;
+  uint8_t slsch_payload[SL_NR_MAX_SLSCH_PAYLOAD_BYTES];
+
 } sl_nr_tx_config_pscch_pssch_pdu_t;
 
 // MAC indicates PHY to send PSBCH.
@@ -388,6 +399,92 @@ typedef struct {
   sl_nr_bwp_config_t sl_bwp_config;
 
 } sl_nr_phy_config_request_t;
+
+/* ---- episys SL data-plane port: PSFCH (HARQ feedback) config PDU ---- */
+typedef struct sl_nr_tx_rx_config_psfch_pdu {
+  //  These fields can be mapped directly to the same fields in nfapi_nr_ul_config_pucch_pdu
+  uint8_t freq_hop_flag;
+  uint8_t group_hop_flag;
+  uint8_t sequence_hop_flag;
+  uint16_t second_hop_prb;
+  uint8_t nr_of_symbols;
+  uint8_t start_symbol_index;
+  uint8_t hopping_id;
+  uint16_t prb;
+  uint16_t sl_bwp_start;
+  uint16_t initial_cyclic_shift;
+  uint8_t mcs;
+  uint8_t bit_len_harq;
+} sl_nr_tx_rx_config_psfch_pdu_t;
+
+/* ---- episys SL data-plane port: SL CSI periodicity + SL Configured-Grant (Type 1) ---- */
+typedef enum NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR {
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_NOTHING,	/* No components present */
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots4,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots5,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots8,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots10,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots16,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots20,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots32,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots40,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots64,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots80,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots160,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots320,
+	NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR_slots640
+} NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR;
+
+/*--------------------------------------------------------------
+ *  Structure: sl_config_grant_t
+ *  Purpose:  Hold configuration, state, and feedback info for
+ *            Sidelink Configured Grant Type 1 (CG Type 1)
+ *--------------------------------------------------------------*/
+typedef enum {
+    CG_TYPE_1,
+    CG_TYPE_2
+} cg_type_t;
+
+typedef struct {
+  /* ======= Configuration from RRC ======= */
+  uint16_t  sl_period_cg;              // sl-PeriodCG (in slots or ms)
+  uint8_t  sl_psfch_to_pucch_cg_type1; // slot offset k for PUCCH feedback (sl-PSFCH-ToPUCCH-CG-Type1)
+  uint8_t  sl_n1pucch_an;              // index of PUCCH resource (sl-N1PUCCH-AN)
+  uint8_t  sl_pucch_set_id;            // PUCCH resource set ID
+  uint8_t  harq_feedback_enabled;      // 0=disabled, 1=enabled (from SCI or RRC)
+  uint8_t  mu_sl;                      // numerology for SL BWP
+  uint8_t  mu_ul;                      // numerology for UL BWP
+  uint8_t  k;                          // scaling factor (from TS 38.211)
+  double   Tc;                         // basic time unit (from TS 38.211)
+  uint16_t sl_num_harq_processes;
+  uint16_t sl_harq_proc_id_offset;
+  uint16_t cg_id;                      // unique ID or index for this CG config
+  cg_type_t type;                      // Type 1 or Type 2
+  long sl_priority;
+  long sl_cg_maxtransnum;
+  long sl_freqresource_cg_type1;
+  long sl_timeresource_cg_type1;
+  long sl_resource_pool_id;
+  long sl_startsubchannelcg_type1;
+  long sl_timeoffsetcg_type1;
+  long sl_timereferencesfn_type1;
+  /* ======= Runtime State ======= */
+  bool     active;                     // CG Type 1 active for current period
+  uint32_t start_slot;                 // starting slot of current CG period
+  uint32_t end_slot;                   // ending slot of current CG period
+  uint32_t last_psfch_slot;            // slot index of last PSFCH reception
+  uint32_t pucch_slot;                 // computed slot for PUCCH feedback (last_psfch_slot + k)
+  uint8_t  psfch_count;                // number of PSFCH receptions this CG period
+  uint8_t  harq_bit;                   // computed HARQ feedback bit (0=NACK, 1=ACK)
+  uint8_t  harq_priority;              // priority value for the HARQ bit
+  bool     feedback_pending;           // flag: feedback waiting to be sent
+  bool     pucch_configured;           // flag: PUCCH resource exists and valid
+  bool     feedback_sent;              // flag: PUCCH feedback transmitted
+  /* ======= Diagnostics / Logging ======= */
+  uint8_t  num_psfch_ack;              // number of ACKed PSFCH receptions
+  uint8_t  num_psfch_nack;             // number of NACKed PSFCH receptions
+  uint8_t  num_psfch_missed;           // missed PSFCHs in this CG period
+} sl_config_grant_t;
 
 
 #endif

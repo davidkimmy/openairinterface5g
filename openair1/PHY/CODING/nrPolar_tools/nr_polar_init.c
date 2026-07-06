@@ -96,7 +96,13 @@ t_nrPolar_params *nr_polar_params(int8_t messageType, uint16_t messageLength, ui
     // printf("Initializing polar parameters for PBCH (K %d, E
     // %d)\n",newPolarInitNode->payloadBits,newPolarInitNode->encoderLength);
 
-  } else if (messageType == NR_POLAR_DCI_MESSAGE_TYPE) {
+  } else if (messageType == NR_POLAR_DCI_MESSAGE_TYPE || messageType == NR_POLAR_SCI_MESSAGE_TYPE
+             || messageType == NR_POLAR_SCI2_MESSAGE_TYPE) {
+    // episys SL data-plane port: SCI-1A (PSCCH) and SCI-2 (PSSCH) reuse the DCI polar parameters
+    // (38.212 8.3.1/8.4.1) and differ only in the coded-bit count E (encoderLength):
+    //  - DCI : E = aggregation_level * 108  (aggregation_level = CCEs)
+    //  - SCI1: E = aggregation_level * 18   (aggregation_level = PSCCH PRBs; 9 REs/PRB * 2 bits QPSK)
+    //  - SCI2: E = aggregation_level * 2    (aggregation_level = SCI-2 REs; * 2 bits QPSK)
     newPolarInitNode->n_max = NR_POLAR_DCI_N_MAX;
     newPolarInitNode->i_il = NR_POLAR_DCI_I_IL;
     newPolarInitNode->i_seg = NR_POLAR_DCI_I_SEG;
@@ -105,7 +111,12 @@ t_nrPolar_params *nr_polar_params(int8_t messageType, uint16_t messageLength, ui
     newPolarInitNode->i_bil = NR_POLAR_DCI_I_BIL;
     newPolarInitNode->crcParityBits = NR_POLAR_DCI_CRC_PARITY_BITS;
     newPolarInitNode->payloadBits = messageLength;
-    newPolarInitNode->encoderLength = aggregation_level * 108;
+    if (messageType == NR_POLAR_SCI_MESSAGE_TYPE)
+      newPolarInitNode->encoderLength = aggregation_level * 18;
+    else if (messageType == NR_POLAR_SCI2_MESSAGE_TYPE)
+      newPolarInitNode->encoderLength = aggregation_level * 2;
+    else
+      newPolarInitNode->encoderLength = aggregation_level * 108;
     newPolarInitNode->crcCorrectionBits = NR_POLAR_DCI_CRC_ERROR_CORRECTION_BITS;
     newPolarInitNode->crc_generator_matrix =
         crc24c_generator_matrix(newPolarInitNode->payloadBits + newPolarInitNode->crcParityBits); // G_P

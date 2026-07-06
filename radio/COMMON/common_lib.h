@@ -251,6 +251,8 @@ typedef struct openair0_config {
   gpio_control_t gpio_controller;
   //! this interface is reused for split 7, so split 7 options provided below
   split7_config_t split7;
+  //! true if this device/RU carries the sidelink (PC5) link (rfsim uses serveraddrsl/serverportsl)
+  bool sl_link;
 } openair0_config_t;
 extern openair0_config_t openair0_cfg_g[MAX_CARDS];
 

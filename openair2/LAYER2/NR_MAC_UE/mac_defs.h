@@ -24,6 +24,7 @@
 #include "LAYER2/NR_MAC_COMMON/nr_mac.h"
 #include "LAYER2/NR_MAC_COMMON/nr_mac_common.h"
 #include "mac_defs_sl.h"
+#include "mac_defs_sl_sched.h"  // episys SL data-plane port: SL-SCH/SCI/CSI/HARQ scheduling types
 
 /* RRC */
 #include "NR_DRX-Config.h"
@@ -628,6 +629,40 @@ typedef struct NR_UE_MAC_INST_s {
 
   //SIDELINK MAC PARAMETERS
   sl_nr_ue_mac_params_t *SL_MAC_PARAMS;
+
+  /* ---- episys SL data-plane port: sidelink scheduling / SCI / sensing / CG fields ---- */
+  NR_SL_BWP_ConfigCommon_r16_t *sl_bwp;
+  NR_SL_BWP_Config_r16_t *sl_bwp_dedicated;
+  int max_fb_time;
+  NR_SL_ResourcePool_r16_t *sl_rx_res_pool;
+  NR_SL_ResourcePool_r16_t *sl_tx_res_pool;
+
+  // SIDELINK Scheduling fields
+  NR_SL_UEs_t sl_info;
+
+  //  current SCI pdu build from SCI1 and SCI2
+  nr_sci_pdu_t sci_pdu_rx;
+  nr_sci_pdu_t sci1_pdu;
+  nr_sci_pdu_t sci2_pdu;
+  uint8_t slsch_payload[16384];
+  time_stats_t rlc_data_req;
+  int src_id;
+  pthread_mutex_t sl_sched_lock;
+  bool is_synced_sl;
+
+  allowed_rsc_selection_t rsc_selection_method; // enable sensing-based SL resource selection; else random
+  double m_slProbResourceKeep; // probability of keeping a resource after reselection counter reaches zero
+  List_t sl_sensing_data; // List to store sensing data
+  uint8_t sl_resel_counter;  // The resource selection counter
+  uint16_t sl_c_resel;       // The C_resel counter
+  List_t sl_transmit_history; // History of slots used for transmission
+  /// bitmap of ULSCH slots, can hold up to 160 slots
+  uint64_t ulsch_slot_bitmap[3];
+  List_t *sl_candidate_resources;
+  uint16_t reselection_timer;
+  sl_config_grant_bwp_t sl_cg_per_bwp;
+  SL_REPORT_CONFIG_t sl_report_config;
+
   // PUCCH closed loop power control state
   int G_b_f_c;
   bool pucch_power_control_initialized;

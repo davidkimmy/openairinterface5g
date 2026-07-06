@@ -277,8 +277,12 @@ void nrue_init_openair0(void)
       LOG_W(PHY, "Skipping initialization of RU %d because it is not used by any cell!\n", ru_id);
       continue;
     }
+    // Even card index -> Uu, odd card index -> sidelink (PC5). A single-RU sidelink run (mode-2) has no Uu
+    // RU, so its lone RU is the SL one. Only with >1 RU (mode-1 relay Uu+PC5) does the even/odd split apply.
+    bool card_is_sl = is_sidelink && (nrue_ru_count > 1 ? (ru_id % 2 == 1) : true);
+
     NR_DL_FRAME_PARMS *frame_parms = &nrue_cell_fp[cell_id];
-    if (is_sidelink) {
+    if (card_is_sl) {
       int UE_id = nrue_cells[cell_id].used_by_ue;
       if (UE_id < 0) {
         LOG_W(PHY, "Skipping initialization of RU %d because it is not used by any UE!\n", ru_id);
@@ -297,6 +301,9 @@ void nrue_init_openair0(void)
       cfg->duplex_mode = duplex_mode_FDD;
 
     cfg->ru_id = ru_id;
+    // Mark the SL (PC5) RU so its rfsim device uses the SL endpoint (serveraddrsl/serverportsl). Even cards
+    // are Uu (serveraddr/serverport), odd cards are PC5. Mode-2's single RU is the SL RU.
+    cfg->sl_link = card_is_sl;
     cfg->num_rb_dl = frame_parms->N_RB_DL;
     cfg->tx_num_channels = min(4, frame_parms->nb_antennas_tx);
     cfg->rx_num_channels = min(4, frame_parms->nb_antennas_rx);
@@ -310,7 +317,7 @@ void nrue_init_openair0(void)
           duplex_mode_txt[cfg->duplex_mode]);
 
     uint64_t dl_carrier, ul_carrier;
-    if (is_sidelink || nrue_rus[ru_id].if_frequency == 0) {
+    if (card_is_sl || nrue_rus[ru_id].if_frequency == 0) {
       dl_carrier = frame_parms->dl_CarrierFreq;
       ul_carrier = frame_parms->ul_CarrierFreq;
     } else {
@@ -497,6 +504,38 @@ int nrue_ru_write(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, void **buf
   }
   return ret;
 }
+
+/* Sidelink (PC5) device read/write for the mode-1 dual-card relay: target the SL card (UE->rf_map_sl.card)
+ * directly, with NO unused-RU fan-out (the Uu path's nrue_ru_read/write handles that). Each device instance
+ * keeps its own firstTS, so the two links' timestamp timelines stay independent. */
+int nrue_ru_read_sl(PHY_VARS_NR_UE *UE, openair0_timestamp_t *ptimestamp, void **buff, int nsamps, int num_antennas)
+{
+  openair0_device_t *dev = &openair0_dev[UE->rf_map_sl.card];
+  openair0_timestamp_t tmp_timestamp;
+  int ret = dev->trx_read_func(dev, &tmp_timestamp, buff, nsamps, num_antennas);
+  if (!dev->firstTS_initialized) {
+    dev->firstTS = tmp_timestamp;
+    dev->firstTS_initialized = true;
+  }
+  *ptimestamp = tmp_timestamp - dev->firstTS;
+  return ret;
+}
+
+int nrue_ru_write_sl(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, void **buff, int nsamps, int num_antennas, int flags)
+{
+  openair0_device_t *dev = &openair0_dev[UE->rf_map_sl.card];
+  return dev->trx_write_func(dev, timestamp + dev->firstTS, buff, nsamps, num_antennas, flags);
+}
+
+typedef int (*nrue_ru_write_t)(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, void **txp, int nsamps, int nbAnt, int flags);
+int openair0_write_reorder_common(nrue_ru_write_t nrue_ru_write,
+                                  PHY_VARS_NR_UE *UE,
+                                  openair0_device_t *device,
+                                  openair0_timestamp_t timestamp,
+                                  void **txp,
+                                  int nsamps,
+                                  int nbAnt,
+                                  int flags);
 
 int nrue_ru_write_reorder(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, void **txp, int nsamps, int nbAnt, int flags)
 {

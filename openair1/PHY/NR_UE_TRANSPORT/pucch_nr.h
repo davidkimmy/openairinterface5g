@@ -22,7 +22,8 @@ void nr_generate_pucch0(c16_t **txdataF,
                         const NR_DL_FRAME_PARMS *frame_parms,
                         const int16_t amp,
                         const int nr_slot_tx,
-                        const fapi_nr_ul_config_pucch_pdu *pucch_pdu);
+                        const fapi_nr_ul_config_pucch_pdu *pucch_pdu,
+                        nr_intf_type_t intf_type);
 
 void nr_generate_pucch1(c16_t **txdataF,
                         const NR_DL_FRAME_PARMS *frame_parms,

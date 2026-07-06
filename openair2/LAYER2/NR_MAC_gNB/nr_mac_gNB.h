@@ -79,14 +79,8 @@
 
 uint8_t nr_get_rv(int rel_round);
 
-/*! \brief NR_list_t is a "list" (of users, HARQ processes, slices, ...).
- * Especially useful in the scheduler and to keep "classes" of users. */
-typedef struct {
-  int head;
-  int *next;
-  int tail;
-  int len;
-} NR_list_t;
+/* NR_list_t moved to LAYER2/NR_MAC_COMMON/nr_mac_common.h (common; reused by UE sidelink MAC
+   scheduler). Still visible here via the nr_mac_common.h include above. (episys SL port) */
 
 typedef enum {
   nrRA_gNB_IDLE,
@@ -555,13 +549,8 @@ typedef struct NR_UE_harq {
 
 //! fixme : need to enhace for the multiple TB CQI report
 
-typedef struct NR_bler_stats {
-  frame_t last_frame;
-  float bler;
-  uint8_t mcs;
-  uint64_t rounds[8];
-  int last_num_sched; // scheduling count at last BLER update (for activity guard)
-} NR_bler_stats_t;
+/* NR_bler_stats_t moved to LAYER2/NR_MAC_COMMON/nr_mac_common.h (common; reused by UE sidelink
+   MAC scheduler). Still visible here via the nr_mac_common.h include above. (episys SL port) */
 
 //
 /*! As per spec 38.214 section 5.2.1.4.2
@@ -742,20 +731,8 @@ typedef struct {
   nr_power_control_t pucch_pc;
 } NR_UE_sched_ctrl_t;
 
-typedef struct NR_mac_dir_stats {
-  uint64_t lc_bytes[64];
-  uint64_t rounds[8];
-  uint64_t errors;
-  uint64_t total_bytes;
-  uint32_t current_bytes;
-  uint64_t total_sdu_bytes;
-  uint32_t total_rbs;
-  uint32_t total_rbs_retx;
-  uint32_t num_mac_sdu;
-  uint32_t current_rbs;
-  uint64_t prev_sdu_bytes;
-  frame_t last_goodput_frame;
-} NR_mac_dir_stats_t;
+/* NR_mac_dir_stats_t moved to LAYER2/NR_MAC_COMMON/nr_mac_common.h (common, reused by UE
+   sidelink MAC stats). Still visible here via the nr_mac_common.h include above. (episys SL port) */
 
 typedef struct NR_mac_stats {
   NR_mac_dir_stats_t dl;

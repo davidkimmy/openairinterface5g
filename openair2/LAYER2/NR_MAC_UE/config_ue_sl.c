@@ -138,6 +138,9 @@ static void  sl_prepare_phy_config(int module_id,
 
   AssertFatal(bwp_generic, "SL-BWP Generic cannot be NULL");
 
+  // episys SL data-plane port: cache the SL BWP generic config for the SLSCH scheduler (PSSCH sizing).
+  get_mac_inst(module_id)->SL_MAC_PARAMS->sl_bwp_generic = (struct NR_SL_BWP_Generic_r16 *)bwp_generic;
+
   NR_BWP_t *sl_bwp = bwp_generic->sl_BWP_r16;
   AssertFatal(sl_bwp, "SL-BWP cannot be NULL");
 
@@ -332,6 +335,11 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
 
           sl_mac->sl_TxPool[i]->num_subch = num_subch;
           sl_mac->sl_TxPool[i]->sci_1a_len = sci_1a_len;
+
+          // episys SL data-plane port: the SL scheduler's TX path reads mac->sl_tx_res_pool; point it at
+          // the first configured TX pool so the PSSCH data-plane branch is enabled.
+          if (i == 0)
+            mac->sl_tx_res_pool = sl_mac->sl_TxPool[0]->respool;
 
           LOG_I(NR_MAC,"Txpool[%d] - num subchannels:%d, sci_1a_len:%d\n",i,
                                                       sl_mac->sl_TxPool[i]->num_subch,

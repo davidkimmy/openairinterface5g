@@ -178,6 +178,12 @@ typedef struct {
   /// - second index: sample [0..2*FRAME_LENGTH_COMPLEX_SAMPLES+2048[
   c16_t **rxdata;
 
+  /// \brief Sidelink (PC5) TX/RX time-domain buffers, used ONLY when a relay runs Uu + PC5 on two
+  /// separate rfsim devices (mode-1 dual-card). In mode-2 (single SL card) SL reuses txData/rxdata and
+  /// these stay NULL. Same layout as txData/rxdata.
+  c16_t **txData_sl;
+  c16_t **rxdata_sl;
+
   /// estimated frequency offset (in radians) for all subcarriers
   int32_t freq_offset;
 } NR_UE_COMMON;
@@ -281,6 +287,11 @@ typedef struct PHY_VARS_NR_UE_s {
   uint8_t CC_id;
   /// \brief Mapping of CC_id antennas to cards
   openair0_rf_map_t rf_map;
+  /// \brief Second card mapping for the sidelink (PC5) rfsim device, used when a relay runs Uu + PC5
+  /// simultaneously (mode-1 dual-card). When sl_dual_card is false, SL uses rf_map (single card).
+  openair0_rf_map_t rf_map_sl;
+  /// \brief true when this UE drives a separate PC5 device (rf_map_sl.card) alongside Uu (rf_map.card)
+  bool sl_dual_card;
   /// \brief Indicator that UE should perform band scanning
   int UE_scan;
   /// \brief Indicator that UE should perform coarse scanning around carrier
@@ -333,6 +344,13 @@ typedef struct PHY_VARS_NR_UE_s {
   /// \brief Frame parame before ho used to recover if ho fails.
   NR_DL_FRAME_PARMS  frame_parms_before_ho;
   NR_UE_COMMON    common_vars;
+
+  // episys SL data-plane port: PSSCH receive vars (LLR buffers); reuses the gNB PUSCH vars struct.
+  struct NR_gNB_PUSCH_s *pssch_vars;
+  // episys SL data-plane port: SLSCH receive state (per-connection HARQ), reuses the common ULSCH struct.
+  struct NR_gNB_ULSCH_s *slsch;
+  // PSSCH energy-detection threshold (dB x10) for the DTX test in the SL RX chain.
+  int pssch_thres;
 
   nr_ue_if_module_t *if_inst;
   bool received_config_request;
@@ -443,6 +461,7 @@ typedef struct PHY_VARS_NR_UE_s {
   sl_nr_sidelink_mode_t sl_mode;
   sl_nr_ue_phy_params_t SL_UE_PHY_PARAMS;
   Actor_t sync_actor;
+  Actor_t sync_actor_sl;   // sidelink (PC5) initial-sync actor for the mode-1 dual-card SL thread
   Actor_t *dl_actors;
   Actor_t *ul_actors;
   pthread_t main_thread;
@@ -461,6 +480,7 @@ typedef struct PHY_VARS_NR_UE_s {
     uint32_t llr_buf_max;
   } *pdsch_scratch;
   int pdsch_num_actors;
+  pthread_t sl_thread;     // sidelink (PC5) driving thread for the mode-1 dual-card relay
 } PHY_VARS_NR_UE;
 typedef struct pdsch_scratch_s pdsch_scratch_t;
 
@@ -569,6 +589,9 @@ typedef struct nr_phy_data_tx_s {
   // Sidelink Rx action decided by MAC
   sl_nr_tx_config_type_enum_t sl_tx_action;
   sl_nr_tx_config_psbch_pdu_t psbch_vars;
+  // episys SL data-plane port: PSCCH+PSSCH TX config + PSCCH scrambling id
+  sl_nr_tx_config_pscch_pssch_pdu_t nr_sl_pssch_pscch_pdu;
+  uint32_t pscch_Nid;
 } nr_phy_data_tx_t;
 
 typedef struct nr_phy_data_s {
@@ -580,6 +603,12 @@ typedef struct nr_phy_data_s {
   sl_nr_rx_config_type_enum_t sl_rx_action;
   int num_csirs;
   NR_UE_CSI_RS csirs_vars[MAX_CSI_RES_SLOT];
+  // episys SL data-plane port: PSCCH/PSSCH RX config PDUs + PSFCH list
+  sl_nr_rx_config_pscch_pdu_t nr_sl_pscch_pdu;
+  sl_nr_rx_config_pssch_sci_pdu_t nr_sl_pssch_sci_pdu;
+  sl_nr_rx_config_pssch_pdu_t nr_sl_pssch_pdu;
+  sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu_list;
+  uint8_t num_psfch_pdus;
   NR_UE_CSI_IM csiim_vars;
 } nr_phy_data_t;
 

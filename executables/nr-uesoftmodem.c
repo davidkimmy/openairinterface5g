@@ -176,8 +176,10 @@ static void init_ue_actors(PHY_VARS_NR_UE *UE)
 
   int idx = 0;
   const int sync_core = (have > need) ? cores[need] : -1;
+  UE->sl_mode = get_softmodem_params()->sl_mode;
   init_actor(&UE->sync_actor, "SYNC_", sync_core);
-
+  if (UE->sl_mode != 0)
+    init_actor(&UE->sync_actor_sl, "SYNCSL_", sync_core);
   if (p->num_dl_actors > 0) {
     UE->dl_actors = calloc_or_fail(p->num_dl_actors, sizeof(*UE->dl_actors));
     for (int i = 0; i < p->num_dl_actors; i++) {
@@ -214,6 +216,14 @@ static void set_UE_options(int CC_id, PHY_VARS_NR_UE *UE, int ru_id)
   UE->if_freq_off      = RU->if_freq_offset;
   UE->rf_map.card      = ru_id;
   UE->rf_map.chain     = CC_id;
+
+  // Sidelink dual-card (mode-1 relay Uu+PC5): Uu is the even card (ru_id), PC5 is the adjacent odd card
+  // (ru_id+1), matching the episys convention. Only enabled when sl_mode==1 AND a second RU actually exists,
+  // so mode-2 (single card) and any mis-config leave sl_dual_card false (SL then reuses the single card).
+  bool sl_dual = (get_softmodem_params()->sl_mode == 1) && (ru_id + 1 < nrue_get_ru_count());
+  UE->sl_dual_card     = sl_dual;
+  UE->rf_map_sl.card   = sl_dual ? ru_id + 1 : ru_id;
+  UE->rf_map_sl.chain  = CC_id;
 
   UE->tx_power_max_dBm     = nrUE_params.tx_max_power;
   UE->max_ldpc_iterations  = nrUE_params.max_ldpc_iterations;

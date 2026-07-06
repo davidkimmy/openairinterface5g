@@ -4,6 +4,22 @@
 
 #include "mac_defs.h"
 #include "mac_proto.h"
+#include "nr_ue_sci.h"                                  // nr_schedule_slsch, fill_pssch_pscch_pdu, config_pssch_*_rx
+#include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"      // nr_mac_rlc_status_ind_sl / data_req_sl (SL DRB)
+#include "executables/softmodem-common.h"               // SL_MCS (--mcs cmdline override)
+
+// episys SL data-plane port: F1 minimal — SL DRB is drb_id 1; broadcast dest id. MCS comes from --mcs
+// (SL_MCS) when set, else the default below. Both TX and RX must use the same MCS (same SCI-1).
+#define SL_F1_DRB_ID 1
+#define SL_F1_BROADCAST_DEST 0xFFFF
+#define SL_F1_DEFAULT_MCS 9
+
+// Effective SL MCS: cmdline --mcs if provided (>=0), otherwise the F1 default.
+static inline uint8_t sl_effective_mcs(void)
+{
+  int mcs = get_softmodem_params()->mcs;
+  return (mcs >= 0) ? (uint8_t)mcs : SL_F1_DEFAULT_MCS;
+}
 
 static uint16_t sl_adjust_ssb_indices(sl_ssb_timealloc_t *ssb_timealloc, uint32_t slot_in_16frames, uint16_t *ssb_slot_ptr)
 {
@@ -332,10 +348,31 @@ static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
     LOG_I(NR_MAC, "[UE%d] %d:%d CMD to PHY: RX PSBCH \n", ue_id, sl_ind->frame_rx, sl_ind->slot_rx);
 
   } else if (rx_action >= SL_NR_CONFIG_TYPE_RX_PSCCH && rx_action <= SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH) {
-    // TBD..
+    // episys SL data-plane port (F1 minimal): blind PSSCH RX config. Both UEs share the pool config, so we
+    // build the SCI-1 the transmitter would use and derive the demod (SCI-2) + SLSCH transport RX configs.
+    const NR_SL_ResourcePool_r16_t *respool =
+        (sl_mac->sl_RxPool[0] && sl_mac->sl_RxPool[0]->respool) ? sl_mac->sl_RxPool[0]->respool : mac->sl_tx_res_pool;
+    const struct NR_SL_BWP_Generic_r16 *bwp_gen = sl_mac->sl_bwp_generic;
+    if (respool && bwp_gen) {
+      nr_sci_pdu_t sci1 = {0}, sci2 = {0};
+      nr_schedule_slsch(respool, &sci1, &sci2, 0, 0, 0, 0, SL_F1_BROADCAST_DEST, sl_effective_mcs());
+      nr_sci_size(respool, &sci1, NR_SL_SCI_FORMAT_1A); // fill 1st-stage nbits used by the RX config builders
+      // merge the 2nd-stage fields the RX config reads into the single combined SCI-1 PDU
+      sci1.harq_pid = sci2.harq_pid;
+      sci1.ndi = sci2.ndi;
+      sci1.rv_index = sci2.rv_index;
+      uint32_t pscch_Nid = 0; // TODO(OTA): must equal the TX Nid (CRC-derived in nr_generate_sci1) — reconcile.
+      config_pssch_sci_pdu_rx(&rx_config.sl_rx_config_list[0].rx_sci2_config_pdu, NR_SL_SCI_FORMAT_2A, &sci1,
+                              pscch_Nid, 0, bwp_gen, respool);
+      config_pssch_slsch_pdu_rx(&rx_config.sl_rx_config_list[1].rx_pssch_config_pdu, &sci1, bwp_gen, respool);
+      rx_config.number_pdus = 2;
+      rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+      rx_config.sl_rx_config_list[1].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+      LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: RX PSSCH/SLSCH (Nid=%u)\n", ue_id, sl_ind->frame_rx, sl_ind->slot_rx, pscch_Nid);
+    }
 
   } else if (rx_action == SL_NR_CONFIG_TYPE_RX_PSFCH) {
-    // TBD..
+    // TBD (F2 PSFCH)
   }
 
   if (rx_config.number_pdus) {
@@ -379,10 +416,39 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
     LOG_I(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSBCH \n", ue_id, sl_ind->frame_tx, sl_ind->slot_tx);
 
   } else if (tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH) {
-    // TBD....
+    // episys SL data-plane port (F1 minimal): build the PSCCH+PSSCH grant and pull the SLSCH TB from the SL DRB.
+    const NR_SL_ResourcePool_r16_t *respool = mac->sl_tx_res_pool;
+    const struct NR_SL_BWP_Generic_r16 *bwp_gen = sl_mac->sl_bwp_generic;
+    if (respool && bwp_gen) {
+      sl_nr_tx_config_pscch_pssch_pdu_t *pdu = &tx_config.tx_config_list[0].tx_pscch_pssch_config_pdu;
+      memset(pdu, 0, sizeof(*pdu));
+      nr_sci_pdu_t sci1 = {0}, sci2 = {0};
+      static uint8_t sl_ndi = 0;
+      sl_ndi ^= 1;
+      const uint8_t mcs = sl_effective_mcs();
+      // populate SCI-1/SCI-2 field values, then assemble the PDU (nr_sci_size + packing + TB size inside).
+      nr_schedule_slsch(respool, &sci1, &sci2, 0 /*harq_pid*/, sl_ndi, 0 /*rv*/, mac->src_id, SL_F1_BROADCAST_DEST, mcs);
+      fill_pssch_pscch_pdu(pdu, bwp_gen, respool, &sci1, &sci2, NR_SL_SCI_FORMAT_1A, NR_SL_SCI_FORMAT_2A);
+      // TB bridge: pull one SLSCH RLC PDU from the SL DRB into the TX PDU (value-copied MAC->PHY), prefixed by
+      // the 2-byte SL-SCH subheader (big-endian RLC-PDU length) so the RX can strip the TB padding.
+      uint32_t tb = pdu->tb_size > SL_NR_MAX_SLSCH_PAYLOAD_BYTES ? SL_NR_MAX_SLSCH_PAYLOAD_BYTES : pdu->tb_size;
+      uint32_t room = (tb > SL_SCH_SUBHEADER_LEN) ? tb - SL_SCH_SUBHEADER_LEN : 0;
+      tbs_size_t len = nr_mac_rlc_data_req_sl(mac->src_id, SL_F1_DRB_ID, room, (char *)pdu->slsch_payload + SL_SCH_SUBHEADER_LEN);
+      if (len > 0) {
+        pdu->slsch_payload[0] = ((uint32_t)len >> 8) & 0xff;
+        pdu->slsch_payload[1] = (uint32_t)len & 0xff;
+        pdu->slsch_payload_len = (uint32_t)len + SL_SCH_SUBHEADER_LEN;
+      } else {
+        pdu->slsch_payload_len = 0;
+      }
+      tx_config.number_pdus = 1;
+      tx_config.tx_config_list[0].pdu_type = tx_action;
+      LOG_I(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSCCH/PSSCH tb_size %d (rlc %d) mcs %d\n",
+            ue_id, sl_ind->frame_tx, sl_ind->slot_tx, pdu->tb_size, (int)len, mcs);
+    }
 
   } else if (tx_action == SL_NR_CONFIG_TYPE_TX_PSFCH) {
-    // TBD....
+    // TBD (F2 PSFCH)
   }
 
   if (tx_config.number_pdus == 1) {
@@ -435,15 +501,21 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
       // Check if PSBCH slot and PSBCH should be transmitted or Received
       tti_action = sl_psbch_scheduler(sl_mac, ue_id, frame, slot, mac->frame_structure.numb_slots_frame);
 
-#if 0 // To be expanded later
-      // TBD .. Check for Actions coming out of TX resource pool
-      if (!tti_action && sl_mac->sl_TxPool[0])
-        tti_action = sl_tx_scheduler(ue_id, frame, slot, sl_mac, sl_mac->sl_TxPool[0]);
-
-      //TBD .. Check for Actions coming out of RX resource pool
-      if (!tti_action && sl_mac->sl_RxPool[0])
-        tti_action = sl_rx_scheduler(ue_id, frame, slot, sl_mac, sl_mac->sl_RxPool[0]);
-#endif
+      // episys SL data-plane port (F1 minimal): if this SL slot isn't a PSBCH slot, arbitrate the PSSCH data
+      // plane. Half-duplex rule: transmit PSSCH when the SL DRB has data buffered, otherwise listen (RX PSSCH).
+      // (Bidirectional/half-duplex refinement + sensing are follow-ups.)
+      if (!tti_action && mac->sl_tx_res_pool && sl_mac->sl_bwp_generic) {
+        mac_rlc_status_resp_t st = nr_mac_rlc_status_ind_sl(mac->src_id, SL_F1_DRB_ID, frame);
+        tti_action = (st.bytes_in_buffer > 0) ? SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH : SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+        sl_mac->future_ttis[slot].sl_action = tti_action;
+        LOG_D(NR_MAC, "[UE%d] %d:%d SL-SCHED data-plane: status_ind_sl(src_id=0x%x drb=%d)=%d bytes -> action %d\n",
+              ue_id, frame, slot, mac->src_id, SL_F1_DRB_ID, st.bytes_in_buffer, tti_action);
+      } else if (!tti_action) {
+        static int warned = 0;
+        if (!warned) { warned = 1;
+          LOG_W(NR_MAC, "[UE%d] SL-SCHED data-plane branch SKIPPED: sl_tx_res_pool=%p sl_bwp_generic=%p\n",
+                ue_id, (void *)mac->sl_tx_res_pool, (void *)sl_mac->sl_bwp_generic); }
+      }
 
       LOG_D(NR_MAC, "[UE%d]SL-SCHED: TTI - %d:%d scheduled action:%d\n", ue_id, frame, slot, tti_action);
 

@@ -180,7 +180,7 @@ void nr_decode_pucch0(PHY_VARS_gNB *gNB,
   // to TS 38.211 Subclause 6.3.2.2.1
   uint8_t u[2] = {0}, v[2] = {0};
   nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, 0, slot, u,
-                            v); // calculating u and v value first hop
+                            v, UU); // calculating u and v value first hop
   LOG_D(PHY, "pucch0: u %d, v %d\n", u[0], v[0]);
 
   if (pucch_pdu->freq_hop_flag == 1) {
@@ -189,7 +189,8 @@ void nr_decode_pucch0(PHY_VARS_gNB *gNB,
                               1,
                               slot,
                               &u[1],
-                              &v[1]); // calculating u and v value second hop
+                              &v[1],
+                              UU); // calculating u and v value second hop
     LOG_D(PHY, "pucch0 second hop: u %d, v %d\n", u[1], v[1]);
     prb_offset[1] = pucch_pdu->bwp_start + pucch_pdu->second_hop_prb;
   }
@@ -652,7 +653,7 @@ void nr_decode_pucch1(PHY_VARS_gNB *gNB,
 #ifdef DEBUG_NR_PUCCH_RX
     printf("\t [nr_decode_pucch1] entering function nr_group_sequence_hopping with n_hop=%d, nr_tti_tx=%d\n", n_hop, slot);
 #endif
-    nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, n_hop, slot, &u, &v); // calculating u and v value
+    nr_group_sequence_hopping(pucch_GroupHopping, pucch_pdu->hopping_id, n_hop, slot, &u, &v, UU); // calculating u and v value
     // Defining cyclic shift hopping TS 38.211 Subclause 6.3.2.2.2
     double alpha = nr_cyclic_shift_hopping(pucch_pdu->hopping_id, pucch_pdu->initial_cyclic_shift, mcs, l, lprime, slot);
     for (int n = 0; n < 12; n++) { // generating low papr sequences

@@ -149,6 +149,9 @@ typedef enum {
   PC5
 } nr_intf_type_t;
 
+// Max number of sidelink peer UEs a UE tracks for SL scheduling. (episys SL data-plane port)
+#define MAX_SL_UE_CONNECTIONS 8
+
 typedef enum {
   pusch_dmrs_type1 = 0,
   pusch_dmrs_type2 = 1

@@ -106,6 +106,7 @@ typedef struct {
   confirm_t       confirmP;
   sdu_size_t      sdu_sizeP;
   uint8_t *sdu_pP;
+  bool            is_sl;  /* sidelink SL-DRB: route to ue->sl_drb[] via nr_rlc_data_req_sl */
 } rlc_data_req_queue_item;
 
 #define RLC_DATA_REQ_QUEUE_SIZE 10000
@@ -132,12 +133,19 @@ static void *rlc_data_req_thread(void *_)
     i = q.start;
     if (pthread_mutex_unlock(&q.m) != 0) abort();
 
-    nr_rlc_data_req(&q.q[i].ctxt_pP,
-                    q.q[i].srb_flagP,
-                    q.q[i].rb_idP,
-                    q.q[i].muiP,
-                    q.q[i].sdu_sizeP,
-                    q.q[i].sdu_pP);
+    if (q.q[i].is_sl)
+      nr_rlc_data_req_sl(q.q[i].ctxt_pP.rntiMaybeUEid,
+                         q.q[i].rb_idP,
+                         q.q[i].muiP,
+                         q.q[i].sdu_sizeP,
+                         q.q[i].sdu_pP);
+    else
+      nr_rlc_data_req(&q.q[i].ctxt_pP,
+                      q.q[i].srb_flagP,
+                      q.q[i].rb_idP,
+                      q.q[i].muiP,
+                      q.q[i].sdu_sizeP,
+                      q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&q.m) != 0) abort();
 
@@ -168,7 +176,8 @@ static void enqueue_rlc_data_req(const protocol_ctxt_t *const ctxt_pP,
                                  const mui_t muiP,
                                  confirm_t confirmP,
                                  sdu_size_t sdu_sizeP,
-                                 uint8_t *sdu_pP)
+                                 uint8_t *sdu_pP,
+                                 const bool is_sl)
 {
   int i;
   int logged = 0;
@@ -192,6 +201,7 @@ static void enqueue_rlc_data_req(const protocol_ctxt_t *const ctxt_pP,
   q.q[i].confirmP   = confirmP;
   q.q[i].sdu_sizeP  = sdu_sizeP;
   q.q[i].sdu_pP     = sdu_pP;
+  q.q[i].is_sl      = is_sl;
 
   if (pthread_cond_signal(&q.c) != 0) abort();
   if (pthread_mutex_unlock(&q.m) != 0) abort();
@@ -430,7 +440,21 @@ static void deliver_pdu_drb_ue(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
   uint8_t *memblock = malloc16(size);
   memcpy(memblock, buf, size);
   LOG_D(PDCP, "%s(): (drb %d) calling rlc_data_req size %d UE %ld/%04lx\n", __func__, rb_id, size, ctxt.rntiMaybeUEid, ctxt.rntiMaybeUEid);
-  enqueue_rlc_data_req(&ctxt, 0, rb_id, sdu_id, 0, size, memblock);
+  enqueue_rlc_data_req(&ctxt, 0, rb_id, sdu_id, 0, size, memblock, false);
+}
+
+/* Sidelink SL-DRB PDCP->RLC PDU delivery. The SL PDCP entity is keyed by the local src_id, so
+ * ue_id here is that src_id; route to ue->sl_drb[] via nr_rlc_data_req_sl (is_sl=true). */
+static void deliver_pdu_drb_sl(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
+                               char *buf, int size, int sdu_id)
+{
+  DevAssert(deliver_pdu_data == NULL);
+  protocol_ctxt_t ctxt = { .enb_flag = 0, .rntiMaybeUEid = ue_id };
+
+  uint8_t *memblock = malloc16(size);
+  memcpy(memblock, buf, size);
+  LOG_D(PDCP, "%s(): (SL drb %d) calling nr_rlc_data_req_sl size %d src_id 0x%lx\n", __func__, rb_id, size, ue_id);
+  enqueue_rlc_data_req(&ctxt, 0, rb_id, sdu_id, 0, size, memblock, true);
 }
 
 static void deliver_pdu_drb_gnb(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
@@ -449,7 +473,7 @@ static void deliver_pdu_drb_gnb(void *deliver_pdu_data, ue_id_t ue_id, int rb_id
     uint8_t *memblock = malloc16(size);
     memcpy(memblock, buf, size);
     LOG_D(PDCP, "%s(): (drb %d) calling rlc_data_req size %d\n", __func__, rb_id, size);
-    enqueue_rlc_data_req(&ctxt, 0, rb_id, sdu_id, 0, size, memblock);
+    enqueue_rlc_data_req(&ctxt, 0, rb_id, sdu_id, 0, size, memblock, false);
   }
 }
 
@@ -509,7 +533,7 @@ void deliver_pdu_srb_rlc(void *deliver_pdu_data, ue_id_t ue_id, int srb_id,
   protocol_ctxt_t ctxt = { .enb_flag = 1, .rntiMaybeUEid = ue_id };
   uint8_t *memblock = malloc16(size);
   memcpy(memblock, buf, size);
-  enqueue_rlc_data_req(&ctxt, 1, srb_id, sdu_id, 0, size, memblock);
+  enqueue_rlc_data_req(&ctxt, 1, srb_id, sdu_id, 0, size, memblock, false);
 }
 
 void add_srb(int is_gnb,
@@ -644,7 +668,7 @@ void add_drb_sl(ue_id_t srcid,
   } else {
     nr_pdcp_entity_t *pdcp_drb = new_nr_pdcp_entity(NR_PDCP_DRB_AM, 0, slrb_id, pdusession_id,
                                                     has_sdap, has_sdap,
-                                                    deliver_sdu_drb, ue, deliver_pdu_drb_ue, ue,
+                                                    deliver_sdu_drb, ue, deliver_pdu_drb_sl, ue,
                                                     sn_size, t_reordering, discard_timer, &sec);
     nr_pdcp_ue_add_drb_pdcp_entity(ue, slrb_id, pdcp_drb);
     LOG_I(PDCP, "added SL DRB %d (slrb) to UE ID %ld\n", slrb_id, srcid);
