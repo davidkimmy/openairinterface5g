@@ -1661,13 +1661,24 @@ run_syncref_cmd() {
                             --log_config.global_log_level info $mcs"
             fi
         elif [[ $test_type == "usrp" ]]; then
-            syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
-                        -O $CONF_PATH/sl_sync_ref.conf \
-                        -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                        -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
-                        --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
-                        $ext_clock_flag \
-                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
+            if [[ $host_name == 'local' ]]; then
+                syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                            -O $CONF_PATH/sl_sync_ref.conf \
+                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                            -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
+                            --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
+                            $ext_clock_flag \
+                            --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
+            else
+                syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
+                            sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
+                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
+                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                            -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
+                            --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
+                            $ext_clock_flag \
+                            --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
+            fi
         fi
         log_file="$HOME/result_nrUE_syncref.log"
     elif [[ $sl_mode -eq 2 ]]; then
