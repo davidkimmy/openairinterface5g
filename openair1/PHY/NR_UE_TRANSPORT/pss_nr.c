@@ -180,9 +180,6 @@ nr_pss_info_t pss_search_time_nr(const pss_search_t *p)
   }
 
   c16_t(*pssTime)[p->ofdm_symbol_size] = (c16_t(*)[p->ofdm_symbol_size])p->pssTime;
-<<<<<<< HEAD
-  int max_size = get_softmodem_params()->sl_mode == 0 ? NUMBER_PSS_SEQUENCE : NUMBER_PSS_SEQUENCE_SL;
-=======
   int maxval=0;
   int max_size = get_softmodem_params()->sl_mode != 2 ?  NUMBER_PSS_SEQUENCE : NUMBER_PSS_SEQUENCE_SL;
   for (int j = 0; j < max_size; j++)
@@ -191,7 +188,6 @@ nr_pss_info_t pss_search_time_nr(const pss_search_t *p)
       maxval = max(maxval, abs(pssTime[j][i].i));
     }
   int shift = log2_approx(maxval);//*(frame_parms->ofdm_symbol_size+frame_parms->nb_prefix_samples)*2);
->>>>>>> 8e06a58b87 (fix(nr-ue): use Uu PSS/SSS layout for SL mode-1 relay Uu cell search)
 
   /* Search pss in the received buffer each 4 samples which ensures a memory alignment on 128 bits (32 bits x 4 ) */
   /* This is required by SIMD (single instruction Multiple Data) Extensions of Intel processors. */
