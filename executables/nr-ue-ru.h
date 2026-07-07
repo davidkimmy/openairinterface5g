@@ -22,6 +22,9 @@ void nrue_set_ru_params(configmodule_interface_t *cfg);
 void nrue_init_openair0(void);
 
 void nrue_ru_start(void);
+// Lazy bring-up of the deferred SL (PC5) device (dual-card mode-1 relay), called from UE_thread_sl
+// after the Uu link is UE_CONNECTED.
+void nrue_ru_start_sl(int card);
 void nrue_ru_stop(void);
 void nrue_ru_end(void);
 void nrue_ru_set_freq(PHY_VARS_NR_UE *UE, uint64_t ul_carrier, uint64_t dl_carrier, int freq_offset);

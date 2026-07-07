@@ -36,6 +36,7 @@ unsigned short config_frames[4] = {2,9,11,13};
 #include <string.h>
 #include <unistd.h>
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
 #include "NR_PHY_INTERFACE/NR_IF_Module.h"
 #include "LAYER2/NR_MAC_gNB/nr_mac_gNB.h"
 #include "PHY/INIT/nr_phy_init.h"
@@ -194,6 +195,12 @@ static int create_gNB_tasks(ngran_node_t node_type, configmodule_interface_t *cf
   if (node_type != ngran_gNB_DU) {
     // we start pdcp in both cuup (for drb) and cucp (for srb)
     nr_pdcp_layer_init();
+  }
+
+  // SRAP relay adaptation layer (mode-1 U2N relay gNB side). Gated on relay_type; self-inits once.
+  if (get_softmodem_params()->relay_type > 0) {
+    nr_srap_layer_init(true /* gNB_flag */);
+    srap_module_init(true);
   }
 
   if (get_softmodem_params()->nsa) { //&& !NODE_IS_DU(node_type)

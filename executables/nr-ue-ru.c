@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: LicenseRef-CSSL-1.0
  */
 
+#include <pthread.h>
 #include "nr-ue-ru.h"
 #include "nr-uesoftmodem.h"
 #include "PHY/NR_UE_TRANSPORT/nr_transport_proto_ue.h"
@@ -127,7 +128,12 @@ void nrue_set_cell_params(configmodule_interface_t *cfg)
   config_getlist(cfg, &cellParamList, cellParams, sizeofArray(cellParams), NULL);
 
   if (cellParamList.numelt <= 0) {
-    nrue_cell_count = 1;
+    // No cells config -> default 1 cell from the command line. For mode-1 relay the UE drives two
+    // interfaces, so synthesize a 2nd (PC5) cell mapped to the adjacent RU (card 1) here — this lets
+    // the reference relay launch use the plain sl_sync_ref.conf (no RUs/cells list). The PC5 cell's
+    // Uu-style params are unused: the SL card takes its carrier from SL_UE_PHY_PARAMS.sl_frame_params.
+    bool relay = (get_softmodem_params()->sl_mode == 1);
+    nrue_cell_count = relay ? 2 : 1;
     nrue_cell_fp = calloc_or_fail(nrue_cell_count, sizeof(NR_DL_FRAME_PARMS));
     nrue_cells = calloc_or_fail(nrue_cell_count, sizeof(nrUE_cell_params_t));
     nrue_cells[0] = (nrUE_cell_params_t){.ru_id = 0,
@@ -138,6 +144,10 @@ void nrue_set_cell_params(configmodule_interface_t *cfg)
                                          .N_RB_DL = get_nrUE_params()->N_RB_DL,
                                          .ssb_start = get_nrUE_params()->ssb_start_subcarrier,
                                          .used_by_ue = -1};
+    if (relay) {
+      nrue_cells[1] = nrue_cells[0];
+      nrue_cells[1].ru_id = 1; // PC5 cell -> PC5 RU (card 1)
+    }
     return;
   }
 
@@ -195,7 +205,12 @@ void nrue_set_ru_params(configmodule_interface_t *cfg)
   config_getlist(cfg, &RUParamList, RUParams, sizeofArray(RUParams), NULL);
 
   if (RUParamList.numelt <= 0) {
-    nrue_ru_count = 1;
+    // No RUs config -> default 1 RU. For mode-1 relay synthesize a 2nd (PC5) RU mirroring the Uu RU's
+    // antenna/radio params, so the UE drives two cards (Uu card 0 + PC5 card 1) with no RUs list.
+    // NOTE (USRP mode-1): both RUs share sdr_addrs here; a real 2-USRP relay must supply an explicit
+    // RUs list with distinct per-RU sdr_addrs. vrtsim rendezvous is by role/role_sl, so this is fine.
+    bool relay = (get_softmodem_params()->sl_mode == 1);
+    nrue_ru_count = relay ? 2 : 1;
     nrue_rus = calloc_or_fail(nrue_ru_count, sizeof(nrUE_RU_params_t));
     nrue_rus[0] = (nrUE_RU_params_t){.nb_tx = get_nrUE_params()->nb_antennas_tx,
                                      .nb_rx = get_nrUE_params()->nb_antennas_rx,
@@ -211,6 +226,8 @@ void nrue_set_ru_params(configmodule_interface_t *cfg)
                                      .if_frequency = get_nrUE_params()->if_freq,
                                      .if_freq_offset = get_nrUE_params()->if_freq_off,
                                      .used_by_cell = -1};
+    if (relay)
+      nrue_rus[1] = nrue_rus[0]; // PC5 card mirrors the Uu card's radio params
     return;
   }
 
@@ -339,9 +356,28 @@ void nrue_init_openair0(void)
   }
 }
 
+// Open (load) + start (connect) one RU device. trx_start_func for a simulated backend (vrtsim/rfsim)
+// blocks until its peer connects.
+static void nrue_ru_open_and_start(int ru_id)
+{
+  openair0_config_t *cfg0 = &openair0_cfg[ru_id];
+  openair0_device_t *dev0 = &openair0_dev[ru_id];
+  dev0->host_type = RAU_HOST;
+  AssertFatal(openair0_device_load(dev0, cfg0) == 0, "Could not load the device %d\n", ru_id);
+  AssertFatal(dev0->trx_start_func(dev0) == 0, "Could not start the device %d\n", ru_id);
+  if (usrp_tx_thread == 1)
+    dev0->trx_write_init(dev0);
+}
+
 void nrue_ru_start(void)
 {
+  // Bring up the Uu (non-sidelink) device(s) at startup. For a dual-card mode-1 relay the SL (PC5) card is
+  // DEFERRED: it is opened + started lazily by nrue_ru_start_sl() from UE_thread_sl, only after the Uu link
+  // reaches UE_CONNECTED (Uu-first priority at startup). This avoids gating the Uu bring-up on the PC5 peer
+  // and running the Uu initial-sync while a second device is co-present. In steady state both cards are then
+  // driven in parallel with no priority (one self-clocked thread per device).
   for (int ru_id = 0; ru_id < nrue_ru_count; ru_id++) {
+<<<<<<< HEAD
     openair0_config_t *cfg = &openair0_cfg_g[ru_id];
     openair0_device_t *dev = &openair0_dev[ru_id];
 
@@ -352,7 +388,19 @@ void nrue_ru_start(void)
     AssertFatal(tmp2 == 0, "Could not start the device %d\n", ru_id);
     if (usrp_tx_thread == 1)
       dev->trx_write_init(dev);
+=======
+    if (nrue_ru_count > 1 && openair0_cfg[ru_id].sl_link)
+      continue; // deferred PC5 card (opened lazily in UE_thread_sl once Uu is UE_CONNECTED)
+    nrue_ru_open_and_start(ru_id);
+>>>>>>> b9e8aae41c (srap: compile + wire NR SRAP relay data plane (U2N mode-1))
   }
+}
+
+// Lazy bring-up of the deferred SL (PC5) device for the dual-card mode-1 relay. Called from UE_thread_sl
+// after the Uu link is UE_CONNECTED, so the Uu initial-sync ran with only the Uu device present.
+void nrue_ru_start_sl(int card)
+{
+  nrue_ru_open_and_start(card);
 }
 
 void nrue_ru_stop(void)

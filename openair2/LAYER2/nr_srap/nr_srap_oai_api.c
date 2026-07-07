@@ -7,6 +7,7 @@ Email ID: ejaz.ahmed@applied.co
 
 #include "nr_srap_oai_api.h"
 #include "openair2/LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
+#include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"
 #include <executables/nr-uesoftmodem.h>
 #include "nr_srap_header.h"
 #include "nr_srap_manager.h"
@@ -36,17 +37,12 @@ static void *tx_srap_rlc_pc5_data_req_thread(void *_)
     i = tx_srap_pc5_q.start;
     if (pthread_mutex_unlock(&tx_srap_pc5_q.m) != 0) abort();
     LOG_D(NR_SRAP, "Pass data from SRAP tx_srap_pc5_q to RLC%s %d\n", __FUNCTION__, __LINE__);
-    rlc_data_req(&tx_srap_pc5_q.q[i].ctxt_pP,
-                 tx_srap_pc5_q.q[i].srb_flagP,
-                 tx_srap_pc5_q.q[i].MBMS_flagP,
-                 tx_srap_pc5_q.q[i].rb_idP,
-                 tx_srap_pc5_q.q[i].muiP,
-                 tx_srap_pc5_q.q[i].confirmP,
-                 tx_srap_pc5_q.q[i].sdu_sizeP,
-                 tx_srap_pc5_q.q[i].sdu_pP,
-                 NULL,
-                 NULL,
-                 PC5);
+    // develop SL RLC TX: address ue->sl_drb[] by local src_id (carried in ctxt rntiMaybeUEid)
+    nr_rlc_data_req_sl(tx_srap_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
+                       tx_srap_pc5_q.q[i].rb_idP,
+                       tx_srap_pc5_q.q[i].muiP,
+                       tx_srap_pc5_q.q[i].sdu_sizeP,
+                       tx_srap_pc5_q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&tx_srap_pc5_q.m) != 0) abort();
 
@@ -71,17 +67,13 @@ static void *tx_srap_rlc_uu_data_req_thread(void *_)
     i = tx_srap_uu_q.start;
     if (pthread_mutex_unlock(&tx_srap_uu_q.m) != 0) abort();
 
-    rlc_data_req(&tx_srap_uu_q.q[i].ctxt_pP,
-                 tx_srap_uu_q.q[i].srb_flagP,
-                 tx_srap_uu_q.q[i].MBMS_flagP,
-                 tx_srap_uu_q.q[i].rb_idP,
-                 tx_srap_uu_q.q[i].muiP,
-                 tx_srap_uu_q.q[i].confirmP,
-                 tx_srap_uu_q.q[i].sdu_sizeP,
-                 tx_srap_uu_q.q[i].sdu_pP,
-                 NULL,
-                 NULL,
-                 UU);
+    // develop Uu RLC TX (6-arg nr_rlc_data_req; no MBMS/confirm)
+    nr_rlc_data_req(&tx_srap_uu_q.q[i].ctxt_pP,
+                    tx_srap_uu_q.q[i].srb_flagP,
+                    tx_srap_uu_q.q[i].rb_idP,
+                    tx_srap_uu_q.q[i].muiP,
+                    tx_srap_uu_q.q[i].sdu_sizeP,
+                    tx_srap_uu_q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&tx_srap_uu_q.m) != 0) abort();
 
@@ -106,17 +98,12 @@ static void *fwd_srap_to_pc5_data_req_thread(void *_)
     i = fwd_srap_to_pc5_q.start;
     if (pthread_mutex_unlock(&fwd_srap_to_pc5_q.m) != 0) abort();
     LOG_D(NR_SRAP, "Pass data from SRAP fwd_srap_to_pc5_q to RLC%s %d\n", __FUNCTION__, __LINE__);
-    rlc_data_req(&fwd_srap_to_pc5_q.q[i].ctxt_pP,
-                 fwd_srap_to_pc5_q.q[i].srb_flagP,
-                 fwd_srap_to_pc5_q.q[i].MBMS_flagP,
-                 fwd_srap_to_pc5_q.q[i].rb_idP,
-                 fwd_srap_to_pc5_q.q[i].muiP,
-                 fwd_srap_to_pc5_q.q[i].confirmP,
-                 fwd_srap_to_pc5_q.q[i].sdu_sizeP,
-                 fwd_srap_to_pc5_q.q[i].sdu_pP,
-                 NULL,
-                 NULL,
-                 PC5);
+    // develop SL RLC TX (relay forward -> PC5): address ue->sl_drb[] by src_id (ctxt rntiMaybeUEid)
+    nr_rlc_data_req_sl(fwd_srap_to_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
+                       fwd_srap_to_pc5_q.q[i].rb_idP,
+                       fwd_srap_to_pc5_q.q[i].muiP,
+                       fwd_srap_to_pc5_q.q[i].sdu_sizeP,
+                       fwd_srap_to_pc5_q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&fwd_srap_to_pc5_q.m) != 0) abort();
 
@@ -141,17 +128,13 @@ static void *fwd_srap_to_uu_data_req_thread(void *_)
     i = fwd_srap_to_uu_q.start;
     if (pthread_mutex_unlock(&fwd_srap_to_uu_q.m) != 0) abort();
     LOG_D(NR_SRAP, "Pass data from SRAP fwd_srap_to_uu_q to RLC %s %d\n", __FUNCTION__, __LINE__);
-    rlc_data_req(&fwd_srap_to_uu_q.q[i].ctxt_pP,
-                 fwd_srap_to_uu_q.q[i].srb_flagP,
-                 fwd_srap_to_uu_q.q[i].MBMS_flagP,
-                 fwd_srap_to_uu_q.q[i].rb_idP,
-                 fwd_srap_to_uu_q.q[i].muiP,
-                 fwd_srap_to_uu_q.q[i].confirmP,
-                 fwd_srap_to_uu_q.q[i].sdu_sizeP,
-                 fwd_srap_to_uu_q.q[i].sdu_pP,
-                 NULL,
-                 NULL,
-                 UU);
+    // develop Uu RLC TX (relay forward -> Uu; 6-arg nr_rlc_data_req)
+    nr_rlc_data_req(&fwd_srap_to_uu_q.q[i].ctxt_pP,
+                    fwd_srap_to_uu_q.q[i].srb_flagP,
+                    fwd_srap_to_uu_q.q[i].rb_idP,
+                    fwd_srap_to_uu_q.q[i].muiP,
+                    fwd_srap_to_uu_q.q[i].sdu_sizeP,
+                    fwd_srap_to_uu_q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&fwd_srap_to_uu_q.m) != 0) abort();
 
@@ -200,7 +183,7 @@ void enqueue_fwd_srap_pc5_data_req(protocol_ctxt_t *const ctxt_pP,
                                    const mui_t muiP,
                                    confirm_t confirmP,
                                    sdu_size_t sdu_sizeP,
-                                   mem_block_t *sdu_pP)
+                                   uint8_t *sdu_pP)
 {
   int i;
   int logged = 0;
@@ -234,7 +217,7 @@ void enqueue_fwd_srap_uu_data_req(protocol_ctxt_t *const ctxt_pP,
                                   const mui_t muiP,
                                   confirm_t confirmP,
                                   sdu_size_t sdu_sizeP,
-                                  mem_block_t *sdu_pP)
+                                  uint8_t *sdu_pP)
 {
   int i;
   int logged = 0;
@@ -269,7 +252,7 @@ void enqueue_srap_pc5_data_req(const protocol_ctxt_t *const ctxt_pP,
                                const mui_t        muiP,
                                confirm_t    confirmP,
                                sdu_size_t   sdu_sizeP,
-                               mem_block_t *sdu_pP)
+                               uint8_t *sdu_pP)
 {
   int i;
   int logged = 0;
@@ -305,7 +288,7 @@ void enqueue_srap_uu_data_req(const protocol_ctxt_t *const ctxt_pP,
                               const mui_t        muiP,
                               confirm_t    confirmP,
                               sdu_size_t   sdu_sizeP,
-                              mem_block_t *sdu_pP)
+                              uint8_t *sdu_pP)
 {
   int i;
   int logged = 0;
@@ -345,8 +328,8 @@ void srap_deliver_sdu_srb(void *_ue, nr_srap_entity_t *entity,
 void srap_deliver_pdu_drb(protocol_ctxt_t *ctxt, int rb_id,
                           char *buf, int size, int sdu_id,
                           nr_intf_type_t intf_type) {
-  mem_block_t *memblock = get_free_mem_block(size, __FUNCTION__);
-  memcpy(memblock->data, buf, size);
+  uint8_t *memblock = malloc16(size); // RLC data_req takes ownership + frees
+  memcpy(memblock, buf, size);
   if (intf_type == PC5)
     enqueue_srap_pc5_data_req(ctxt, 0, MBMS_FLAG_NO, rb_id, sdu_id, 0, size, memblock);
   else if (intf_type == UU)
@@ -381,6 +364,40 @@ int srap_module_init(bool gNB_flag)
   return 0;
 }
 
+/* Create the PC5 SRAP entity (index 0) for a relay or remote UE. Called when the SL DRB is added.
+ * Keyed by the SL local src_id. Mirrors reference add_srap_entity. */
+void add_srap_entity(int src_id)
+{
+  static bool srap_pc5_created;
+  bool srap_enabled = get_softmodem_params()->relay_type > 0;
+  if (srap_enabled && !srap_pc5_created) {
+    nr_srap_manager_internal_t *m = nr_srap_manager;
+    if (m && m->srap_entity[0]) {
+      m->srap_entity[0] = new_nr_srap_entity(NR_SRAP_PC5, srap_deliver_sdu_drb, NULL, srap_deliver_pdu_drb, NULL, src_id);
+      srap_pc5_created = true;
+    }
+  }
+}
+
+/* Create the Uu SRAP entity when an SRB is added. gNB keeps it at index 0; the relay UE (which also
+ * has a PC5 entity at index 0) keeps it at index 1. Mirrors reference add_srb SRAP block. */
+void add_srap_uu_entity(int ue_id, bool is_gnb)
+{
+  static bool srap_uu_created;
+  bool srap_enabled = get_softmodem_params()->relay_type > 0;
+  bool is_relay_ue = get_softmodem_params()->is_relay_ue;
+  if (srap_enabled && !srap_uu_created) {
+    nr_srap_manager_internal_t *m = nr_srap_manager;
+    if (m && is_gnb && m->srap_entity[0]) { // gNB: Uu entity on index 0
+      m->srap_entity[0] = new_nr_srap_entity(NR_SRAP_UU, srap_deliver_sdu_drb, NULL, srap_deliver_pdu_drb, NULL, ue_id);
+      srap_uu_created = true;
+    } else if (m && is_relay_ue && m->srap_entity[1]) { // relay UE: Uu entity on index 1 (PC5 at 0)
+      m->srap_entity[1] = new_nr_srap_entity(NR_SRAP_UU, srap_deliver_sdu_drb, NULL, srap_deliver_pdu_drb, NULL, ue_id);
+      srap_uu_created = true;
+    }
+  }
+}
+
 void nr_srap_layer_init(bool gNB_flag)
 {
   /* hack: be sure to initialize only once */
@@ -406,7 +423,7 @@ static void do_srap_data_ind(protocol_ctxt_t *const  ctxt_pP,
                              const MBMS_flag_t MBMS_flagP,
                              const rb_id_t rb_id,
                              const sdu_size_t sdu_buffer_size,
-                             mem_block_t *sdu_buffer,
+                             uint8_t *sdu_buffer,
                              nr_intf_type_t intf_type)
 {
   if (ctxt_pP->module_id != 0 ||
@@ -426,12 +443,12 @@ static void do_srap_data_ind(protocol_ctxt_t *const  ctxt_pP,
   }
 
   if ((srap_entity != NULL)) {
-    srap_entity->recv_pdu(ctxt_pP, srap_entity, (char *)(sdu_buffer->data), sdu_buffer_size, srb_flagP, MBMS_flagP, rb_id);
+    srap_entity->recv_pdu(ctxt_pP, srap_entity, (char *)sdu_buffer, sdu_buffer_size, srb_flagP, MBMS_flagP, rb_id);
   } else {
     LOG_E(NR_SRAP, "%s:%d:%s: no SRAP entity found (rb_id %ld, srb_flag %d)\n", __FILE__, __LINE__, __FUNCTION__, rb_id, srb_flagP);
   }
 
-  free_mem_block(sdu_buffer, __FUNCTION__);
+  free(sdu_buffer); // RX SRAP PDU buffer consumed by recv_pdu above
 }
 
 static void *srap_pc5_data_ind_thread(void *_)
@@ -532,7 +549,7 @@ static void enqueue_srap_pc5_data_ind(protocol_ctxt_t *const  ctxt_pP,
                                       const MBMS_flag_t MBMS_flagP,
                                       const rb_id_t rb_id,
                                       const sdu_size_t sdu_buffer_size,
-                                      mem_block_t *const sdu_buffer)
+                                      uint8_t *const sdu_buffer)
 {
   int i;
   int logged = 0;
@@ -565,7 +582,7 @@ static void enqueue_srap_uu_data_ind(protocol_ctxt_t *const  ctxt_pP,
                                      const MBMS_flag_t MBMS_flagP,
                                      const rb_id_t rb_id,
                                      const sdu_size_t sdu_buffer_size,
-                                     mem_block_t *const sdu_buffer)
+                                     uint8_t *const sdu_buffer)
 {
   int i;
   int logged = 0;
@@ -598,7 +615,7 @@ bool srap_data_ind(protocol_ctxt_t *const ctxt_pP,
                    const MBMS_flag_t MBMS_flagP,
                    const rb_id_t rb_id,
                    const sdu_size_t sdu_buffer_size,
-                   mem_block_t *const sdu_buffer,
+                   uint8_t *const sdu_buffer,
                    const uint32_t *const srcID,
                    const uint32_t *const dstID,
                    nr_intf_type_t intf_type)
@@ -628,20 +645,18 @@ void srap_deliver_sdu_drb(const protocol_ctxt_t *const  ctxt_pP,
                           const MBMS_flag_t MBMS_flagP,
                           const rb_id_t rb_id) {
 
-  mem_block_t *memblock = get_free_mem_block(size, __func__);
-
-  nr_intf_type_t intf_type = (entity->type == NR_SRAP_UU) ? UU : PC5;
+  // develop nr_pdcp_data_ind takes a raw malloc16 buffer (takes ownership), not a mem_block_t.
+  uint8_t *memblock = malloc16(size);
   if (memblock == NULL) {
     LOG_E(NR_SRAP, "%s:%d:%s: ERROR: malloc16 failed\n", __FILE__, __LINE__, __FUNCTION__);
     exit(EXIT_FAILURE);
   }
 
-  memcpy(memblock->data, buf, size);
+  memcpy(memblock, buf, size);
 
   // Sending data indication to PDCP at the destination
-  if (!pdcp_data_ind(ctxt_pP, srb_flagP, MBMS_flagP, rb_id + 1, size, memblock, NULL, NULL, intf_type)) {
-    // restoring rb_id in case of receiving sdu from srap layer.
-    LOG_E(NR_SRAP, "%s:%d:%s: ERROR: pdcp_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
+  if (!nr_pdcp_data_ind(ctxt_pP, srb_flagP, rb_id + 1, size, memblock)) {
+    LOG_E(NR_SRAP, "%s:%d:%s: ERROR: nr_pdcp_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
     /* what to do in case of failure? for the moment: nothing */
   }
 }
@@ -726,8 +741,8 @@ bool nr_srap_data_req_srb(protocol_ctxt_t *ctxt,
 void srap_deliver_pdu_srb(protocol_ctxt_t *ctxt, int srb_id, char *buf,
                           int size, int sdu_id, nr_intf_type_t intf_type)
 {
-  mem_block_t *memblock = get_free_mem_block(size, __FUNCTION__);
-  memcpy(memblock->data, buf, size);
+  uint8_t *memblock = malloc16(size); // RLC data_req takes ownership + frees
+  memcpy(memblock, buf, size);
 
   if (intf_type == PC5)
     enqueue_srap_pc5_data_req(ctxt, 1, MBMS_FLAG_NO, srb_id, sdu_id, 0, size, memblock);

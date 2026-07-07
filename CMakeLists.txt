@@ -1092,6 +1092,14 @@ set(NR_SDAP_SRC
   ${OPENAIR2_DIR}/SDAP/nr_sdap/nr_sdap_entity.c
   )
 
+set(NR_SRAP_SRC
+  ${OPENAIR2_DIR}/LAYER2/nr_srap/nr_srap_header.c
+  ${OPENAIR2_DIR}/LAYER2/nr_srap/nr_srap_sdu.c
+  ${OPENAIR2_DIR}/LAYER2/nr_srap/nr_srap_entity.c
+  ${OPENAIR2_DIR}/LAYER2/nr_srap/nr_srap_oai_api.c
+  ${OPENAIR2_DIR}/LAYER2/nr_srap/nr_srap_manager.c
+  )
+
 set(L2_SRC
   ${PDCP_DIR}/pdcp.c
   ${PDCP_DIR}/pdcp_fifo.c
@@ -1132,6 +1140,7 @@ set(L2_LTE_SRC
 set(L2_NR_SRC
   ${NR_PDCP_SRC_GNB}
   ${NR_SDAP_SRC}
+  ${NR_SRAP_SRC}
   ${NR_RRC_DIR}/rrc_gNB.c
   ${NR_RRC_DIR}/mac_rrc_dl_direct.c
   ${NR_RRC_DIR}/mac_rrc_dl_f1ap.c
@@ -1169,6 +1178,7 @@ set(L2_RRC_SRC_UE
 set(NR_L2_SRC_UE
   ${NR_PDCP_SRC_UE}
   ${NR_SDAP_SRC}
+  ${NR_SRAP_SRC}
   ${NR_UE_RRC_DIR}/L2_interface_ue.c
   ${NR_UE_RRC_DIR}/main_ue.c
   ${NR_UE_RRC_DIR}/rrc_UE.c

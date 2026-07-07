@@ -591,7 +591,10 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
    * entity, and a sidelink TUN so PSSCH user data / IP flows. srcid + the static SL IP
    * (10.0.<thirdOctet>.<fourthOctet>) come from the conf's sl_UEINFO section. Relay (mode-1/SRAP)
    * DRB handling is deferred. */
-  if (get_softmodem_params()->sl_mode == 2) {
+  /* SL PC5 DRB setup. mode-2 (peer UE): SL DRB + SDAP + local TUN. mode-1 relay: SL DRB (RLC to receive
+   * the remote's PSSCH) + PC5 SRAP entity (created inside add_drb_sl) so the RX hook can forward to Uu;
+   * NO SDAP/TUN on the relay (it forwards via SRAP, it does not terminate the traffic locally). */
+  if (get_softmodem_params()->sl_mode == 1 || get_softmodem_params()->sl_mode == 2) {
     NR_SidelinkPreconfigNR_r16_t *slp = &sl_preconfig->sidelinkPreconfigNR_r16;
     if (slp->sl_RadioBearerPreConfigList_r16 && slp->sl_RLC_BearerPreConfigList_r16) {
       ueinfo_t ueinfo = {0};
@@ -604,15 +607,19 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
         add_drb_sl(ueinfo.srcid, slp->sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
       for (int i = 0; i < slp->sl_RLC_BearerPreConfigList_r16->list.count; i++)
         nr_rlc_add_drb_sl(ueinfo.srcid, 1, slp->sl_RLC_BearerPreConfigList_r16->list.array[i]);
-      sdap_config_t sdap = {0};
-      sdap.pdusession_id = 10;
-      sdap.drb_id = 1;
-      sdap.defaultDRB = true;
-      nr_sdap_addmod_entity(GNB_FLAG_NO, ueinfo.srcid, &sdap);
-      char sl_ip[24];
-      snprintf(sl_ip, sizeof(sl_ip), "10.0.%d.%d", ueinfo.thirdOctet, ueinfo.fourthOctet);
-      create_ue_ip_if(sl_ip, NULL, ueinfo.srcid, 10, true);
-      LOG_I(NR_RRC, "SL mode-2 data plane up: SL DRB + SDAP + TUN %s (srcid 0x%x)\n", sl_ip, ueinfo.srcid);
+      if (get_softmodem_params()->sl_mode == 2) {
+        sdap_config_t sdap = {0};
+        sdap.pdusession_id = 10;
+        sdap.drb_id = 1;
+        sdap.defaultDRB = true;
+        nr_sdap_addmod_entity(GNB_FLAG_NO, ueinfo.srcid, &sdap);
+        char sl_ip[24];
+        snprintf(sl_ip, sizeof(sl_ip), "10.0.%d.%d", ueinfo.thirdOctet, ueinfo.fourthOctet);
+        create_ue_ip_if(sl_ip, NULL, ueinfo.srcid, 10, true);
+        LOG_I(NR_RRC, "SL mode-2 data plane up: SL DRB + SDAP + TUN %s (srcid 0x%x)\n", sl_ip, ueinfo.srcid);
+      } else {
+        LOG_I(NR_RRC, "SL mode-1 relay PC5 DRB up (SRAP forward, no local TUN) (srcid 0x%x)\n", ueinfo.srcid);
+      }
     }
   }
 
@@ -657,7 +664,10 @@ void init_sidelink(NR_UE_RRC_INST_t *rrc)
   // configure_NR_SL_Preconfig AssertFatal); a UE without the flag has no sync source and syncs to a received SSB.
   int sync_source = get_softmodem_params()->sync_ref ? SL_SYNC_SOURCE_LOCAL_TIMING : SL_SYNC_SOURCE_NONE;
 
-  if (get_softmodem_params()->sl_mode == 2) {
+  // Both SL modes need the PHY/MAC SL preconfiguration (allocates SL_MAC_PARAMS, sets up SLSS TX).
+  // Mode-1 relay UE is a PC5 SyncRef, so it must run this too; the mode-2-only SL DRB/SDAP/TUN
+  // data-plane block inside configure_NR_SL_Preconfig stays gated on sl_mode==2 (relay uses SRAP).
+  if (get_softmodem_params()->sl_mode == 1 || get_softmodem_params()->sl_mode == 2) {
     //Preparation of the Sidelink PRE-Configuration message
     configure_NR_SL_Preconfig(rrc, sync_source);
 

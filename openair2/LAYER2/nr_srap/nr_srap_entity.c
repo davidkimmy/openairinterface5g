@@ -22,8 +22,8 @@ void srap_forward_sdu_drb(protocol_ctxt_t *const ctxt_pP,
                           uint8_t dst_id)
 {
   if (entity != NULL) {
-    mem_block_t *memblock = get_free_mem_block(size, __FUNCTION__);
-    memcpy(memblock->data, buffer, size);
+    uint8_t *memblock = malloc16(size); // RLC data_req takes ownership + frees
+    memcpy(memblock, buffer, size);
     if (entity->type == NR_SRAP_PC5) {
       enqueue_fwd_srap_pc5_data_req(ctxt_pP, srb_flagP, rb_id, 0, 0, size, memblock);
     } else if (entity->type == NR_SRAP_UU) {

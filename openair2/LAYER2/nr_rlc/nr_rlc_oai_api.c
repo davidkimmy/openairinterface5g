@@ -5,6 +5,7 @@
 /* from openair */
 #include "rlc.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
 
 /* from nr rlc module */
 #include "nr_rlc_asn1_utils.h"
@@ -509,10 +510,23 @@ rb_found:
     exit(1);
   }
   memcpy(memblock, buf, size);
-  LOG_D(PDCP, "Calling PDCP layer from RLC in %s\n", __FUNCTION__);
-  if (!nr_pdcp_data_ind(&ctx, is_srb, rb_id, size, memblock)) {
-    LOG_E(RLC, "%s:%d:%s: ERROR: pdcp_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
-    /* what to do in case of failure? for the moment: nothing */
+  /* SRAP RX hook (mode-1 relay/gNB): a relayed DRB PDU carries a SRAP header — detect it by the
+   * remote-UE id in octet 1 and the bearer id in the low 5 bits of octet 0 (TS 38.351). If present,
+   * hand to SRAP (which forwards to the opposite interface / strips the header up to PDCP); else PDCP. */
+  bool srap_enabled = (get_softmodem_params()->relay_type > 0) && !is_srb
+                      && ((uint8_t)buf[1] == get_softmodem_params()->remote_ue_id)
+                      && (((int)(buf[0] & 0x1F)) == rb_id);
+  if (srap_enabled) {
+    LOG_D(RLC, "Deliver from RLC to SRAP for rb_id %d intf %d\n", rb_id, entity->intf_type);
+    if (!srap_data_ind(&ctx, is_srb, 0, rb_id, size, memblock, NULL, NULL, entity->intf_type)) {
+      LOG_E(RLC, "%s:%d:%s: ERROR: srap_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
+    }
+  } else {
+    LOG_D(PDCP, "Calling PDCP layer from RLC in %s\n", __FUNCTION__);
+    if (!nr_pdcp_data_ind(&ctx, is_srb, rb_id, size, memblock)) {
+      LOG_E(RLC, "%s:%d:%s: ERROR: pdcp_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
+      /* what to do in case of failure? for the moment: nothing */
+    }
   }
 }
 

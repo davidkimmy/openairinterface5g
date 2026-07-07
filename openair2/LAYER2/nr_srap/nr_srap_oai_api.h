@@ -27,7 +27,7 @@ typedef struct {
   mui_t           muiP;
   confirm_t       confirmP;
   sdu_size_t      sdu_sizeP;
-  mem_block_t     *sdu_pP;
+  uint8_t *sdu_pP;
 } srap_data_req_queue_item;
 
 typedef struct {
@@ -44,7 +44,7 @@ typedef struct {
   MBMS_flag_t     MBMS_flagP;
   rb_id_t         rb_id;
   sdu_size_t      sdu_buffer_size;
-  mem_block_t     *sdu_buffer;
+  uint8_t *sdu_buffer;
 } srap_data_ind_queue_item;
 
 typedef struct {
@@ -58,6 +58,10 @@ typedef struct {
 void nr_srap_layer_init(bool gNB_flag);
 
 int srap_module_init(bool gNB_flag);
+
+/* Entity creation (called from PDCP when SL DRB / SRB are added). */
+void add_srap_entity(int src_id);                /* PC5 entity (relay/remote UE) */
+void add_srap_uu_entity(int ue_id, bool is_gnb); /* Uu entity (gNB idx0 / relay UE idx1) */
 
 typedef void (*srap_deliver_pdu)(protocol_ctxt_t *ctxt, int rb_id,
                                  char *buf, int size, int sdu_id, nr_intf_type_t intf_type);
@@ -86,7 +90,7 @@ void enqueue_srap_pc5_data_req(const protocol_ctxt_t *const ctxt_pP,
                                const mui_t        muiP,
                                confirm_t    confirmP,
                                sdu_size_t   sdu_sizeP,
-                               mem_block_t *sdu_pP);
+                               uint8_t *sdu_pP);
 
 void enqueue_srap_uu_data_req(const protocol_ctxt_t *const ctxt_pP,
                               const srb_flag_t   srb_flagP,
@@ -95,7 +99,7 @@ void enqueue_srap_uu_data_req(const protocol_ctxt_t *const ctxt_pP,
                               const mui_t        muiP,
                               confirm_t    confirmP,
                               sdu_size_t   sdu_sizeP,
-                              mem_block_t *sdu_pP);
+                              uint8_t *sdu_pP);
 
 bool nr_srap_data_req_drb(protocol_ctxt_t *ctxt,
                           const rb_id_t rb_id,
@@ -117,7 +121,7 @@ bool srap_data_ind(protocol_ctxt_t *const  ctxt_pP,
                    const MBMS_flag_t MBMS_flagP,
                    const rb_id_t rb_id,
                    const sdu_size_t sdu_buffer_size,
-                   mem_block_t *const sdu_buffer,
+                   uint8_t *const sdu_buffer,
                    const uint32_t *const srcID,
                    const uint32_t *const dstID,
                    nr_intf_type_t intf_type);
@@ -128,7 +132,7 @@ void enqueue_fwd_srap_pc5_data_req(protocol_ctxt_t *const ctxt_pP,
                                    const mui_t muiP,
                                    confirm_t confirmP,
                                    sdu_size_t sdu_sizeP,
-                                   mem_block_t *sdu_pP);
+                                   uint8_t *sdu_pP);
 
 void enqueue_fwd_srap_uu_data_req(protocol_ctxt_t *const ctxt_pP,
                                   const srb_flag_t srb_flagP,
@@ -136,5 +140,5 @@ void enqueue_fwd_srap_uu_data_req(protocol_ctxt_t *const ctxt_pP,
                                   const mui_t muiP,
                                   confirm_t confirmP,
                                   sdu_size_t sdu_sizeP,
-                                  mem_block_t *sdu_pP);
+                                  uint8_t *sdu_pP);
 #endif /* _NR_SRAP_OAI_API_H_ */

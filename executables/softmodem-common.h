@@ -103,6 +103,15 @@ extern "C"
 #define SYNC_REF            softmodem_params.sync_ref
 #define DEFAULT_PDU_ID      softmodem_params.default_pdu_session_id
 #define SL_MCS              softmodem_params.mcs
+#define RELAY_TYPE          softmodem_params.relay_type
+#define REMOTE_UE_ID        softmodem_params.remote_ue_id
+#define IS_RELAY_UE         softmodem_params.is_relay_ue
+#define IP_DEMO             softmodem_params.ip_demo
+
+#define CONFIG_HLP_RELAY_TYPE    "Set Relay type to represent No Relay (0), U2N (1) and U2U (2) cases. Later this will be properly configured from RRC."
+#define CONFIG_HLP_REMOTE_UE_ID  "Set Remote UE ID to fill in SRAP header"
+#define CONFIG_HLP_IS_RELAY_UE   "Set to configure a UE Relay role"
+#define CONFIG_HLP_IP_DEMO       "set demo mode for NR sidelink (0: normal mode (not demo mode), 1: drb_id update per destination IP address, 2: IP header decoding)\n"
 
 extern int usrp_tx_thread;
 // clang-format off
@@ -145,6 +154,10 @@ extern int usrp_tx_thread;
   {"imscope" ,              CONFIG_HLP_IMSCOPE,       PARAMFLAG_BOOL, .uptr=&enable_imscope,                   .defintval=0,            TYPE_UINT,   0}, \
   {"imscope-record" ,       CONFIG_HLP_IMSCOPE_RECORD,PARAMFLAG_BOOL, .uptr=&enable_imscope_record,            .defintval=0,            TYPE_UINT,   0}, \
   {"default-pdu-id",        NULL,                     0,              .iptr=&DEFAULT_PDU_ID,                   .defintval=-1,           TYPE_INT,    0}, \
+  {"relay-type",            CONFIG_HLP_RELAY_TYPE,    0,              .u8ptr=&RELAY_TYPE,                      .defintval=0,             TYPE_UINT8,  0},  \
+  {"remote-ue-id",          CONFIG_HLP_REMOTE_UE_ID,  0,              .u8ptr=&REMOTE_UE_ID,                    .defintval=0,             TYPE_UINT8,  0},  \
+  {"is-relay-ue",           CONFIG_HLP_IS_RELAY_UE,   0,              .u8ptr=&IS_RELAY_UE,                     .defintval=0,             TYPE_UINT8,  0},  \
+  {"ip-demo",               CONFIG_HLP_IP_DEMO,       0,              .u8ptr=&IP_DEMO,                         .defintval=0,             TYPE_UINT8,  0},  \
 }
 // clang-format on
 
@@ -179,6 +192,10 @@ extern int usrp_tx_thread;
                {"MONOLITHIC", "PNF", "VNF", "AERIAL","UE_STUB_PNF","UE_STUB_OFFNET","STANDALONE_PNF"}, \
                {NFAPI_MONOLITHIC, NFAPI_MODE_PNF, NFAPI_MODE_VNF, NFAPI_MODE_AERIAL,NFAPI_UE_STUB_PNF,NFAPI_UE_STUB_OFFNET,NFAPI_MODE_STANDALONE_PNF}, \
                7 } }, \
+    { .s5 = { NULL } },                     \
+    { .s5 = { NULL } },                     \
+    { .s5 = { NULL } },                     \
+    { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
@@ -301,6 +318,10 @@ typedef struct {
   int extra_pdu_session_id;
   int sa;   /* deprecated no-op: SA is the default (see IS_SA_MODE); kept so --sa is an accepted option */
   int mcs;  /* sidelink cmdline MCS override for the SL scheduler; -1 = use built-in default */
+  uint8_t        relay_type;    /* SL relay type: 0=none, 1=U2N, 2=U2U (mode-1 relay) */
+  uint8_t        remote_ue_id;  /* remote UE id filled into the SRAP header (gNB/relay) */
+  uint8_t        is_relay_ue;   /* set on the UE that plays the relay role (mode-1) */
+  uint8_t        ip_demo;       /* SL demo mode: 0=normal, 1=drb per dest IP, 2=IP hdr decode */
 } softmodem_params_t;
 
 #define IS_SA_MODE(sM_params) (!(sM_params)->phy_test && !(sM_params)->do_ra && !(sM_params)->nsa)

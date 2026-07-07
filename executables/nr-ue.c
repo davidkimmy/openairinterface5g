@@ -650,7 +650,9 @@ void UE_dl_processing(void *arg) {
   PHY_VARS_NR_UE    *UE   = rxtxD->UE;
   nr_phy_data_t *phy_data = &rxtxD->phy_data;
 
-  if (!UE->sl_mode)
+  // Uu DL RX chain (PDSCH/SIB1/DLSCH decode) — needed for mode 0 AND the mode-1 relay's Uu link;
+  // only PC5-only mode 2 has no Uu DL and skips it.
+  if (UE->sl_mode != 2)
     pdsch_processing(UE, proc, phy_data);
 
   TracyCZoneEnd(ctx);
@@ -1044,7 +1046,10 @@ void *UE_thread(void *arg)
     curMsg.proc.hfn_rx      = (absolute_slot / nb_slot_frame) / MAX_FRAME_NUMBER;
     curMsg.proc.hfn_tx      = ((absolute_slot + duration_rx_to_tx) / nb_slot_frame) / MAX_FRAME_NUMBER;
     if (UE->received_config_request) {
-      if (UE->sl_mode) {
+      if (UE->sl_mode == 2) {
+        // mode-1 relay: this monolithic thread drives the Uu link only; the PC5
+        // slot timeline is owned by UE_thread_sl. sl_cfg/fp are set (:826) only
+        // for sl_mode==2, so mode-1 must take the Uu nr_ue_slot_select() branch.
         curMsg.proc.rx_slot_type = sl_nr_ue_slot_select(sl_cfg, curMsg.proc.nr_slot_rx, TDD);
         curMsg.proc.tx_slot_type = sl_nr_ue_slot_select(sl_cfg, curMsg.proc.nr_slot_tx, TDD);
       } else {
@@ -1213,10 +1218,22 @@ void *UE_thread_sl(void *arg)
   // A SyncRef relay is the PC5 timing source: skip SLSS search and start streaming from slot 0.
   const bool is_sync_ref = get_softmodem_params()->sync_ref;
 
-  // mode-1 ordering: Uu must synchronize FIRST. Wait passively for the Uu link before touching the PC5 card,
-  // so PC5 bring-up never delays the (independent) Uu UE_thread. SyncRef relays don't wait (timing source).
-  while (!oai_exit && !is_sync_ref && !UE->is_synchronized)
+  // mode-1 ordering (Uu-FIRST): wait for the Uu link to reach UE_CONNECTED (synced + registered + RRC
+  // connected) before driving the PC5 card. Driving both device loops concurrently during Uu bring-up
+  // starves the Uu initial-sync on the shared sample/time clock, so the relay's Uu never locks (synch
+  // Failed). This applies even though the relay is the PC5 SyncRef: UE_thread_sl is spawned only for the
+  // dual-card mode-1 relay, so a mode-2 standalone SyncRef never reaches this thread.
+  NR_UE_MAC_INST_t *uu_mac = get_mac_inst(UE->Mod_id);
+  while (!oai_exit && uu_mac->state != UE_CONNECTED)
     usleep(1000);
+  if (oai_exit)
+    return NULL;
+
+  // Uu is UE_CONNECTED: open + start the DEFERRED PC5 (SL) device now (nrue_ru_start left it unopened so the
+  // Uu initial-sync ran with only the Uu device present). From here the two devices run in parallel, no
+  // priority. Must precede any PC5 device access (readFrame_sl / the steady loop below).
+  LOG_I(NR_PHY, "Uu UE_CONNECTED; bringing up the PC5 (SL) device on card %d\n", UE->rf_map_sl.card);
+  nrue_ru_start_sl(UE->rf_map_sl.card);
 
   if (is_sync_ref) {
     UE->is_synchronized_sl = 1;

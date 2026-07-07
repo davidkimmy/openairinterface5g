@@ -40,6 +40,7 @@ unsigned short config_frames[4] = {2,9,11,13};
 
 #include "UTIL/OPT/opt.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
 
 #include "intertask_interface.h"
 
@@ -348,6 +349,11 @@ int main(int argc, char **argv)
   }
 
   nr_pdcp_layer_init();
+  // SRAP relay adaptation layer (mode-1 U2N relay / remote UE). Gated on relay_type; self-inits once.
+  if (get_softmodem_params()->relay_type > 0) {
+    nr_srap_layer_init(false /* gNB_flag */);
+    srap_module_init(false);
+  }
   nas_init_nrue(NB_UE_INST);
 
   nrue_set_ru_params(uniqCfg);
@@ -418,6 +424,21 @@ int main(int argc, char **argv)
       set_UE_options(CC_id, UE_CC, cell.ru_id);
       init_nr_ue_phy_cpu_stats(&UE_CC->phy_cpu_stats);
 
+      // mode-1 relay: this UE drives TWO RUs (Uu card + adjacent PC5 card). Claim the PC5 cell for
+      // this UE as well, otherwise nrue_init_openair0() skips the SL card as "not used by any UE"
+      // and leaves openair0_cfg[pc5].tx_num_channels = 0 -> vrtsim antenna-count assert on connect.
+      // The PC5 cell is the one mapped to rf_map_sl.card.
+      if (UE_CC->sl_dual_card) {
+        int sl_ru = UE_CC->rf_map_sl.card;
+        int sl_cell = nrue_get_ru(sl_ru)->used_by_cell;
+        AssertFatal(sl_cell >= 0,
+                    "mode-1 relay: PC5 RU %d has no cell; add a 2nd cell with ru_id=%d to the UE config\n",
+                    sl_ru, sl_ru);
+        nrUE_cell_params_t pc5_cell = *nrue_get_cell(sl_cell);
+        pc5_cell.used_by_ue = inst;
+        nrue_set_cell(sl_cell, &pc5_cell);
+      }
+
       NR_DL_FRAME_PARMS *fp = nrue_get_cell_fp(cell_id);
       if (!IS_SA_MODE(get_softmodem_params()) && !get_softmodem_params()->sl_mode) {
         do {
@@ -450,7 +471,8 @@ int main(int argc, char **argv)
       init_nr_ue_vars(UE_CC, inst);
 
       if (UE_CC->sl_mode) {
-        AssertFatal(UE_CC->sl_mode == 2, "Only Sidelink mode 2 supported. Mode 1 not yet supported\n");
+        AssertFatal(UE_CC->sl_mode == 1 || UE_CC->sl_mode == 2,
+                    "Only Sidelink mode 1 (relay) or 2 (PC5) supported (got %d)\n", UE_CC->sl_mode);
         DevAssert(mac->if_module != NULL && mac->if_module->sl_phy_config_request != NULL);
         nr_sl_phy_config_t *phycfg = &mac->SL_MAC_PARAMS->sl_phy_config;
         phycfg->sl_config_req.sl_carrier_config.sl_num_rx_ant = get_nrUE_params()->nb_antennas_rx;

@@ -439,7 +439,8 @@ void nr_init_frame_parms_ue_sa(NR_DL_FRAME_PARMS *frame_parms, const nrUE_cell_p
   frame_parms->numerology_index = mu;
   frame_parms->dl_CarrierFreq = downlink_frequency;
   frame_parms->ul_CarrierFreq = downlink_frequency + delta_duplex;
-  if (get_softmodem_params()->sl_mode == 0) {
+  // Uu freq range (mode 0 and mode-1 relay Uu link); mode 2 PC5-only sets it from the SL carrier.
+  if (get_softmodem_params()->sl_mode != 2) {
     frame_parms->freq_range = get_freq_range_from_freq(frame_parms->dl_CarrierFreq);
   }
   frame_parms->N_RB_DL = N_RB_DL;

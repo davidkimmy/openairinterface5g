@@ -41,6 +41,7 @@
 #include "openair2/F1AP/f1ap_common.h"
 #include "openair2/F1AP/f1ap_ids.h"
 #include "openair2/SDAP/nr_sdap/nr_sdap.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
 #include "pdcp.h"
 #include "pdcp_messages_types.h"
 #include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"
@@ -451,6 +452,14 @@ static void deliver_pdu_drb_sl(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
   DevAssert(deliver_pdu_data == NULL);
   protocol_ctxt_t ctxt = { .enb_flag = 0, .rntiMaybeUEid = ue_id };
 
+  // Remote UE relayed uplink: route the PDCP PDU through SRAP (adds the U2N adaptation header) to the
+  // PC5 SL RLC, instead of straight to sl_drb[]. Only on a remote UE (relay enabled, not the relay itself).
+  if (get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue) {
+    LOG_D(PDCP, "%s(): remote UE -> SRAP(PC5) SL drb %d size %d src_id 0x%lx\n", __func__, rb_id, size, ue_id);
+    nr_srap_data_req_drb(&ctxt, 1 /* rb_id=1 to reduce RLC delay */, sdu_id, size, buf, PC5);
+    return;
+  }
+
   uint8_t *memblock = malloc16(size);
   memcpy(memblock, buf, size);
   LOG_D(PDCP, "%s(): (SL drb %d) calling nr_rlc_data_req_sl size %d src_id 0x%lx\n", __func__, rb_id, size, ue_id);
@@ -470,6 +479,13 @@ static void deliver_pdu_drb_gnb(void *deliver_pdu_data, ue_id_t ue_id, int rb_id
     DevAssert(inst);
     gtpv1uSendDirectWithNRUSeqNum(inst->gtpInst, ue_id, rb_id, (uint8_t *)buf, size);
   } else {
+    // gNB relayed downlink: DRB traffic for the remote UE goes through SRAP (adds U2N header) to the
+    // Uu RLC toward the relay. rb_id>1 selects the relayed DRB (mirrors reference; refine by remote ue_id if needed).
+    if (get_softmodem_params()->relay_type > 0 && rb_id > 1) {
+      LOG_D(PDCP, "%s(): gNB -> SRAP(UU) drb %d size %d\n", __func__, rb_id, size);
+      nr_srap_data_req_drb(&ctxt, 1 /* rb_id=1 to reduce RLC delay */, sdu_id, size, buf, UU);
+      return;
+    }
     uint8_t *memblock = malloc16(size);
     memcpy(memblock, buf, size);
     LOG_D(PDCP, "%s(): (drb %d) calling rlc_data_req size %d\n", __func__, rb_id, size);
@@ -569,6 +585,9 @@ void add_srb(int is_gnb,
                                   -1,
                                   security_parameters);
     nr_pdcp_ue_add_srb_pdcp_entity(ue, srb_id, pdcp_srb);
+
+    // SRAP Uu entity (gNB idx0 / relay UE idx1); no-op unless relay_type>0.
+    add_srap_uu_entity(UEid, is_gnb);
 
     LOG_D(PDCP, "added srb %d to UE ID %ld\n", srb_id, UEid);
   }
@@ -672,8 +691,8 @@ void add_drb_sl(ue_id_t srcid,
                                                     sn_size, t_reordering, discard_timer, &sec);
     nr_pdcp_ue_add_drb_pdcp_entity(ue, slrb_id, pdcp_drb);
     LOG_I(PDCP, "added SL DRB %d (slrb) to UE ID %ld\n", slrb_id, srcid);
-    /* DEFER (SRAP wiring step): add_srap_entity(srcid);
-       DEFER (RRC step): SDAP entity via nr_sdap_addmod_entity() -> brings up the sidelink TUN/IP. */
+    // SRAP PC5 entity for the relay/remote UE (no-op unless relay_type>0).
+    add_srap_entity(srcid);
   }
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 }

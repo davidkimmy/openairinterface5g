@@ -3859,11 +3859,13 @@ void start_sidelink(int instance)
 
   NR_UE_RRC_INST_t *rrc = get_NR_UE_rrc_inst(instance);
 
-  if (get_softmodem_params()->sl_mode == 2) {
+  if (get_softmodem_params()->sl_mode == 1 || get_softmodem_params()->sl_mode == 2) {
 
     //Process the Sidelink Preconfiguration
     // --sync-ref is a boolean flag; map it to the SL sync-source enum (a bare 1 would otherwise
     // be misread as SL_SYNC_SOURCE_GNBENB, which is unsupported). Matches init_sidelink().
+    // Mode-1 relay UE is a PC5 SyncRef, so it also needs the SL preconfig (allocates SL_MAC_PARAMS,
+    // sets up SLSS TX); the mode-2-only SL DRB/SDAP/TUN block inside stays gated on sl_mode==2.
     sl_sync_source_enum_t sync_source =
         get_softmodem_params()->sync_ref ? SL_SYNC_SOURCE_LOCAL_TIMING : SL_SYNC_SOURCE_NONE;
     rrc_ue_process_sidelink_Preconfiguration(rrc, sync_source);

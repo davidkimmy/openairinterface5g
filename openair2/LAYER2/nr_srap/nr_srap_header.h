@@ -7,7 +7,7 @@ Email ID: ejaz.ahmed@applied.co
 #define _NR_SRAP_HEADER_H_
 
 #include <stdint.h>
-#include "openair2/COMMON/platform_types.h"
+#include "common/platform_types.h"
 
 #include "nr_srap_oai_api.h"
 

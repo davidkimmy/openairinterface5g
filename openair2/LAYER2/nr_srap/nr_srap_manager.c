@@ -20,7 +20,8 @@ nr_srap_manager_t *new_nr_srap_manager(bool gNB_flag) {
   bool is_relay_ue = get_softmodem_params()->is_relay_ue;
   uint8_t relay_type = get_softmodem_params()->relay_type;
   uint8_t num_of_entities = (is_relay_ue && relay_type == U2N) ? 2 : 1; // 38.351 - 4.2.2
-  ret->srap_entity = (nr_srap_entity_t**)malloc16_clear(sizeof(nr_srap_entity_t *));
+  // one entity pointer per SRAP entity (relay/U2N holds 2: PC5 + Uu) — was sized for 1 (heap overflow)
+  ret->srap_entity = (nr_srap_entity_t**)malloc16_clear(num_of_entities * sizeof(nr_srap_entity_t *));
 
   if (!ret->srap_entity) {
       LOG_E(NR_SRAP, "Memory allocation failed\n");
