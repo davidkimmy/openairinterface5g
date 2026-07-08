@@ -1330,9 +1330,14 @@ void *UE_thread_sl(void *arg)
         psbch_pscch_processing(UE, &proc, &phy_data);
     }
 
-    // SL TX
+    // SL TX. Do NOT apply the Uu N_TA_offset here: sidelink timing is independent of the gNB Uu timing
+    // advance, and a SyncRef relay defines the PC5 timeline itself. On a registered mode-1 relay
+    // UE->N_TA_offset is the Uu value (e.g. 800 samples); applying it advanced the SLSS/PSSCH TX off the
+    // relay's own RX grid, so the peer synced to the advanced SLSS and transmitted back at an offset ->
+    // DMRS phase ramp on the relay's PSSCH RX -> inflated channel-estimate noise -> PSSCH never detected.
+    // (The Uu link keeps using N_TA_offset on card 0 / UE_thread; this only affects the PC5 card.)
     const openair0_timestamp_t writeTimestamp =
-        rx_timestamp + get_samples_slot_duration(fp, slot_nr, duration_rx_to_tx) - firstSymSamp - UE->N_TA_offset;
+        rx_timestamp + get_samples_slot_duration(fp, slot_nr, duration_rx_to_tx) - firstSymSamp;
     const int writeBlockSize = get_samples_per_slot(proc.nr_slot_tx, fp);
     c16_t *txp[fp->nb_antennas_tx];
     for (int i = 0; i < fp->nb_antennas_tx; i++)

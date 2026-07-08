@@ -360,7 +360,7 @@ void nrue_init_openair0(void)
 // blocks until its peer connects.
 static void nrue_ru_open_and_start(int ru_id)
 {
-  openair0_config_t *cfg0 = &openair0_cfg[ru_id];
+  openair0_config_t *cfg0 = &openair0_cfg_g[ru_id];
   openair0_device_t *dev0 = &openair0_dev[ru_id];
   dev0->host_type = RAU_HOST;
   AssertFatal(openair0_device_load(dev0, cfg0) == 0, "Could not load the device %d\n", ru_id);
@@ -377,22 +377,9 @@ void nrue_ru_start(void)
   // and running the Uu initial-sync while a second device is co-present. In steady state both cards are then
   // driven in parallel with no priority (one self-clocked thread per device).
   for (int ru_id = 0; ru_id < nrue_ru_count; ru_id++) {
-<<<<<<< HEAD
-    openair0_config_t *cfg = &openair0_cfg_g[ru_id];
-    openair0_device_t *dev = &openair0_dev[ru_id];
-
-    dev->host_type = RAU_HOST;
-    int tmp = openair0_device_load(dev, cfg);
-    AssertFatal(tmp == 0, "Could not load the device %d\n", ru_id);
-    int tmp2 = dev->trx_start_func(dev);
-    AssertFatal(tmp2 == 0, "Could not start the device %d\n", ru_id);
-    if (usrp_tx_thread == 1)
-      dev->trx_write_init(dev);
-=======
-    if (nrue_ru_count > 1 && openair0_cfg[ru_id].sl_link)
+    if (nrue_ru_count > 1 && openair0_cfg_g[ru_id].sl_link)
       continue; // deferred PC5 card (opened lazily in UE_thread_sl once Uu is UE_CONNECTED)
     nrue_ru_open_and_start(ru_id);
->>>>>>> b9e8aae41c (srap: compile + wire NR SRAP relay data plane (U2N mode-1))
   }
 }
 

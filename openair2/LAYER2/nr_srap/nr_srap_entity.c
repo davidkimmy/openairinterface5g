@@ -54,15 +54,21 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
   uint8_t header_size;
   uint8_t src_id;
   uint8_t ue_id;
+  /* DRB id carried in the SRAP header (bearer-id field). At an endpoint (gNB uplink / remote-UE
+   * downlink) the packet must be delivered to PDCP on THIS DRB — derived from SRAP, not from the RLC
+   * transport bearer it happened to arrive on (which may differ from the relayed bearer). */
+  uint8_t hdr_bearer_id = 0;
   U2NHeader_t u2n_header;
   U2UHeader_t u2u_header;
   if (relay_type == U2N) {
     header_size = sizeof(u2n_header);
     decode_srap_header(&u2n_header, buffer);
+    hdr_bearer_id = u2n_header.octet1 & 0x1F;
     LOG_D(NR_SRAP, "Rx - bearer id: %x, ue id: %x\n", u2n_header.octet1 & 0x1F, u2n_header.octet2);
   } else if (relay_type == U2U) {
     header_size = sizeof(u2u_header);
     decode_srap_header(&u2u_header, buffer);
+    hdr_bearer_id = u2u_header.octet1 & 0x1F;
     LOG_D(NR_SRAP, "Rx - bearer id: %x, source ue id: %x, destination ue id: %x\n",
           u2u_header.octet1 & 0x1F, u2u_header.octet2, u2u_header.octet3);
   } else
@@ -95,7 +101,9 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
       LOG_D(NR_SRAP, "Sending Uu SRAP indication to above layer from SRAP %s\n", __FUNCTION__);
     }
 
-    entity->deliver_sdu(ctxt_pP, entity->deliver_sdu_data, entity, sdu->buffer, sdu->size, srb_flagP, MBMS_flagP, rb_id);
+    /* deliver on the DRB id read from the SRAP header (relay-UE packet: routed to the relay context's
+     * bearer identified by SRAP), not the RLC transport rb_id. */
+    entity->deliver_sdu(ctxt_pP, entity->deliver_sdu_data, entity, sdu->buffer, sdu->size, srb_flagP, MBMS_flagP, hdr_bearer_id);
     entity->stats.txsdu_pkts++;
     entity->stats.txsdu_bytes += sdu->size;
   }

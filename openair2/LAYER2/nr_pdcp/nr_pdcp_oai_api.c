@@ -655,6 +655,34 @@ void nr_pdcp_add_drb(int is_gnb,
     nr_pdcp_ue_add_drb_pdcp_entity(ue, sdap->drb_id, pdcp_drb);
 
     LOG_I(PDCP, "Added DRB %d to UE ID %ld\n", sdap->drb_id, UEid);
+
+    /* SL U2N relay (gNB): provision a RELAY-SPECIFIC PDCP DRB at drb_id+1 to carry the remote UE's
+     * relayed traffic with its OWN SN context. The remote's forwarded PDCP PDUs have an independent SN
+     * sequence; routing them onto the relay UE's own DRB would make that PDCP RX discard them as
+     * out-of-window. SRAP delivers the remote UL up via rb_id+1 (srap_deliver_sdu_drb) and the relayed
+     * DL out via deliver_pdu_drb_gnb (rb_id>1). PDCP-only: it is fed/drained by SRAP, so no RLC entity
+     * is needed. Mirrors the reference nr_pdcp_add_drbs relay-specific-DRB duplication. */
+    if (is_gnb && get_softmodem_params()->relay_type > 0) {
+      int relay_drb_id = sdap->drb_id + 1;
+      if (nr_pdcp_get_rb(ue, relay_drb_id, false) == NULL) {
+        nr_pdcp_entity_t *relay_drb = new_nr_pdcp_entity(NR_PDCP_DRB_AM,
+                                                         is_gnb,
+                                                         relay_drb_id,
+                                                         sdap->pdusession_id,
+                                                         (sdap->role & (SDAP_UL_RX | SDAP_DL_RX)) != 0,
+                                                         (sdap->role & (SDAP_UL_TX | SDAP_DL_TX)) != 0,
+                                                         deliver_sdu_drb,
+                                                         ue,
+                                                         deliver_pdu_drb_gnb,
+                                                         ue,
+                                                         sn_size_dl,
+                                                         t_reordering,
+                                                         discard_timer,
+                                                         &actual_security_parameters);
+        nr_pdcp_ue_add_drb_pdcp_entity(ue, relay_drb_id, relay_drb);
+        LOG_I(PDCP, "Added relay-specific DRB %d to UE ID %ld (SL U2N remote-UE relayed traffic)\n", relay_drb_id, UEid);
+      }
+    }
   }
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 }

@@ -654,9 +654,16 @@ void srap_deliver_sdu_drb(const protocol_ctxt_t *const  ctxt_pP,
 
   memcpy(memblock, buf, size);
 
-  // Sending data indication to PDCP at the destination
-  if (!nr_pdcp_data_ind(ctxt_pP, srb_flagP, rb_id + 1, size, memblock)) {
-    LOG_E(NR_SRAP, "%s:%d:%s: ERROR: nr_pdcp_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
+  /* Destination DRB for the relayed traffic. `rb_id` here is the SRAP-header bearer id.
+   * At the gNB (UL destination): deliver to the RELAY-SPECIFIC DRB (rb_id + 1), a separate PDCP entity
+   *   with its own SN context so the remote UE's independent-SN PDCP PDUs do NOT collide with the relay
+   *   UE's own bearer (which would make the shared PDCP RX discard them as out-of-window). The gNB
+   *   provisions this DRB (id+1) for relay_type>0 (see nr_pdcp_add_drb / RRC DRB setup).
+   * At the remote UE (DL destination): deliver to its own SL DRB (rb_id), which develop provisions at
+   *   DRB 1 (no relay-specific offset on the UE side). */
+  rb_id_t dst_rb_id = ctxt_pP->enb_flag ? rb_id + 1 : rb_id;
+  if (!nr_pdcp_data_ind(ctxt_pP, srb_flagP, dst_rb_id, size, memblock)) {
+    LOG_E(NR_SRAP, "%s:%d:%s: ERROR: nr_pdcp_data_ind failed (rb_id %ld)\n", __FILE__, __LINE__, __FUNCTION__, dst_rb_id);
     /* what to do in case of failure? for the moment: nothing */
   }
 }

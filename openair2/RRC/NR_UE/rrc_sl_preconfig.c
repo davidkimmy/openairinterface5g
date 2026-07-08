@@ -14,6 +14,7 @@
 // episys SL data-plane port: SL DRB (PDCP/RLC) + SDAP entity + sidelink TUN setup for mode-2.
 #include "openair2/LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
 #include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
 #include "openair2/SDAP/nr_sdap/nr_sdap.h"
 #include "openair2/SDAP/nr_sdap/nr_sdap_entity.h"
 
@@ -591,9 +592,15 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
    * entity, and a sidelink TUN so PSSCH user data / IP flows. srcid + the static SL IP
    * (10.0.<thirdOctet>.<fourthOctet>) come from the conf's sl_UEINFO section. Relay (mode-1/SRAP)
    * DRB handling is deferred. */
-  /* SL PC5 DRB setup. mode-2 (peer UE): SL DRB + SDAP + local TUN. mode-1 relay: SL DRB (RLC to receive
-   * the remote's PSSCH) + PC5 SRAP entity (created inside add_drb_sl) so the RX hook can forward to Uu;
-   * NO SDAP/TUN on the relay (it forwards via SRAP, it does not terminate the traffic locally). */
+  /* SL PC5 DRB setup.
+   *  mode-2 (peer UE): SL PDCP DRB (add_drb_sl, which also creates the PC5 SRAP entity) + RLC SL DRB
+   *                    + SDAP + local TUN (terminates traffic locally).
+   *  mode-1 relay: RLC SL DRB (to receive the remote's PSSCH -> deliver_sdu -> SRAP RX hook -> Uu) +
+   *                the PC5 SRAP entity ONLY. Deliberately NO SL PDCP entity (add_drb_sl): the relay's
+   *                SL srcid can equal its own Uu ue_id, and nr_pdcp_ue_t has a single drb[] (no sl_drb[]),
+   *                so an SL PDCP DRB would alias the relay's Uu DRB slot and steal its Uu traffic onto PC5.
+   *                The relay forwards purely at RLC<->SRAP, so it needs no SL PDCP / SDAP / TUN.
+   *                [Option C — minimal. Option A (add sl_drb[] to nr_pdcp_ue_t) is the proper fix, TODO.] */
   if (get_softmodem_params()->sl_mode == 1 || get_softmodem_params()->sl_mode == 2) {
     NR_SidelinkPreconfigNR_r16_t *slp = &sl_preconfig->sidelinkPreconfigNR_r16;
     if (slp->sl_RadioBearerPreConfigList_r16 && slp->sl_RLC_BearerPreConfigList_r16) {
@@ -603,8 +610,14 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
       // RX delivery (nr_mac_rlc_data_ind_sl). It was never set (defaulted 0), so a UE whose conf srcid != 0
       // (e.g. the Nearby, srcid 1) couldn't find its own sl_drb on RX ("no sl_drb"). Set it from the conf.
       get_mac_inst(rrc_inst->ue_id)->src_id = ueinfo.srcid;
-      for (int i = 0; i < slp->sl_RadioBearerPreConfigList_r16->list.count; i++)
-        add_drb_sl(ueinfo.srcid, slp->sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
+      if (get_softmodem_params()->sl_mode == 2) {
+        for (int i = 0; i < slp->sl_RadioBearerPreConfigList_r16->list.count; i++)
+          add_drb_sl(ueinfo.srcid, slp->sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
+      } else {
+        // mode-1 relay: create the PC5 SRAP entity directly (add_drb_sl, which normally creates it, is
+        // skipped here to avoid the SL-vs-Uu drb[] collision).
+        add_srap_entity(ueinfo.srcid);
+      }
       for (int i = 0; i < slp->sl_RLC_BearerPreConfigList_r16->list.count; i++)
         nr_rlc_add_drb_sl(ueinfo.srcid, 1, slp->sl_RLC_BearerPreConfigList_r16->list.array[i]);
       if (get_softmodem_params()->sl_mode == 2) {
@@ -618,7 +631,7 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
         create_ue_ip_if(sl_ip, NULL, ueinfo.srcid, 10, true);
         LOG_I(NR_RRC, "SL mode-2 data plane up: SL DRB + SDAP + TUN %s (srcid 0x%x)\n", sl_ip, ueinfo.srcid);
       } else {
-        LOG_I(NR_RRC, "SL mode-1 relay PC5 DRB up (SRAP forward, no local TUN) (srcid 0x%x)\n", ueinfo.srcid);
+        LOG_I(NR_RRC, "SL mode-1 relay PC5 DRB up (RLC + SRAP, no SL PDCP/SDAP/TUN) (srcid 0x%x)\n", ueinfo.srcid);
       }
     }
   }
