@@ -585,18 +585,102 @@ int config_libconfig_init(configmodule_interface_t *cfg)
   printf_params(cfg, "[LIBCONFIG] Path for include directive set to: %s\n", (incp != NULL) ? incp : "libconfig defaults");
   /* set convertion option to allow integer to float conversion*/
    config_set_auto_convert (&(libconfig_privdata.cfg), CONFIG_TRUE);
-  /* Read the file. If there is an error, report it and exit. */
-  if( config_read_file(&(libconfig_privdata.cfg), libconfig_privdata.configfile) == CONFIG_FALSE) {
+
+  /* Channel-model (@include) handling (ported from episys/sl-mode1-relay-vrtsim). libconfig's native
+   * @include is unconditional, so we pre-filter the config in memory and feed config_read_string():
+   *   - chanmod OFF: drop ALL @include lines (channelmod confs are only used by the simulators).
+   *   - chanmod ON: inline @include files SELECTIVELY — keep the channelmod matching the active simulator
+   *     (vrtsim -> channelmod_vrtsim*, rfsim -> channelmod_rfsim*) and skip the other, so a conf carrying
+   *     both @includes never produces a duplicate "channelmod" section. Enabled via
+   *     "--rfsimulator.options chanmod" (rfsim) or "--vrtsim.chanmod 1" (vrtsim). */
+  int rfsim_chanmod = 0, vrtsim_chanmod = 0;
+  for (int i = 0; i < cfg->argc; i++) {
+    if (strstr(cfg->argv[i], "--rfsimulator.options") != NULL) {
+      if (i + 1 < cfg->argc && strstr(cfg->argv[i + 1], "chanmod") != NULL)
+        rfsim_chanmod = 1;
+    } else if (strstr(cfg->argv[i], "rfsimulator.options") != NULL && strstr(cfg->argv[i], "chanmod") != NULL) {
+      rfsim_chanmod = 1;
+    } else if (strstr(cfg->argv[i], "vrtsim.chanmod") != NULL) {
+      if ((i + 1 < cfg->argc && strcmp(cfg->argv[i + 1], "1") == 0) || strstr(cfg->argv[i], "=1") != NULL)
+        vrtsim_chanmod = 1;
+    }
+  }
+  int chanmod_enabled = rfsim_chanmod || vrtsim_chanmod;
+  if (chanmod_enabled)
+    printf("[LIBCONFIG] chanmod enabled (%s); processing @include selectively\n", vrtsim_chanmod ? "vrtsim" : "rfsim");
+
+  /* directory of the main conf, to resolve bare @include "name.conf" */
+  char confdir[1024];
+  snprintf(confdir, sizeof(confdir), "%s", libconfig_privdata.configfile);
+  { char *slash = strrchr(confdir, '/'); if (slash) *slash = '\0'; else snprintf(confdir, sizeof(confdir), "."); }
+
+  /* Read the file, filtering/inlining @include as above, then parse from the resulting string. */
+  FILE *fp = fopen(libconfig_privdata.configfile, "r");
+  if (fp == NULL) {
+    fprintf(stderr, "[LIBCONFIG] Cannot open config file %s: %s\n", libconfig_privdata.configfile, strerror(errno));
+    config_destroy(&(libconfig_privdata.cfg));
+    free(tmppath);
+    return -1;
+  }
+  size_t cap = 1 << 16, pos = 0;
+  char *buf = malloc(cap);
+  AssertFatal(buf != NULL, "[LIBCONFIG] malloc failed\n");
+  char line[2048];
+  while (fgets(line, sizeof(line), fp) != NULL) {
+    char *inc = strstr(line, "@include");
+    if (inc != NULL) {
+      if (!chanmod_enabled)
+        continue; /* chanmod off: skip all @include */
+      char *q1 = strchr(inc, '"');
+      char *q2 = q1 ? strchr(q1 + 1, '"') : NULL;
+      char incname[1024] = {0};
+      if (q1 && q2 && (size_t)(q2 - q1 - 1) < sizeof(incname))
+        memcpy(incname, q1 + 1, q2 - q1 - 1);
+      int is_vrtsim = strstr(incname, "channelmod_vrtsim") != NULL;
+      int is_rfsim = strstr(incname, "channelmod_rfsim") != NULL;
+      int keep = is_vrtsim ? vrtsim_chanmod : (is_rfsim ? rfsim_chanmod : 1);
+      if (!keep) {
+        printf("[LIBCONFIG] Skipped @include (not active flavour): %s\n", incname);
+        continue;
+      }
+      char incpath[2048];
+      snprintf(incpath, sizeof(incpath), "%s/%s", confdir, incname);
+      FILE *ifp = fopen(incpath, "r");
+      if (ifp == NULL) {
+        fprintf(stderr, "[LIBCONFIG] Cannot open @include file %s: %s\n", incpath, strerror(errno));
+        continue;
+      }
+      printf("[LIBCONFIG] Inlining @include: %s\n", incname);
+      char iline[2048];
+      while (fgets(iline, sizeof(iline), ifp) != NULL) {
+        size_t l = strlen(iline);
+        while (pos + l + 1 > cap) { cap <<= 1; buf = realloc(buf, cap); AssertFatal(buf != NULL, "[LIBCONFIG] realloc failed\n"); }
+        memcpy(buf + pos, iline, l);
+        pos += l;
+      }
+      fclose(ifp);
+      continue;
+    }
+    size_t l = strlen(line);
+    while (pos + l + 1 > cap) { cap <<= 1; buf = realloc(buf, cap); AssertFatal(buf != NULL, "[LIBCONFIG] realloc failed\n"); }
+    memcpy(buf + pos, line, l);
+    pos += l;
+  }
+  buf[pos] = '\0';
+  fclose(fp);
+  if (config_read_string(&(libconfig_privdata.cfg), buf) == CONFIG_FALSE) {
     fprintf(stderr,
             "[LIBCONFIG] file %s - line %d: %s\n",
             libconfig_privdata.configfile,
             config_error_line(&(libconfig_privdata.cfg)),
             config_error_text(&(libconfig_privdata.cfg)));
+    free(buf);
     config_destroy(&(libconfig_privdata.cfg));
     fprintf(stderr, "\n");
     free(tmppath);
     return -1;
   }
+  free(buf);
 
   /* possibly init a libconfig struct for saving really used params */
   if (cfg->rtflags & CONFIG_SAVERUNCFG) {
