@@ -14,6 +14,7 @@
 #include "openair2/F1AP/f1ap_ids.h"
 #include "openair2/GNB_APP/gnb_config.h"
 #include "nr_pdcp/nr_pdcp_oai_api.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
 #include "common/utils/time_manager/time_manager.h"
 
 RAN_CONTEXT_t RC;
@@ -108,6 +109,29 @@ int nr_rlc_get_available_tx_space(const rnti_t rntiP, const logical_chan_id_t ch
 {
   abort();
   return 0;
+}
+
+/* SRAP (SL U2N relay) is a UE/relay/gNB-RAN feature; the CU-UP never routes to it. Stub so the shared
+ * PDCP object links (mirrors the nr_rlc_* stubs above; nr-cuup does not link libnr_srap). */
+bool nr_srap_data_req_drb(protocol_ctxt_t *ctxt,
+                          const rb_id_t rb_id,
+                          const mui_t sdu_id,
+                          const sdu_size_t sdu_buffer_size,
+                          char *sdu_buffer,
+                          nr_intf_type_t intf_type)
+{
+  abort();
+  return false;
+}
+
+void add_srap_entity(int src_id)
+{
+  abort();
+}
+
+void add_srap_uu_entity(int ue_id, bool is_gnb)
+{
+  abort();
 }
 
 f1ap_cudu_inst_t *getCxt(instance_t instanceP)
