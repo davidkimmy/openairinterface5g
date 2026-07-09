@@ -26,6 +26,14 @@ typedef struct {
   int len;
 } NR_list_t;
 
+// NR_list_t helpers (defined in NR_MAC_gNB/gNB_scheduler_primitives.c). Declared here next to NR_list_t
+// so UE-side sidelink HARQ code (episys SL PSFCH port) can use them without including the gNB proto header.
+void create_nr_list(NR_list_t *listP, int len);
+void remove_nr_list(NR_list_t *listP, int id);
+void add_tail_nr_list(NR_list_t *listP, int id);
+void add_front_nr_list(NR_list_t *listP, int id);
+void remove_front_nr_list(NR_list_t *listP);
+
 //! fixme : need to enhace for the multiple TB CQI report
 typedef struct NR_bler_stats {
   frame_t last_frame;
@@ -37,6 +45,8 @@ typedef struct NR_bler_stats {
 
 /* ---- episys SL data-plane port: sidelink MAC common defs (macros, frameslot, stats) ---- */
 #define MAX_REMOTE_UES        1
+// episys SL PSFCH port (Stage 3c): HARQ feedback bits reserved per remote UE in the static SL HARQ table.
+#define HARQ_BITS_PER_UE      (NR_MAX_HARQ_PROCESSES / MAX_REMOTE_UES)
 #define MAX_SL_HARQ_PROCESSES (NR_MAX_HARQ_PROCESSES)
 #define MAX_GRANTS            8
 #define MAX_PSFCH_TO_PUCCH_OFFSET 16
@@ -45,6 +55,9 @@ typedef struct {
   int16_t frame;
   int16_t slot;
 } frameslot_t;
+
+// episys SL PSFCH port (Stage 3): PSSCH-RX-slot -> PSFCH-feedback-slot for sl-PSFCH-Period 1/2/4.
+int16_t get_feedback_slot(long psfch_period, uint16_t slot, bool use_first_half);
 
 // Directional MAC stats (moved here from NR_MAC_gNB/nr_mac_gNB.h so UE sidelink MAC stats can reuse it).
 typedef struct NR_mac_dir_stats {

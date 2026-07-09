@@ -77,6 +77,18 @@
 #include <pthread.h>
 #include "NR_IF_Module.h"
 
+// PSFCH RX (Stage 2): PUCCH-format-0 cyclic-shift LUT for the UE (mirrors the gNB NR_gNB_PUCCH0_LUT_t).
+// MAX_PUCCH0_NID is defined in defs_gNB.h (=8); guard-define it here so defs_nr_UE.h is self-contained.
+#ifndef MAX_PUCCH0_NID
+#define MAX_PUCCH0_NID 8
+#endif
+
+typedef struct {
+  int nb_id;
+  int Nid[MAX_PUCCH0_NID];
+  int lut[MAX_PUCCH0_NID][160][14];
+} NR_UE_PUCCH0_LUT_t;
+
 /// Context data structure for gNB subframe processing
 typedef struct {
   /// Component Carrier index
@@ -481,6 +493,9 @@ typedef struct PHY_VARS_NR_UE_s {
   } *pdsch_scratch;
   int pdsch_num_actors;
   pthread_t sl_thread;     // sidelink (PC5) driving thread for the mode-1 dual-card relay
+
+  // PSFCH RX (Stage 2): PUCCH-format-0 cyclic-shift LUT, self-initialized by get_pucch0_cs_lut_index().
+  NR_UE_PUCCH0_LUT_t pucch0_lut;
 } PHY_VARS_NR_UE;
 typedef struct pdsch_scratch_s pdsch_scratch_t;
 
@@ -592,6 +607,10 @@ typedef struct nr_phy_data_tx_s {
   // episys SL data-plane port: PSCCH+PSSCH TX config + PSCCH scrambling id
   sl_nr_tx_config_pscch_pssch_pdu_t nr_sl_pssch_pscch_pdu;
   uint32_t pscch_Nid;
+  // episys SL PSFCH port (Stage 1 PHY TX): HARQ-feedback PSFCH resource(s) to transmit, filled by the
+  // MAC HARQ scheduler (Stages 3-4). num_psfch_pdus stays 0 until then.
+  sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu_list;
+  uint8_t num_psfch_pdus;
 } nr_phy_data_tx_t;
 
 typedef struct nr_phy_data_s {

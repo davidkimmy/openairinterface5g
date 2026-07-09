@@ -127,6 +127,19 @@ typedef struct SL_NR_UE_PSSCH {
   uint32_t num_pssch_sci2_tx;
 } SL_NR_UE_PSSCH_t;
 
+// episys SL PHY stats port: PSCCH (SCI-1). NOTE: on this branch the RX does a blind PSSCH decode with
+// SCI-1 decoding deferred, so rx_ok stays 0 for now (TX side is counted).
+typedef struct SL_NR_UE_PSCCH {
+  uint32_t num_pscch_tx; // STATS - PSCCH (SCI-1) transmissions by the UE
+  uint32_t rx_ok;        // STATS - PSCCH (SCI-1) receptions with CRC OK (deferred RX -> 0 for now)
+} SL_NR_UE_PSCCH_t;
+
+// episys SL PHY stats port: PSFCH (HARQ feedback). TX side counted; RX decode counted (Stage 2).
+typedef struct SL_NR_UE_PSFCH {
+  uint32_t num_psfch_tx; // STATS - PSFCH transmissions by the UE
+  uint32_t num_psfch_rx; // STATS - PSFCH (HARQ ACK/NACK) receptions decoded by the UE
+} SL_NR_UE_PSFCH_t;
+
 typedef struct sl_nr_ue_phy_params {
   SL_NR_UE_INIT_PARAMS_t init_params;
 
@@ -137,6 +150,10 @@ typedef struct sl_nr_ue_phy_params {
 
   // Sidelink PHY PARAMETERS USED FOR PSSCH reception/Txn (episys SL data-plane port)
   SL_NR_UE_PSSCH_t pssch;
+
+  // Sidelink PHY PARAMETERS USED FOR PSCCH (SCI-1) and PSFCH (episys SL PHY stats port)
+  SL_NR_UE_PSCCH_t pscch;
+  SL_NR_UE_PSFCH_t psfch;
 
   // Configuration parameters from MAC
   sl_nr_phy_config_request_t sl_config;

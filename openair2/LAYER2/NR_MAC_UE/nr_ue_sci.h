@@ -131,4 +131,13 @@ void nr_schedule_slsch(const struct NR_SL_ResourcePool_r16 *sl_tx_res_pool,
                        uint16_t src_id,
                        uint16_t dest_id,
                        uint8_t mcs);
+
+// episys SL PSFCH port (4c-A): SCI-2 (format 2A) RX decode -> mac->sci_pdu_rx.
+// (nr_ue_process_sci2_indication_pdu proto is in mac_proto.h, which has NR_UE_MAC_INST_t.)
+struct NR_SL_BWP_ConfigCommon_r16; // file-scope fwd decl so the tag isn't prototype-scoped
+void extract_pssch_sci_pdu(uint64_t *sci2_payload,
+                           int len,
+                           const struct NR_SL_BWP_ConfigCommon_r16 *sl_bwp,
+                           const struct NR_SL_ResourcePool_r16 *sl_res_pool,
+                           nr_sci_pdu_t *sci_pdu);
 #endif

@@ -113,8 +113,30 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
     ASN_SEQUENCE_ADD(&sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_PSSCH_DMRS_TimePatternList_r16->list, p);
   }
 
-  //PSFCH configuration
-  sl_res_pool->sl_PSFCH_Config_r16 = NULL;
+  // PSFCH configuration (episys SL PSFCH port, Stage 4). Period index comes from --sl-psfch-period
+  // (0=disabled/blind, 1=sl1, 2=sl2, 3=sl4). Index 0 leaves the config NULL = the original blind data
+  // plane. The sl_PSFCH_RB_Set_r16 bitmap is computed after the conf overlay below, once
+  // sl_NumSubchannel_r16 / sl_RB_Number_r16 have their final values.
+  uint8_t sl_psfch_period_idx = get_softmodem_params()->sl_psfch_period;
+  if (sl_psfch_period_idx == 0) {
+    sl_res_pool->sl_PSFCH_Config_r16 = NULL;
+  } else {
+    sl_res_pool->sl_PSFCH_Config_r16 = calloc(1, sizeof(*sl_res_pool->sl_PSFCH_Config_r16));
+    sl_res_pool->sl_PSFCH_Config_r16->present = NR_SetupRelease_SL_PSFCH_Config_r16_PR_setup;
+    sl_res_pool->sl_PSFCH_Config_r16->choice.setup = calloc(1, sizeof(NR_SL_PSFCH_Config_r16_t));
+    NR_SL_PSFCH_Config_r16_t *psfch = sl_res_pool->sl_PSFCH_Config_r16->choice.setup;
+    psfch->sl_PSFCH_Period_r16 = calloc(1, sizeof(long));
+    *psfch->sl_PSFCH_Period_r16 = sl_psfch_period_idx; // 1->sl1, 2->sl2, 3->sl4
+    psfch->sl_NumMuxCS_Pair_r16 = calloc(1, sizeof(long));
+    *psfch->sl_NumMuxCS_Pair_r16 = NR_SL_PSFCH_Config_r16__sl_NumMuxCS_Pair_r16_n1;
+    psfch->sl_MinTimeGapPSFCH_r16 = calloc(1, sizeof(long));
+    *psfch->sl_MinTimeGapPSFCH_r16 = NR_SL_PSFCH_Config_r16__sl_MinTimeGapPSFCH_r16_sl2;
+    psfch->sl_PSFCH_HopID_r16 = calloc(1, sizeof(long));
+    *psfch->sl_PSFCH_HopID_r16 = 0;
+    psfch->sl_PSFCH_CandidateResourceType_r16 = calloc(1, sizeof(long));
+    *psfch->sl_PSFCH_CandidateResourceType_r16 = NR_SL_PSFCH_Config_r16__sl_PSFCH_CandidateResourceType_r16_startSubCH;
+    psfch->sl_PSFCH_RB_Set_r16 = calloc(1, sizeof(*psfch->sl_PSFCH_RB_Set_r16)); // buf filled after conf overlay
+  }
 
   // indicates allowed sync sources which are allowed to use this resource pool
   sl_res_pool->sl_SyncAllowed_r16 = calloc(1, sizeof(NR_SL_SyncAllowed_r16_t));
@@ -198,6 +220,34 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
     sprintf(aprefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0,SL_CONFIG_STRING_SL_RX_RPOOL_LIST, 0);
 
   config_get(config_get_if(), SL_POOLPARAMS, sizeofArray(SL_POOLPARAMS), aprefix);
+
+  // episys SL PSFCH port (Stage 4a): compute the PSFCH RB-set bitmap now that sl_NumSubchannel_r16 /
+  // sl_RB_Number_r16 have their final (conf-overlaid) values. num_prbs is the largest multiple of
+  // (NumSubchannel * period) not exceeding RB_Number; that many low PRBs are marked available (0xFF...).
+  if (sl_res_pool->sl_PSFCH_Config_r16) {
+    NR_SL_PSFCH_Config_r16_t *psfch = sl_res_pool->sl_PSFCH_Config_r16->choice.setup;
+    const uint8_t psfch_periods[] = {0, 1, 2, 4};
+    uint8_t psfch_period = psfch_periods[*psfch->sl_PSFCH_Period_r16];
+    long num_subch = sl_res_pool->sl_NumSubchannel_r16 ? *sl_res_pool->sl_NumSubchannel_r16 : 0;
+    long rb_number = sl_res_pool->sl_RB_Number_r16 ? *sl_res_pool->sl_RB_Number_r16 : 0;
+    uint16_t prod = (uint16_t)(num_subch * psfch_period);
+    uint16_t num_prbs = (prod > 0) ? (uint16_t)((rb_number / prod) * prod) : 0;
+    uint16_t num_bytes = (num_prbs % 8) ? (num_prbs / 8) + 1 : (num_prbs / 8);
+    if (num_bytes == 0)
+      num_bytes = 1; // keep a valid (empty) bitmap even if pool sizing is unavailable
+    psfch->sl_PSFCH_RB_Set_r16->size = num_bytes;
+    psfch->sl_PSFCH_RB_Set_r16->bits_unused = (num_prbs % 8) ? 8 - (num_prbs % 8) : 0;
+    psfch->sl_PSFCH_RB_Set_r16->buf = calloc(num_bytes, sizeof(uint8_t));
+    memset(psfch->sl_PSFCH_RB_Set_r16->buf, 0xFF, num_prbs / 8);
+    if (num_prbs % 8) {
+      uint8_t remaining = 0;
+      for (int i = 8 - (num_prbs % 8); i < 8; i++)
+        remaining |= 1 << i;
+      psfch->sl_PSFCH_RB_Set_r16->buf[num_prbs / 8] = remaining;
+    }
+    LOG_I(NR_RRC, "SL PSFCH provisioned: period %d, num_subch %ld, rb_number %ld, num_prbs %d, rb_set_bytes %d\n",
+          psfch_period, num_subch, rb_number, num_prbs, num_bytes);
+  }
 }
 
 static void prepare_NR_SL_BWPConfigCommon(NR_SL_BWP_ConfigCommon_r16_t *sl_bwp,

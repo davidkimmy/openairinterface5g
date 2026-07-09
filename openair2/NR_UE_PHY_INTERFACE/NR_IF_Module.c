@@ -511,6 +511,26 @@ void sl_nr_process_rx_ind(int ue_id,
           LOG_W(NR_MAC, "[UE%d] SL RX SLSCH bad subheader len %d (TB %d)\n", ue_id, sdu_len, slsch->pdu_length);
         }
       }
+      // episys SL PSFCH port (Stage 3b): on a received SLSCH, build the PSFCH (HARQ ACK/NACK) feedback
+      // resource for this receiver. DORMANT until Stage 4 provisions sl_PSFCH_Config_r16 (and the SCI
+      // carries harq_feedback=1); until then psfch_period is 0 and this is a no-op.
+      {
+        NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
+        uint8_t psfch_period = 0;
+        if (mac->sl_tx_res_pool && mac->sl_tx_res_pool->sl_PSFCH_Config_r16
+            && mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16)
+          psfch_period = *mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+        if (psfch_period && mac->sci_pdu_rx.harq_feedback)
+          configure_psfch_params_tx(ue_id, mac, rx_ind, num_pdus - 1);
+      }
+      break;
+    }
+    case SL_NR_RX_PDU_TYPE_SLSCH_PSFCH: {
+      // episys SL PSFCH port (Stage 4d): a decoded PSFCH (HARQ ACK/NACK) for a PSSCH this UE transmitted.
+      // Advance/retire the HARQ round (retx on NACK) via handle_nr_ue_sl_harq.
+      NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
+      sl_nr_slsch_pdu_t *slsch = &rx_ind->rx_indication_body[num_pdus - 1].rx_slsch_pdu;
+      handle_nr_ue_sl_harq(ue_id, frame, slot, slsch, mac->sci_pdu_rx.source_id);
       break;
     }
 
@@ -540,6 +560,12 @@ void nr_ue_sl_indication(nr_sidelink_indication_t *sl_indication)
 
   if (sl_indication->rx_ind) {
     sl_nr_process_rx_ind(ue_id, hfn, frame, slot, sl_mac, sl_indication->rx_ind);
+  } else if (sl_indication->sci_ind) {
+    // episys SL PSFCH port (4c-A): a decoded SCI-2 -> populate mac->sci_pdu_rx (harq_feedback/src/cast)
+    // so the subsequent SLSCH rx_ind can trigger the PSFCH HARQ feedback (configure_psfch_params_tx).
+    for (int i = 0; i < sl_indication->sci_ind->number_of_SCIs; i++)
+      nr_ue_process_sci2_indication_pdu(mac, ue_id, sl_indication->cc_id, frame, slot,
+                                        &sl_indication->sci_ind->sci_pdu, sl_indication->phy_data);
   } else {
     nr_ue_sidelink_scheduler(sl_indication, mac);
   }

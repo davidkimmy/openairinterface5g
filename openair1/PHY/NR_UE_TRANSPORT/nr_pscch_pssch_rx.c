@@ -460,6 +460,12 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
                                     pssch_pdu->targetCodeRate,
                                     slsch_pdu->mcs_table);
 
+  // episys SL PSFCH port (4c-A): collect the SCI-2 (format 2A) QPSK LLRs across the PSSCH symbols so they
+  // can be descrambled + polar-decoded after the LLR loop (-> mac->sci_pdu_rx, needed to trigger PSFCH).
+  const int sci2_re_total = sci2_left;
+  int16_t sci2_llrs[(sci2_re_total > 0 ? sci2_re_total * 2 : 1)];
+  int sci2_llr_cnt = 0;
+
   // ---- 1) SL DMRS channel estimation (per DMRS symbol) + RX/noise power for the DTX test ----
   uint32_t nvar = 0, nvar_cnt = 0;
   int dmrs_symbol = -1;
@@ -555,8 +561,12 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     }
     if (sci2_left > 0) {
       const int take = (nb_re < sci2_left) ? nb_re : sci2_left;
-      // TODO(faithful SCI2 / F2): collect + polar-decode SCI2 -> SL sci indication. For SLSCH TB
-      // delivery we only need to PUNCTURE these REs so the SLSCH LLR stream stays transmitter-aligned.
+      // episys SL PSFCH port (4c-A): collect the SCI-2 QPSK LLRs (channel-compensated) for decode after the
+      // loop. These same REs are still punctured from the SLSCH LLR stream (off/nb_re advance) so the SLSCH
+      // stays transmitter-aligned.
+      nr_compute_llr(&rxComp[0][off], &ch_maga[0][off], &ch_magb[0][off], &ch_magc[0][off],
+                     &sci2_llrs[sci2_llr_cnt], take, 0, 2 /*QPSK, 2 LLRs/RE*/);
+      sci2_llr_cnt += take * 2;
       off += take;
       nb_re -= take;
       sci2_left -= take;
@@ -582,6 +592,42 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
   }
   LOG_D(NR_PHY, "%d.%d PSSCH demod: %u SLSCH REs -> llr_layers[0] (Qm %d, rb %d, sym %d) data_re_e=%llu nvar=%u\n",
         proc->frame_rx, proc->nr_slot_rx, llr_offset, Qm, rb_size, nr_of_symbols, (unsigned long long)data_re_energy, nvar);
+
+  // episys SL PSFCH port (4c-A): descramble + polar-decode the collected SCI-2 (format 2A) ONLY on a
+  // detected PSSCH (gated by !DTX — running polar decode on every blind RX slot overruns real-time). On
+  // CRC OK, deliver to MAC (-> mac->sci_pdu_rx: harq_feedback/source_id/cast_type) so the SLSCH rx_ind can
+  // trigger the PSFCH HARQ feedback. Descramble MUST use the TX gold seq gold_cache((1010<<16)+Nid).
+  if (!pssch_vars->DTX && sci2_re_total > 0 && sci2_llr_cnt == sci2_re_total * 2) {
+    const int Gsci2 = sci2_re_total * 2;
+    const int roundedSz = (Gsci2 + 31) / 32;
+    uint32_t *seq = gold_cache((1010u << 16) + Nid, roundedSz);
+    int16_t unscrambled_sci2[Gsci2];
+    for (int j = 0; j < Gsci2; j++) {
+      const int bit = (seq[j >> 5] >> (j & 31)) & 1;
+      unscrambled_sci2[j] = bit ? -sci2_llrs[j] : sci2_llrs[j];
+    }
+    uint64_t sci_estimation[2] = {0};
+    uint16_t crc = polar_decoder_int16(unscrambled_sci2, sci_estimation, 1, NR_POLAR_SCI2_MESSAGE_TYPE,
+                                       pssch_pdu->sci2_len, sci2_re_total);
+    if (crc == 0) {
+      ue->SL_UE_PHY_PARAMS.pssch.rx_sci2_ok++;
+      sl_nr_sci_indication_t sci_ind = {0};
+      sci_ind.sfn = proc->frame_rx;
+      sci_ind.slot = proc->nr_slot_rx;
+      sci_ind.number_of_SCIs = 1;
+      sci_ind.sci_pdu.sci_payloadlen = pssch_pdu->sci2_len;
+      sci_ind.sci_pdu.Nid = Nid;
+      memcpy(sci_ind.sci_pdu.sci_payloadBits, sci_estimation, sizeof(sci_ind.sci_pdu.sci_payloadBits)); // 8 bytes
+      nr_sidelink_indication_t sl_indication;
+      nr_fill_sl_indication(&sl_indication, NULL, &sci_ind, proc, ue, phy_data);
+      if (ue->if_inst && ue->if_inst->sl_indication)
+        ue->if_inst->sl_indication(&sl_indication);
+      LOG_D(NR_PHY, "%d.%d SCI-2 decoded OK (len %d, %d REs)\n", proc->frame_rx, proc->nr_slot_rx,
+            pssch_pdu->sci2_len, sci2_re_total);
+    } else {
+      ue->SL_UE_PHY_PARAMS.pssch.rx_sci2_errors++;
+    }
+  }
 }
 
 // SLSCH receive-decode entry (episys SL data-plane port). Assumes nr_rx_pssch already produced the

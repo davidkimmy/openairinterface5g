@@ -17,6 +17,61 @@
 #define NR_DL_MAX_DAI                            (4)                      /* TS 38.213 table 9.1.3-1 Value of counter DAI for DCI format 1_0 and 1_1 */
 #define NR_DL_MAX_NB_CW                          (2)                      /* number of downlink code word */
 
+// episys SL PSFCH port (Stage 3): 38.213 Table 16.3-1 set of cyclic-shift pairs (indexed by NumMuxCS pair).
+static const int16_t table_16_3_1[4][6] = {
+                                          {0},
+                                          {0, 3},
+                                          {0, 2, 4},
+                                          {0, 1, 2, 3, 4, 5}
+                                       };
+
+// PSFCH PRB-set allocation (per PSSCH-slot x subchannel) and derived PSFCH params.
+typedef struct prbs_set {
+  uint16_t **start_prb;
+  uint16_t **end_prb;
+} prbs_set_t;
+
+typedef struct psfch_params {
+  uint16_t m0;
+  prbs_set_t *prbs_sets;
+} psfch_params_t;
+
+// episys SL PSFCH port (Stage 3): MAC HARQ-feedback (PSFCH) build helpers. See nr_ue_procedures_sl.c.
+uint8_t count_on_bits(uint8_t *buf, size_t size);
+int64_t normalize(frameslot_t *frame_slot, uint8_t mu);
+void de_normalize(int64_t abs_slot_idx, uint8_t mu, frameslot_t *frame_slot);
+bool is_sl_slot(NR_UE_MAC_INST_t *mac, uint64_t abs_slot);
+bool slot_has_psfch(NR_UE_MAC_INST_t *mac,
+                    uint64_t abs_index_cur_slot,
+                    uint8_t psfch_period,
+                    NR_TDD_UL_DL_ConfigCommon_t *tdd);
+void print_prb_set_allocation(psfch_params_t *psfch_params, uint8_t psfch_period, uint8_t num_subchannels);
+int get_psfch_index(int frame, int slot, int n_slots_frame, const NR_TDD_UL_DL_Pattern_t *tdd, int sched_psfch_max_size);
+int nr_ue_sl_acknack_scheduling(NR_UE_MAC_INST_t *mac,
+                                sl_nr_rx_indication_t *rx_ind,
+                                long psfch_period,
+                                uint16_t frame,
+                                uint16_t slot,
+                                const int nr_slots_frame);
+void fill_psfch_params_tx(NR_UE_MAC_INST_t *mac,
+                          sl_nr_rx_indication_t *rx_ind,
+                          long psfch_period,
+                          uint16_t frame,
+                          uint16_t slot,
+                          uint8_t ack_nack,
+                          psfch_params_t *psfch_params,
+                          const int nr_slots_frame,
+                          int psfch_index);
+void configure_psfch_params_tx(int module_idP, NR_UE_MAC_INST_t *mac, sl_nr_rx_indication_t *rx_ind, int pdu_id);
+int configure_psfch_params_rx(int module_idP, NR_UE_MAC_INST_t *mac, int frame, int slot, sl_nr_rx_config_request_t *rx_config);
+
+// episys SL PSFCH port (Stage 3c): TX-UE HARQ feedback processing (in nr_ue_procedures_sl.c / nr_slsch_scheduler.c).
+int find_current_slot_harqs(frame_t frame, sub_frame_t slot, NR_SL_UE_sched_ctrl_t *sched_ctrl, NR_UE_sl_harq_t **matched_harqs);
+void handle_nr_ue_sl_harq(module_id_t mod_id, frame_t frame, sub_frame_t slot, sl_nr_slsch_pdu_t *rx_slsch_pdu, uint16_t src_id);
+void nr_mac_process_sl_rx_data(NR_UE_MAC_INST_t *mac, uint16_t src_id, int8_t harq_id, uint8_t ack_nack);
+int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, int cc_id, frame_t frame,
+                                      int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data);
+
 /**\brief initialize the field in nr_mac instance
    \param mac      MAC pointer */
 void nr_ue_init_mac(NR_UE_MAC_INST_t *mac);

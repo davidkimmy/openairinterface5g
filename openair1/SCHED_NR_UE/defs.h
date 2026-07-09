@@ -152,6 +152,13 @@ uint32_t nr_generate_sci1(const PHY_VARS_NR_UE *ue,
                           const sl_nr_tx_config_pscch_pssch_pdu_t *pscch_pssch_pdu);
 /* episys SL data-plane port: UE-native PSSCH data transmit (SLSCH encode + SCI-2 + DMRS + RE map). In nr_pscch_tx.c. */
 void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr_phy_data_tx_t *phy_data, c16_t **txdataF);
+/* episys SL PSFCH port (Stage 1 PHY TX): generate the PSFCH (HARQ feedback) on PC5. In nr_psfch_tx.c. */
+void nr_generate_psfch0(const PHY_VARS_NR_UE *ue,
+                        c16_t **txdataF,
+                        const NR_DL_FRAME_PARMS *frame_parms,
+                        const int16_t amp,
+                        const int nr_slot_tx,
+                        const sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu);
 /*! \brief This function prepares the sl indication to pass to the MAC
  */
 void nr_fill_sl_indication(nr_sidelink_indication_t *sl_ind,

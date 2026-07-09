@@ -240,6 +240,46 @@ static void  sl_prepare_phy_config(int module_id,
   return;
 }
 
+// episys SL PSFCH port (Stage 4b): initialize the per-connection SL HARQ context (HARQ process pool +
+// feedback/retrans lists + PSFCH feedback-scheduling buffer). Idempotent; a no-op unless PSFCH is
+// provisioned and the TX pool + TDD config are ready. Called from both SL config entry points.
+static void sl_ue_harq_ctx_init(NR_UE_MAC_INST_t *mac)
+{
+  sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
+  if (!sl_mac || !mac->sl_tx_res_pool || !mac->sl_tx_res_pool->sl_PSFCH_Config_r16 || !sl_mac->sl_TDD_config)
+    return;
+  if (mac->sl_info.list[0] != NULL)
+    return; // already initialized
+
+  NR_TDD_UL_DL_Pattern_t *tdd = &sl_mac->sl_TDD_config->pattern1;
+  int n_ul_slots_period = tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0);
+  uint16_t num_subch = (sl_mac->sl_TxPool[0] && sl_mac->sl_TxPool[0]->num_subch) ? sl_mac->sl_TxPool[0]->num_subch : 1;
+  int nfb = n_ul_slots_period * num_subch;
+  if (nfb <= 0)
+    nfb = 1;
+
+  mac->sl_info.list[0] = calloc(1, sizeof(NR_SL_UE_info_t));
+  mac->sl_info.list[0]->uid = 0; // single peer connection (2-node SL)
+  NR_SL_UE_sched_ctrl_t *sc = &mac->sl_info.list[0]->UE_sched_ctrl;
+  create_nr_list(&sc->available_sl_harq, NR_MAX_HARQ_PROCESSES);
+  for (int h = 0; h < NR_MAX_HARQ_PROCESSES; h++)
+    add_tail_nr_list(&sc->available_sl_harq, h);
+  create_nr_list(&sc->feedback_sl_harq, NR_MAX_HARQ_PROCESSES);
+  create_nr_list(&sc->retrans_sl_harq, NR_MAX_HARQ_PROCESSES);
+  for (int h = 0; h < NR_MAX_HARQ_PROCESSES; h++) {
+    sc->sl_harq_processes[h].round = 0;
+    sc->sl_harq_processes[h].is_waiting = false;
+    sc->sl_harq_processes[h].feedback_slot = -1;
+  }
+  sc->sched_psfch = calloc(nfb, sizeof(SL_sched_feedback_t));
+  for (int i = 0; i < nfb; i++) {
+    sc->sched_psfch[i].feedback_frame = -1;
+    sc->sched_psfch[i].feedback_slot = -1;
+  }
+  LOG_I(NR_MAC, "SL PSFCH HARQ ctx init: n_ul_slots_period %d, num_subch %d, sched_psfch entries %d\n",
+        n_ul_slots_period, num_subch, nfb);
+}
+
 // RRC calls this API when RRC is configured with Sidelink PRE-configuration I.E
 int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
                                        NR_SL_PreconfigurationNR_r16_t *sl_preconfiguration,
@@ -380,6 +420,7 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
   sl_prepare_phy_config(module_id, &sl_phy_cfg->sl_config_req,
                         freqcfg, sync_source, sl_OffsetDFN, sl_mac->sl_TDD_config);
 
+  sl_ue_harq_ctx_init(mac);
   return 0;
 }
 
@@ -515,5 +556,6 @@ void nr_rrc_mac_config_req_sl_mib(module_id_t module_id,
     DevAssert(mac->if_module != NULL && mac->if_module->sl_phy_config_request != NULL);
     mac->if_module->sl_phy_config_request(&sl_mac->sl_phy_config);
   }
+  sl_ue_harq_ctx_init(mac);
 }
 

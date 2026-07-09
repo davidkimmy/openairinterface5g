@@ -117,6 +117,10 @@ typedef struct {
   uint8_t harq_pid;
   uint8_t cw_idx;
   uint8_t ack_nack;
+  // episys SL PSFCH port (Stage 3): per-PSFCH-resource HARQ ACK/NACK results decoded on the SL RX path.
+  // Aliased as sl_nr_slsch_pdu_t on the SL side; the DL PDSCH path leaves these unset/ignored.
+  uint8_t *ack_nack_rcvd;
+  uint8_t num_acks_rcvd;
   uint32_t pdu_length;
   uint8_t* pdu;
 } fapi_nr_pdsch_pdu_t;

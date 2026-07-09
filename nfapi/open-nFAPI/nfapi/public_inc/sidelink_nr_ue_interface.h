@@ -207,6 +207,10 @@ typedef struct {
     sl_nr_rx_config_pssch_sci_pdu_t rx_sci2_config_pdu;
     sl_nr_rx_config_pssch_pdu_t rx_pssch_config_pdu;
   };
+  // episys SL PSFCH port (Stage 4d): HARQ-feedback PSFCH resource(s) to decode this RX slot (outside the
+  // union — coexists with the PSSCH RX config). Copied into nr_phy_data_t by fapi_nr_ue_l1.c.
+  struct sl_nr_tx_rx_config_psfch_pdu *psfch_pdu_list;
+  uint8_t num_psfch_pdus;
 } sl_nr_rx_config_request_pdu_t;
 
 // MAC commands PHY to perform an action on RX RESOURCE POOL or RX PSBCH using this RX CONFIG
@@ -288,6 +292,12 @@ typedef struct sl_nr_tx_config_pscch_pssch_pdu {
   // ue->ul_harq_processes[harq_pid].payload_AB before encoding. Bounded for the F1 minimal path.
   uint32_t slsch_payload_len;
   uint8_t slsch_payload[SL_NR_MAX_SLSCH_PAYLOAD_BYTES];
+
+  // episys SL PSFCH port (Stage 4c): HARQ-feedback PSFCH resource(s) the MAC scheduled for this TX slot.
+  // Carried MAC->PHY via the scheduled_response; copied into nr_phy_data_tx_t by fapi_nr_ue_l1.c.
+  // Struct tag used (incomplete type OK for a pointer); full def is sl_nr_tx_rx_config_psfch_pdu below.
+  struct sl_nr_tx_rx_config_psfch_pdu *psfch_pdu_list;
+  uint8_t num_psfch_pdus;
 
 } sl_nr_tx_config_pscch_pssch_pdu_t;
 

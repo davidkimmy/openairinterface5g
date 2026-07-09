@@ -5391,3 +5391,35 @@ uint16_t nr_pdcch_monitoring_symbols_mask(const BIT_STRING_t *symbols_in_slot, u
               NR_SYMBOLS_PER_SLOT);
   return (symbols_in_slot->buf[0] << (sps - 8)) | (symbols_in_slot->buf[1] >> (16 - sps));
 }
+
+// episys SL PSFCH port (Stage 3): map a PSSCH RX slot -> the PSFCH feedback slot for a given
+// sl-PSFCH-Period (1/2/4). Develop uses SL slots {6,7,8,9,16,17,18,19} (mu=1, DL=6/UL=4 TDD, 20 slots/
+// frame) for PSSCH TX. Given the over-the-air PSSCH slot S, return the next PSFCH-eligible SL slot that
+// is at least PSFCH_MIN_TIME_GAP slots after S (cyclically within the frame). PSFCH-eligible = every
+// psfch_period-th SL slot (0-based index). Both the receiver (choosing where to send its ACK/NACK) and
+// the transmitter (choosing where to listen) call this with the SAME S, so they agree on the slot.
+// The PSFCH is transmitted by the PSSCH *receiver* in one of ITS TX slots. Develop assigns SyncRef TX
+// slots {6,7,8,9} and Nearby TX slots {16,17,18,19} (opposite RX). use_first_half selects the receiver's
+// TX half: the receiver passes its own role's half; the PSSCH transmitter (listening for the ACK) passes
+// the PEER's half (= its own RX half). Both then derive the identical over-the-air PSFCH slot from S.
+int16_t get_feedback_slot(long psfch_period, uint16_t slot, bool use_first_half) {
+  if (psfch_period <= 0)
+    return -1;
+  static const int first_half[] = {6, 7, 8, 9};
+  static const int second_half[] = {16, 17, 18, 19};
+  const int *slots = use_first_half ? first_half : second_half;
+  const int n = 4;
+  const int slots_per_frame = 20; // mu=1
+  const int min_gap = 2;          // MinTimeGapPSFCH sl2
+  int best = -1, best_dist = slots_per_frame + 1;
+  for (int i = 0; i < n; i++) {
+    if ((i % psfch_period) != 0)
+      continue; // PSFCH-eligible every psfch_period-th slot of the half
+    int dist = (slots[i] - (int)slot + slots_per_frame) % slots_per_frame;
+    if (dist >= min_gap && dist < best_dist) {
+      best_dist = dist;
+      best = slots[i];
+    }
+  }
+  return (int16_t)best;
+}

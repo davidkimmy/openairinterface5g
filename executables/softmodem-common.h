@@ -107,7 +107,9 @@ extern "C"
 #define REMOTE_UE_ID        softmodem_params.remote_ue_id
 #define IS_RELAY_UE         softmodem_params.is_relay_ue
 #define IP_DEMO             softmodem_params.ip_demo
+#define SL_PSFCH_PERIOD     softmodem_params.sl_psfch_period
 
+#define CONFIG_HLP_SL_PSFCH_PERIOD "SL PSFCH (HARQ feedback) period index: 0=disabled/blind, 1=sl1, 2=sl2, 3=sl4"
 #define CONFIG_HLP_RELAY_TYPE    "Set Relay type to represent No Relay (0), U2N (1) and U2U (2) cases. Later this will be properly configured from RRC."
 #define CONFIG_HLP_REMOTE_UE_ID  "Set Remote UE ID to fill in SRAP header"
 #define CONFIG_HLP_IS_RELAY_UE   "Set to configure a UE Relay role"
@@ -156,6 +158,7 @@ extern int usrp_tx_thread;
   {"default-pdu-id",        NULL,                     0,              .iptr=&DEFAULT_PDU_ID,                   .defintval=-1,           TYPE_INT,    0}, \
   {"relay-type",            CONFIG_HLP_RELAY_TYPE,    0,              .u8ptr=&RELAY_TYPE,                      .defintval=0,             TYPE_UINT8,  0},  \
   {"remote-ue-id",          CONFIG_HLP_REMOTE_UE_ID,  0,              .u8ptr=&REMOTE_UE_ID,                    .defintval=0,             TYPE_UINT8,  0},  \
+  {"sl-psfch-period",       CONFIG_HLP_SL_PSFCH_PERIOD,0,             .u8ptr=&SL_PSFCH_PERIOD,                 .defintval=0,             TYPE_UINT8,  0},  \
   {"is-relay-ue",           CONFIG_HLP_IS_RELAY_UE,   0,              .u8ptr=&IS_RELAY_UE,                     .defintval=0,             TYPE_UINT8,  0},  \
   {"ip-demo",               CONFIG_HLP_IP_DEMO,       0,              .u8ptr=&IP_DEMO,                         .defintval=0,             TYPE_UINT8,  0},  \
 }
@@ -192,6 +195,7 @@ extern int usrp_tx_thread;
                {"MONOLITHIC", "PNF", "VNF", "AERIAL","UE_STUB_PNF","UE_STUB_OFFNET","STANDALONE_PNF"}, \
                {NFAPI_MONOLITHIC, NFAPI_MODE_PNF, NFAPI_MODE_VNF, NFAPI_MODE_AERIAL,NFAPI_UE_STUB_PNF,NFAPI_UE_STUB_OFFNET,NFAPI_MODE_STANDALONE_PNF}, \
                7 } }, \
+    { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
@@ -320,6 +324,7 @@ typedef struct {
   int mcs;  /* sidelink cmdline MCS override for the SL scheduler; -1 = use built-in default */
   uint8_t        relay_type;    /* SL relay type: 0=none, 1=U2N, 2=U2U (mode-1 relay) */
   uint8_t        remote_ue_id;  /* remote UE id filled into the SRAP header (gNB/relay) */
+  uint8_t        sl_psfch_period; /* SL PSFCH period index: 0=disabled, 1=sl1, 2=sl2, 3=sl4 */
   uint8_t        is_relay_ue;   /* set on the UE that plays the relay role (mode-1) */
   uint8_t        ip_demo;       /* SL demo mode: 0=normal, 1=drb per dest IP, 2=IP hdr decode */
 } softmodem_params_t;

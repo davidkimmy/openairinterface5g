@@ -26,6 +26,7 @@
 #include <math.h>
 #include "assertions.h"
 #include "NR_MAC_UE/nr_ue_sci.h"
+#include "NR_MAC_UE/mac_proto.h"                           // NR_UE_MAC_INST_t, sl_nr_sci_indication_pdu_t (SCI-2 RX)
 #include "common/utils/LOG/log.h"
 #include "executables/nr-uesoftmodem.h"                  // get_nrUE_params (nb_antennas_tx)
 #include "oai_asn1.h"
@@ -127,7 +128,7 @@ void convNRFRIV(int FRIV, int N_subch, long sl_MaxNumPerReserve, uint16_t *Lsc, 
 
 // TS 38.212 8.3/8.4 — total bit length of an SCI (format 1A on PSCCH, or 2A/2B/2C on PSSCH), and side-effect
 // of filling the per-field nbits in sci_pdu. Derived from the resource-pool ASN.1 config. (episys SL port)
-uint32_t nr_sci_size(const NR_SL_ResourcePool_r16_t *sl_res_pool, nr_sci_pdu_t *sci_pdu, const nr_sci_format_t format)
+uint32_t nr_sci_size(const struct NR_SL_ResourcePool_r16 *sl_res_pool, nr_sci_pdu_t *sci_pdu, const nr_sci_format_t format)
 {
   int size = 0;
   switch (format) {
@@ -277,6 +278,44 @@ void nr_pack_sci2(nr_sci_pdu_t *sci2, int sci2_size, nr_sci_format_t format, uin
   }
 }
 
+// episys SL PSFCH port (4c-A): unpack a decoded SCI-2 (format 2A) payload into mac->sci_pdu_rx. Exact
+// inverse of nr_pack_sci2 (MSB-first at sci2_size). Provides harq_feedback/source_id/cast_type the MAC
+// needs to decide the PSFCH HARQ ACK/NACK.
+void extract_pssch_sci_pdu(uint64_t *sci2_payload,
+                           int len,
+                           const struct NR_SL_BWP_ConfigCommon_r16 *sl_bwp,
+                           const struct NR_SL_ResourcePool_r16 *sl_res_pool,
+                           nr_sci_pdu_t *sci_pdu)
+{
+  (void)sl_bwp;
+  int pos = 0, fsize;
+  int sci2_size = nr_sci_size(sl_res_pool, sci_pdu, NR_SL_SCI_FORMAT_2A);
+  if (sci2_size != len)
+    LOG_W(NR_MAC, "SCI2A size %d != indicated len %d\n", sci2_size, len);
+  fsize = 4;  pos += fsize; sci_pdu->harq_pid      = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 1;  pos += fsize; sci_pdu->ndi           = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 2;  pos += fsize; sci_pdu->rv_index      = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 8;  pos += fsize; sci_pdu->source_id     = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 16; pos += fsize; sci_pdu->dest_id       = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 1;  pos += fsize; sci_pdu->harq_feedback = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 2;  pos += fsize; sci_pdu->cast_type     = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+  fsize = 1;  pos += fsize; sci_pdu->csi_req       = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
+}
+
+// episys SL PSFCH port (4c-A): MAC handler for a decoded SCI-2 indication -> populate mac->sci_pdu_rx.
+int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, int cc_id, frame_t frame,
+                                      int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data)
+{
+  (void)mod_id; (void)cc_id; (void)frame; (void)slot; (void)phy_data;
+  nr_sci_pdu_t *sci_pdu = &mac->sci_pdu_rx;
+  const NR_SL_ResourcePool_r16_t *sl_res_pool = mac->sl_rx_res_pool ? mac->sl_rx_res_pool : mac->sl_tx_res_pool;
+  extract_pssch_sci_pdu((uint64_t *)sci->sci_payloadBits, sci->sci_payloadlen, mac->sl_bwp, sl_res_pool, sci_pdu);
+  LOG_D(NR_MAC, "SCI2A rx: harq_pid %d ndi %d RV %d SRC %x DST %x HARQ_FB %d Cast %d CSI %d\n",
+        sci_pdu->harq_pid, sci_pdu->ndi, sci_pdu->rv_index, sci_pdu->source_id, sci_pdu->dest_id,
+        sci_pdu->harq_feedback, sci_pdu->cast_type, sci_pdu->csi_req);
+  return 0;
+}
+
 // TS 38.213 9.3.2 — number of REs occupied by the 2nd-stage SCI on PSSCH (MAC-side, mcs->coderate). (episys SL port)
 int get_NREsci2(const int sci2_alpha, const int sci2_payload_len, const int sci2_beta_offset, const int pssch_numsym,
                 const int pscch_numsym, const int pscch_numrbs, const int l_subch, const int subchannel_size,
@@ -302,7 +341,7 @@ int get_NREsci2(const int sci2_alpha, const int sci2_payload_len, const int sci2
 // (nr_sci_size + nr_pack_sci1/2), computes the SLSCH TB size, and derives PSSCH DMRS symbol positions.
 void fill_pssch_pscch_pdu(sl_nr_tx_config_pscch_pssch_pdu_t *pdu,
                           const NR_SL_BWP_Generic_r16_t *sl_bwp_generic,
-                          const NR_SL_ResourcePool_r16_t *sl_res_pool,
+                          const struct NR_SL_ResourcePool_r16 *sl_res_pool,
                           nr_sci_pdu_t *sci_pdu,
                           nr_sci_pdu_t *sci2_pdu,
                           const nr_sci_format_t format1,
@@ -394,7 +433,7 @@ void fill_pssch_pscch_pdu(sl_nr_tx_config_pscch_pssch_pdu_t *pdu,
 }
 
 // Helper: PSFCH symbols reserved in a PSSCH slot from the pool period + SCI overhead bit. (episys SL port)
-static int sl_num_psfch_symbols(const NR_SL_ResourcePool_r16_t *sl_res_pool, const nr_sci_pdu_t *sci_pdu)
+static int sl_num_psfch_symbols(const struct NR_SL_ResourcePool_r16 *sl_res_pool, const nr_sci_pdu_t *sci_pdu)
 {
   const uint8_t psfch_periods[] = {0, 1, 2, 4};
   long psfch_period = 0;

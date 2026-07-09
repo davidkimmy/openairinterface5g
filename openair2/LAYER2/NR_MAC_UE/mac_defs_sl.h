@@ -26,6 +26,24 @@
 
 #define NR_SBCCH_SL_BCH 0xFF
 
+// episys SL PSFCH port (Stage 3): HARQ round cap + RX->TX feedback slot gap + SL scheduler mutex helpers.
+#define HARQ_ROUND_MAX 4
+// PSFCH feedback is scheduled DURATION_RX_TO_TX slots after the PSSCH RX (fixed UE capability delay).
+// develop defines NR_UE_CAPABILITY_SLOT_RX_TO_TX in common/utils/nr/nr_common.h (pulled via nr_mac.h).
+#define DURATION_RX_TO_TX (NR_UE_CAPABILITY_SLOT_RX_TO_TX)
+
+#define NR_UE_SL_SCHED_LOCK(lock)                                  \
+  do {                                                             \
+    int rc = pthread_mutex_lock(lock);                             \
+    AssertFatal(rc == 0, "error while locking scheduler mutex\n"); \
+  } while (0)
+
+#define NR_UE_SL_SCHED_UNLOCK(lock)                                \
+  do {                                                             \
+    int rc = pthread_mutex_unlock(lock);                           \
+    AssertFatal(rc == 0, "error while locking scheduler mutex\n"); \
+  } while (0)
+
 #define sci_field_t dci_field_t
 
 typedef struct sidelink_sci_format_1a_fields {
@@ -80,6 +98,10 @@ typedef struct SL_ResourcePool_params {
   //This holds the structure from RRC
   NR_SL_ResourcePool_r16_t *respool;
 
+  // episys SL PSFCH port (Stage 3): per-slot PSFCH availability bitmap over the SL slots of the pool;
+  // consulted by slot_has_psfch() to decide whether a slot carries PSFCH resources.
+  BIT_STRING_t phy_sl_bitmap;
+
   //NUM Subchannels in this resource pool
   uint16_t num_subch;
 
@@ -88,6 +110,14 @@ typedef struct SL_ResourcePool_params {
 
   //SCI-1A configuration according to RESPOOL configured.
   sidelink_sci_format_1a_fields_t sci_1a;
+
+  // episys SL port: sensing/resource-selection window params (T_proc / T0 / T1 / T2).
+  uint8_t tproc0;  // T_proc0 in slots
+  uint8_t tproc1;  // T_proc1 in slots
+  uint16_t t0;     // T0 - sensing window
+  uint8_t t1;      // T1 - offset (slots) between resource-selection trigger and selection-window start
+  uint16_t t2;     // T2 - configured end of selection window
+  uint8_t t2min;   // t2min
 
 } SL_ResourcePool_params_t;
 
