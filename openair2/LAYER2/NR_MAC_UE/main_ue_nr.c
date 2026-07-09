@@ -81,7 +81,7 @@ NR_UE_MAC_INST_t* nr_l2_init_ue(NR_UE_RRC_INST_t* rrc_inst, ueinfo_t* ueinfo) {
         // set up PDCP, RLC, MAC
         bool gNB_flag = false;
         nr_pdcp_layer_init(gNB_flag);
-        nr_pdcp_add_drbs(ENB_FLAG_NO, nr_ue_mac_inst->crnti, 0, rbconfig->drb_ToAddModList, 0, NULL, NULL, &rlc_bearer_list);
+        nr_pdcp_add_drbs(ENB_FLAG_NO, nr_ue_mac_inst->crnti, 0, rbconfig->drb_ToAddModList, 0, NULL, NULL, &rlc_bearer_list, false); // noS1 mode, not Remote UE
         nr_rlc_add_drb(nr_ue_mac_inst->crnti, rbconfig->drb_ToAddModList->list.array[0]->drb_Identity, rlc_rbconfig);
         nr_ue_mac_inst->logicalChannelBearer_exist[0] = true;
 

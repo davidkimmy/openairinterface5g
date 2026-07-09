@@ -646,8 +646,11 @@ void nr_rrc_mac_config_grant_type1_req_ue(NR_UE_MAC_INST_t *mac,
     if (sl_ScheduledConfig->choice.setup) {
       if (sl_ScheduledConfig->choice.setup->sl_ConfiguredGrantConfigList_r16) {
         struct NR_SL_ConfiguredGrantConfigList_r16 *sl_ConfiguredGrantConfigList = sl_ScheduledConfig->choice.setup->sl_ConfiguredGrantConfigList_r16;
+        int grant_count = sl_ConfiguredGrantConfigList->sl_ConfiguredGrantConfigToAddModList_r16 ?
+                          sl_ConfiguredGrantConfigList->sl_ConfiguredGrantConfigToAddModList_r16->list.count : 0;
+
         int cg1_periodValues[10] = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000};  // (ms)
-        for(int i = 0; i < sl_ConfiguredGrantConfigList->sl_ConfiguredGrantConfigToAddModList_r16->list.count; i++) {
+        for(int i = 0; i < grant_count; i++) {
           struct NR_SL_ConfiguredGrantConfig_r16 *sl_CGConfig = sl_ConfiguredGrantConfigList->sl_ConfiguredGrantConfigToAddModList_r16->list.array[i];
           uint8_t sl_PeriodCG1_index = sl_CGConfig->sl_PeriodCG_r16->choice.sl_PeriodCG1_r16;
           mac->sl_cg_per_bwp.sl_cg[i]->sl_period_cg = cg1_periodValues[sl_PeriodCG1_index] << mu; // slots
@@ -657,6 +660,7 @@ void nr_rrc_mac_config_grant_type1_req_ue(NR_UE_MAC_INST_t *mac,
           mac->sl_cg_per_bwp.sl_cg[i]->mu_sl = 1;
           mac->sl_cg_per_bwp.sl_cg[i]->mu_ul = 1;
           mac->sl_cg_per_bwp.sl_cg[i]->Tc = compute_Tc();
+          mac->sl_cg_per_bwp.sl_cg[i]->type = CG_TYPE_1;  // CRITICAL: Set the grant type!
           mac->sl_cg_per_bwp.sl_cg[i]->active = true;
           mac->sl_cg_per_bwp.sl_cg[i]->cg_id = sl_CGConfig->sl_ConfigIndexCG_r16;
           mac->sl_cg_per_bwp.sl_cg[i]->sl_priority = sl_CGConfig->sl_CG_MaxTransNumList_r16->list.array[0]->sl_Priority_r16;
@@ -696,7 +700,15 @@ int nr_rrc_mac_config_req_sl_dedicated_config(module_id_t module_id,
     NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig = sl_PHY_MAC_RLC_Config->sl_RLC_BearerToAddModList_r16->list.count > 0 ?
                                                         sl_PHY_MAC_RLC_Config->sl_RLC_BearerToAddModList_r16->list.array[0] : NULL;
     NR_SetupRelease_SL_ScheduledConfig_r16_t *sl_ScheduledConfig = sl_PHY_MAC_RLC_Config->sl_ScheduledConfig_r16;
-    nr_rrc_mac_config_grant_type1_req_ue(mac, sl_ScheduledConfig, sl_RLC_BearerConfig, mu);
+    if (sl_ScheduledConfig && sl_RLC_BearerConfig) {
+      nr_rrc_mac_config_grant_type1_req_ue(mac, sl_ScheduledConfig, sl_RLC_BearerConfig, mu);
+    } else {
+      LOG_E(NR_MAC, "[CG_SETUP] ERROR: sl_ScheduledConfig=%p, sl_RLC_BearerConfig=%p\n",
+            sl_ScheduledConfig, sl_RLC_BearerConfig);
+    }
+  } else {
+    LOG_D(NR_MAC, "[CG_SETUP] Not Relay UE Mode 1 (sl_mode=%d, relay_type=%d)\n",
+          get_softmodem_params()->sl_mode, get_softmodem_params()->relay_type);
   }
   // Only one entry supported in rel16.
   // Carrier freq config used for Sidelink

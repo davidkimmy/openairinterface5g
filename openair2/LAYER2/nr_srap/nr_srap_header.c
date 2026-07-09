@@ -50,7 +50,7 @@ void create_header(uint8_t dc_bit, relay_type_t r_type, uint8_t bearer_id, int8_
         /* 1st octet */
         u2n_header->octet1 = 0;
         u2n_header->octet1 |= (dc_bit << 7); /* D/C bit 7=1 for data, 2 R bits 5-6 = 0 */
-        u2n_header->octet1 |= (bearer_id & 0x1F);
+        u2n_header->octet1 |= (bearer_id & SRAP_HDR_BEARER_ID_MASK);
 
         /* 2nd octet */
         u2n_header->octet2 = dest_ue_id;
@@ -60,7 +60,7 @@ void create_header(uint8_t dc_bit, relay_type_t r_type, uint8_t bearer_id, int8_
         /* 1st octet */
         u2u_header->octet1 = 0;
         u2u_header->octet1 |= (dc_bit << 7); /* D/C bit 7=1 for data, 2 R bits 5-6 = 0 */
-        u2u_header->octet1 |= (bearer_id & 0x1F);
+        u2u_header->octet1 |= (bearer_id & SRAP_HDR_BEARER_ID_MASK);
 
         /* 2nd octet */
         u2u_header->octet2 = src_ue_id;

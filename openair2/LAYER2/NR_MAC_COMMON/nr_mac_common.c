@@ -529,7 +529,17 @@ NR_tda_info_t get_ul_tda_info(const NR_UE_UL_BWP_t *ul_bwp, int controlResourceS
   AssertFatal(scs >= 0 &&  scs < 5, "Subcarrier spacing indicatior %d invalid value\n", scs);
   int j = scs == 0 ? 1 : scs;
   if (tdalist) {
-    AssertFatal(tda_index < tdalist->list.count, "TDA index from DCI %d exceeds TDA list array size %d\n", tda_index, tdalist->list.count);
+    /* A DCI whose TDA index is outside the configured UL TDA list (e.g. an empty
+       list count=0, or a DCI decoded with a stale/misaligned TDA field) is a
+       RECOVERABLE error, not fatal: return the zero-initialized tda_info so the
+       caller's `nrOfSymbols == 0` check drops the grant (matches upstream OAI,
+       which replaced this AssertFatal with a valid_tda early-return). Previously
+       this aborted the whole UE (observed on the Relay UE: count=0 -> SIGABRT). */
+    if (tda_index >= tdalist->list.count) {
+      LOG_E(NR_MAC, "TDA index from DCI %d exceeds UL TDA list array size %d - dropping grant\n",
+            tda_index, tdalist->list.count);
+      return tda_info;
+    }
     NR_PUSCH_TimeDomainResourceAllocation_t *tda = tdalist->list.array[tda_index];
     tda_info.mapping_type = tda->mappingType;
     // As described in 38.331, when the field is absent the UE applies the value 1 when PUSCH SCS is 15/30KHz

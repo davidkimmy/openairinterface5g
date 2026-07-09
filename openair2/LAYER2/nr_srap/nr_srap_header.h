@@ -13,6 +13,16 @@ Email ID: ejaz.ahmed@applied.co
 
 
 // 38.351 6.2.2 SRAP data pdu: 2 bytes hdr for U2N, 3 bytes hdr for U2U
+//
+// U2N octet1 layout: [ D/C (bit 7) | Reserved (bits 6-5) | Bearer ID (bits 4-0) ]
+// U2N octet2       : Remote UE ID (1-255; 0 is not a valid Remote UE ID)
+#define SRAP_HDR_DC_MASK        0x80  // D/C bit: 1 = data (SRAP payload), 0 = control
+#define SRAP_HDR_RESERVED_MASK  0x60  // Reserved bits 6-5, must be 0 in a valid U2N header
+#define SRAP_HDR_BEARER_ID_MASK 0x1F  // Bearer ID field (lower 5 bits)
+#define SRAP_REMOTE_UE_ID_MIN   0x01  // Minimum valid Remote UE ID
+#define SRAP_REMOTE_UE_ID_MAX   0xFF  // Maximum valid Remote UE ID
+#define SRAP_U2N_HDR_LEN        2     // U2N SRAP data PDU header length (octet1 + octet2)
+
 // U2N Header (2 octets)
 typedef struct U2NHeader {
     uint8_t octet1;

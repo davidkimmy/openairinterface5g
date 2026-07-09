@@ -1442,9 +1442,24 @@ static void handle_sl_bch(module_id_t module_id,uint8_t *const sl_mib,
   sl_mac->decoded_slot = slot;
 
 #define NR_SBCCH_SL_BCH 5
-  if (!mac->is_synced_sl)
+  if (!mac->is_synced_sl) {
     nr_mac_rrc_sl_mib_ind(module_id, 0, 0, frame_rx, slot_rx, NR_SBCCH_SL_BCH, sl_mib, len, rx_slss_id);
-  mac->is_synced_sl = true;
+    mac->is_synced_sl = true;
+
+    /* Remote UE: trigger network registration via relay after sidelink sync
+       Remote UE is identified by: relay_type > 0 AND is_relay_ue == 0 */
+    if (get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue) {
+      MessageDef *message_p;
+      protocol_ctxt_t ctxt;
+      PROTOCOL_CTXT_SET_BY_MODULE_ID(&ctxt, module_id, GNB_FLAG_NO, NOT_A_RNTI, frame, 0, 0);
+      LOG_D(NR_MAC, "[Remote UE] Sidelink synced (relay_type=%d, is_relay_ue=%d), triggering RRCSetupRequest via relay\n",
+            get_softmodem_params()->relay_type, get_softmodem_params()->is_relay_ue);
+      message_p = itti_alloc_new_message(TASK_RRC_NRUE, 0, NR_RRC_SETUP_REQ);
+      NR_RRC_SETUP_REQ(message_p).frame = ctxt.frame;
+      NR_RRC_SETUP_REQ(message_p).slot = ctxt.subframe;
+      itti_send_msg_to_task(TASK_RRC_NRUE, GNB_MODULE_ID_TO_INSTANCE(0), message_p);
+    }
+  }
 
   return ;
 }

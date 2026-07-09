@@ -220,6 +220,7 @@ typedef struct protocol_ctxt_s {
   sub_frame_t subframe;      /*!< \brief  LTE sub frame number.*/
   eNB_index_t eNB_index;     /*!< \brief  valid for UE indicating the index of connected eNB(s)      */
   bool        brOption;
+  uint8_t     remote_ue_id;  /*!< \brief  For L2 relay: Remote UE ID when routing via Relay UE */
 } protocol_ctxt_t;
 // warning time hardcoded
 #define PROTOCOL_CTXT_TIME_MILLI_SECONDS(CtXt_h) ((CtXt_h)->frame*10+(CtXt_h)->subframe)

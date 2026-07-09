@@ -25,8 +25,9 @@ safe_ssh() {
         # Execute locally
         bash -c "$cmd"
     else
-        # Execute remotely
-        ssh "$host" "$cmd"
+        # Execute remotely. BatchMode + ConnectTimeout so an unreachable or
+        # auth-prompting host fails fast (3s) instead of blocking the script.
+        ssh -o BatchMode=yes -o ConnectTimeout=3 "$host" "$cmd"
     fi
 }
 
@@ -1558,7 +1559,7 @@ run_gNB_cmd() {
     # Get config path using helper function
     local config_path=$(get_gnb_config_path $sl_mode $host_name 0)
 
-    [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --ip-demo 1 --sl-mode 1" || sl_relay_tag=""
+    [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --sl-mode 1" || sl_relay_tag=""
 
     if [[ $test_type == "rfsim" ]]; then
         if [[ $host_name == 'local' ]]; then
@@ -1720,14 +1721,14 @@ run_nearby_cmd() {
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
-                            -O $CONF_PATH/sl_ue1.conf \
+                            -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf \
+                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
@@ -1735,7 +1736,7 @@ run_nearby_cmd() {
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                         sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf \
+                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
                         -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 $ext_clock_flag $mcs \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
         fi
@@ -2044,7 +2045,7 @@ run_gNB_cmd_with_noise() {
     : ${ploss:=5}
     : ${mcs_value:=28}
 
-    [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --ip-demo 1 --sl-mode 1" || sl_relay_tag=""
+    [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --sl-mode 1" || sl_relay_tag=""
 
     # Create BLER config with fixed MCS settings
     create_bler_config $sl_mode $host_name

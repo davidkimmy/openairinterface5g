@@ -1169,12 +1169,37 @@ void nr_ue_process_mac_sl_pdu(int module_idP,
                          sl_sch_subheader->SRC,
                          sl_sch_subheader->DST);
         break;
+      case SL_SCH_LCID_SCCH_RRC_SL_RLC0: // SL-SRB0 for CCCH messages (RRCSetupRequest, RRCSetupComplete)
+      case SL_SCH_LCID_SCCH_RRC_SL_RLC1: // SL-SRB1 for DCCH messages (RRCSetup, RRCReconfiguration, etc.)
+        {
+          if (!get_mac_len(pduP, pdu_len, &mac_len, &mac_subheader_len))
+            return;
+
+          // SL-RLC0/1 map to SL-SRB0/1 respectively
+          uint8_t sl_srb = rx_lcid - SL_SCH_LCID_SCCH_RRC_SL_RLC0;
+          LOG_D(NR_MAC, "%4d.%2d : SLSCH -> LCID %d (SL-SRB%d) %d bytes with subheader %d\n",
+                frame, slot, rx_lcid, sl_srb, mac_len, mac_subheader_len);
+
+          // Deliver to RLC using receiver's own src_id as RNTI
+          mac_rlc_data_ind(module_idP,
+                           mac->src_id,
+                           0,
+                           frame,
+                           ENB_FLAG_NO,
+                           MBMS_FLAG_NO,
+                           sl_srb,
+                           (char *) (pduP + mac_subheader_len),
+                           mac_len,
+                           1,
+                           NULL,
+                           sl_sch_subheader->SRC,
+                           sl_sch_subheader->DST);
+          break;
+        }
       case SL_SCH_LCID_SCCH_PC5_NOT_PROT:
       case SL_SCH_LCID_SCCH_PC5_PROT:
       case SL_SCH_LCID_SCCH_PC5_RRC:
       case SL_SCH_LCID_20_55:
-      case SL_SCH_LCID_SCCH_RRC_SL_RLC0:
-      case SL_SCH_LCID_SCCH_RRC_SL_RLC1:
       case SL_SCH_LCID_SCCH_SL_DISCOVERY:
       case SL_SCH_LCID_SL_INTER_UE_COORD_REQ:
       case SL_SCH_LCID_SL_INTER_UE_COORD_INFO:

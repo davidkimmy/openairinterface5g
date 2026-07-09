@@ -3734,10 +3734,7 @@ void nr_ue_process_mac_pdu(nr_downlink_indication_t *dl_info,
         #endif
         */
 
-        if (ta == 31)
-          LOG_D(NR_MAC, "[%d.%d] Received TA_COMMAND %u TAGID %u CC_id %d TA total %d\n", frameP, slot, ta, tag, CC_id, ul_time_alignment->ta_total);
-        else
-          LOG_I(NR_MAC, "[%d.%d] Received TA_COMMAND %u TAGID %u CC_id %d TA total %d\n", frameP, slot, ta, tag, CC_id, ul_time_alignment->ta_total);
+        LOG_D(NR_MAC, "[%d.%d] Received TA_COMMAND %u TAGID %u CC_id %d TA total %d\n", frameP, slot, ta, tag, CC_id, ul_time_alignment->ta_total);
 
         break;
       case DL_SCH_LCID_CON_RES_ID:

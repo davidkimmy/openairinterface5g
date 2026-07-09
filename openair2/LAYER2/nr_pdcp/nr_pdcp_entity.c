@@ -121,6 +121,7 @@ static void nr_pdcp_entity_recv_pdu(nr_pdcp_entity_t *entity,
       entity->stats.rxpdu_dd_bytes += size;
 
 
+      return;  // Stop processing - do not deliver corrupted data to upper layers
     }
   }
 

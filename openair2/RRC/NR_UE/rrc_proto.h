@@ -227,6 +227,10 @@ void extract_nr_sl_PSSCH_Config(NR_SL_PSSCH_Config_r16_t *recvd_sl_PSSCH_Config,
 void extract_nr_sl_PSFCH_Config(NR_SL_PSFCH_Config_r16_t *recvd_sl_PSFCH_Config,
                                 NR_SL_PSFCH_Config_r16_t *targeted_sl_PSFCH_Config);
 
+NR_SL_RLC_BearerConfig_r16_t *get_SRB_RLC_BearerConfig_sl(long priority,
+                                                          e_NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16 bucketSizeDuration,
+                                                          uint8_t srb_id);
+
 int32_t nr_rrc_ue_establish_srb1(module_id_t ue_mod_idP,
                                  frame_t frameP,
                                  uint8_t remote_ue_index,

@@ -114,7 +114,20 @@ void process_CellGroup(NR_CellGroupConfig_t *CellGroup, NR_UE_info_t *UE)
      //process_phr_Config(sched_ctrl,mac_CellGroupConfig->phr_Config);
    }
 
-   nr_mac_prepare_ra_ue(RC.nrmac[0], UE->rnti, CellGroup);
+   /* Only prepare RA process if reconfigurationWithSync is present (e.g., handover/initial setup)
+      For regular bearer reconfigurations on already-connected UEs, skip this to avoid
+      interfering with ongoing MAC PDU processing */
+   bool hasReconfigWithSync = CellGroup->spCellConfig &&
+                               CellGroup->spCellConfig->reconfigurationWithSync &&
+                               CellGroup->spCellConfig->reconfigurationWithSync->rach_ConfigDedicated != NULL;
+
+   if (hasReconfigWithSync || UE->CellGroup == NULL) {
+     // Initial setup or reconfiguration with sync - need RA process
+     nr_mac_prepare_ra_ue(RC.nrmac[0], UE->rnti, CellGroup);
+   } else {
+     LOG_D(NR_MAC, "Skipping RA process setup for UE %04x - no reconfigurationWithSync (regular bearer update)\n", UE->rnti);
+   }
+
    process_rlcBearerConfig(CellGroup->rlc_BearerToAddModList, CellGroup->rlc_BearerToReleaseList, &UE->UE_sched_ctrl);
 }
 

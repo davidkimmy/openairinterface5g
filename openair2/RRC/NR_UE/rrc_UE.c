@@ -74,8 +74,16 @@
 #include "SIMULATION/TOOLS/sim.h" // for taus
 
 #include "nr_nas_msg_sim.h"
+#include "LAYER2/nr_srap/nr_srap_header.h"
+#include "LAYER2/nr_srap/nr_srap_oai_api.h"
+
+/* RRC transaction id used by the Relay UE for a peer sidelink RRCReconfiguration
+   sent to a Remote UE. The Remote UE uses it to tell peer sidelink RRC (skip
+   reply) apart from cellular RRC from the gNB (reply via SRAP). */
+#define SL_PEER_RRC_RECONFIG_XID 3
 
 NR_UE_RRC_INST_t *NR_UE_rrc_inst;
+
 /* NAS Attach request with IMSI */
 static const char  nr_nas_attach_req_imsi[] = {
   0x07, 0x41,
@@ -220,6 +228,8 @@ static void nr_rrc_addmod_drbs(int rnti,
         nr_rlc_add_drb(rnti, drb->drb_Identity, bearer);
         bool relay_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
         if (relay_enabled) {
+          // Relay UE DRB2: Standard RLC entity, routing to SRAP happens in deliver_sdu()
+          LOG_D(NR_RRC, "[Relay UE] Configuring DRB 2 for relay forwarding (Uu↔PC5)\n");
           nr_rlc_add_drb(rnti, drb->drb_Identity + 1, bearer);
         }
       }
@@ -270,7 +280,7 @@ int8_t nr_rrc_ue_process_rrcReconfiguration(const module_id_t module_id, NR_RRCR
     case NR_RRCReconfiguration__criticalExtensions_PR_rrcReconfiguration:
       if(rrcReconfiguration->criticalExtensions.choice.rrcReconfiguration->radioBearerConfig != NULL){
         if(NR_UE_rrc_inst[module_id].radio_bearer_config == NULL){
-          NR_UE_rrc_inst[module_id].radio_bearer_config = rrcReconfiguration->criticalExtensions.choice.rrcReconfiguration->radioBearerConfig;                
+          NR_UE_rrc_inst[module_id].radio_bearer_config = rrcReconfiguration->criticalExtensions.choice.rrcReconfiguration->radioBearerConfig;
         }else{
           if ( LOG_DEBUGFLAG(DEBUG_ASN1) ) {
             struct NR_RadioBearerConfig *RadioBearerConfig = rrcReconfiguration->criticalExtensions.choice.rrcReconfiguration->radioBearerConfig;
@@ -821,7 +831,11 @@ static int8_t nr_rrc_ue_decode_NR_BCCH_DL_SCH_Message(module_id_t module_id,
   NR_UE_RRC_SI_INFO *SI_info = &NR_UE_rrc_inst[module_id].SInfo[gNB_index];
   VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_UE_DECODE_BCCH, VCD_FUNCTION_IN);
 
-  nr_rrc_set_sub_state(module_id, RRC_SUB_STATE_IDLE_RECEIVING_SIB_NR);
+  /* Only set IDLE substate if UE is actually in IDLE state.
+   * Relay UEs in CONNECTED state may still receive PC5 SIBs as sync reference. */
+  if (NR_UE_rrc_inst[module_id].nrRrcState == RRC_STATE_IDLE_NR) {
+    nr_rrc_set_sub_state(module_id, RRC_SUB_STATE_IDLE_RECEIVING_SIB_NR);
+  }
 
   asn_dec_rval_t dec_rval = uper_decode_complete(NULL,
                                                  &asn_DEF_NR_BCCH_DL_SCH_Message,
@@ -847,6 +861,18 @@ static int8_t nr_rrc_ue_decode_NR_BCCH_DL_SCH_Message(module_id_t module_id,
   if (bcch_message->message.present == NR_BCCH_DL_SCH_MessageType_PR_c1) {
     switch (bcch_message->message.choice.c1->present) {
       case NR_BCCH_DL_SCH_MessageType__c1_PR_systemInformationBlockType1:
+        /* A CONNECTED UE (e.g. a relay acting as sync reference) keeps receiving/decoding
+         * SIB1. Do NOT reprocess it: SEQUENCE_free()'ing the old SI_info->sib1 below would
+         * dangle mac->scc_SIB, which aliases the old sib1->servingCellConfigCommon and is
+         * still dereferenced by the UL scheduler thread (is_nr_UL_slot() ->
+         * tdd_UL_DL_ConfigurationCommon) -> use-after-free / SIGSEGV. The current cell
+         * config is unchanged, so just discard the freshly decoded message and keep the
+         * live SIB1 intact. */
+        if (nr_rrc_get_state(module_id) > RRC_STATE_IDLE_NR) {
+          SEQUENCE_free(&asn_DEF_NR_BCCH_DL_SCH_Message, (void *)bcch_message, 1);
+          VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_UE_DECODE_BCCH, VCD_FUNCTION_OUT);
+          return 0;
+        }
         if(SI_info->sib1 != NULL)
           SEQUENCE_free(&asn_DEF_NR_SIB1, (void *)SI_info->sib1, 1);
         NR_SIB1_t *sib1 = bcch_message->message.choice.c1->choice.systemInformationBlockType1;
@@ -867,6 +893,8 @@ static int8_t nr_rrc_ue_decode_NR_BCCH_DL_SCH_Message(module_id_t module_id,
         nr_rrc_set_sib1_timers_and_constants(&NR_UE_rrc_inst[module_id].timers_and_constants, sib1);
         // take ServingCellConfigCommon and configure L1/L2
         NR_UE_rrc_inst[module_id].servingCellConfigCommonSIB = sib1->servingCellConfigCommon;
+        /* Reached only in RRC IDLE (CONNECTED returns early above): configure MAC from
+         * SIB1 and trigger initial RA. */
         nr_rrc_mac_config_req_sib1(module_id, 0, sib1->si_SchedulingInfo, sib1->servingCellConfigCommon);
         nr_rrc_ue_generate_ra_msg(module_id, gNB_index);
         break;
@@ -1050,12 +1078,20 @@ static void rrc_ue_generate_RRCSetupComplete(
   const char *nas_msg;
   int   nas_msg_length;
 
+  bool is_remote_ue = (get_softmodem_params()->relay_type == 1 &&
+                       get_softmodem_params()->is_relay_ue == 0);
+
   if (get_softmodem_params()->sa) {
     as_nas_info_t initialNasMsg;
     nr_ue_nas_t *nas = get_ue_nas_info(ctxt_pP->module_id);
     generateRegistrationRequest(&initialNasMsg, nas);
     nas_msg = (char*)initialNasMsg.data;
     nas_msg_length = initialNasMsg.length;
+
+    if (is_remote_ue) {
+      LOG_D(NR_RRC, "[REMOTE_UE_MSG] Generated Registration Request for Remote UE (RNTI 0x%04lx): %d bytes\n",
+            (unsigned long)ctxt_pP->rntiMaybeUEid, nas_msg_length);
+    }
   } else {
     nas_msg         = nr_nas_attach_req_imsi;
     nas_msg_length  = sizeof(nr_nas_attach_req_imsi);
@@ -1077,7 +1113,25 @@ static void rrc_ue_generate_RRCSetupComplete(
 
   //for (int i=0;i<size;i++) printf("%02x ",buffer[i]);
   //printf("\n");
-  nr_pdcp_data_req_srb(ctxt_pP->rntiMaybeUEid, DCCH, nr_rrc_mui++, size, buffer, deliver_pdu_srb_rlc, NULL, UU);
+
+  // Remote UE: Send RRCSetupComplete via PC5 using SRAP on SL-SRB1 (per 3GPP standard)
+  if (is_remote_ue) {
+    LOG_D(NR_RRC, "[REMOTE_UE_MSG] TX RRCSetupComplete with embedded Registration Request from Remote UE (RNTI 0x%04lx): %d bytes\n",
+          (unsigned long)ctxt_pP->rntiMaybeUEid, size);
+    LOG_D(NR_RRC, "[Remote UE%d] Sending RRCSetupComplete (%d bytes) via SRAP on SL-SRB1\n",
+          ctxt_pP->module_id, size);
+
+    /* Use SRAP API which will add N2U header [remote_ue_id][bearer_id] automatically
+       Send on rb_id=1 (SL-SRB1) as per 3GPP standard for post-setup signaling */
+    protocol_ctxt_t ctxt = *ctxt_pP;  // Copy context
+    nr_srap_data_req_srb(&ctxt, 1, size, (char*)buffer, srap_deliver_pdu_srb, nr_rrc_mui++, PC5);
+
+    LOG_D(NR_RRC, "[Remote UE%d] RRCSetupComplete sent: RRC → SRAP (adds N2U header) → PC5 SL-SRB1 (LCID 57)\n",
+          ctxt_pP->module_id);
+  } else {
+    // Normal UE or Relay UE: Use standard PDCP path via Uu
+    nr_pdcp_data_req_srb(ctxt_pP->rntiMaybeUEid, DCCH, nr_rrc_mui++, size, buffer, deliver_pdu_srb_rlc, NULL, UU);
+  }
 }
 
 int8_t nr_rrc_ue_decode_ccch( const protocol_ctxt_t *const ctxt_pP, const NR_SRB_INFO *const Srb_info, const uint8_t gNB_index ){
@@ -1380,7 +1434,22 @@ void nr_rrc_ue_process_securityModeCommand(const protocol_ctxt_t *const ctxt_pP,
     //TODO the SecurityModeCommand message needs to pass the integrity protection check
     // for the UE to declare AS security to be activated
     ue_rrc->as_security_activated = true;
-    nr_pdcp_data_req_srb(ctxt_pP->rntiMaybeUEid, DCCH, nr_rrc_mui++, (enc_rval.encoded + 7) / 8, buffer, deliver_pdu_srb_rlc, NULL, UU);
+
+    // Remote UE: Use SRAP bypass path for SecurityModeComplete
+    bool is_remote_ue = (get_softmodem_params()->relay_type == 1 &&
+                         get_softmodem_params()->is_relay_ue == 0);
+
+    if (is_remote_ue) {
+      // Remote UE: Send via SRAP over PC5
+      int size = (enc_rval.encoded + 7) / 8;
+      protocol_ctxt_t ctxt = *ctxt_pP;  // Copy context
+      nr_srap_data_req_srb(&ctxt, 1, size, (char*)buffer, srap_deliver_pdu_srb, nr_rrc_mui++, PC5);
+      LOG_D(NR_RRC, "[Remote UE%d] securityModeComplete sent: RRC → SRAP (adds N2U header) → PC5 SL-SRB1 (LCID 57)\n",
+            ctxt_pP->module_id);
+    } else {
+      // Normal UE or Relay UE: Use standard PDCP path via Uu
+      nr_pdcp_data_req_srb(ctxt_pP->rntiMaybeUEid, DCCH, nr_rrc_mui++, (enc_rval.encoded + 7) / 8, buffer, deliver_pdu_srb_rlc, NULL, UU);
+    }
   } else
     LOG_W(NR_RRC,"securityModeCommand->criticalExtensions.present (%d) != NR_SecurityModeCommand__criticalExtensions_PR_securityModeCommand\n",
           securityModeCommand->criticalExtensions.present);
@@ -1423,6 +1492,43 @@ void nr_rrc_ue_process_securityModeCommand(const protocol_ctxt_t *const ctxt_pP,
      //printf("\n");
      /*UE_rrc_inst[ue_mod_idP].Srb0[Idx].Tx_buffer.Payload[i] = taus()&0xff;
      UE_rrc_inst[ue_mod_idP].Srb0[Idx].Tx_buffer.payload_size =i; */
+  }
+}
+
+//-----------------------------------------------------------------------------
+void nr_rrc_ue_generate_RRCSetupRequest_sl(module_id_t module_id, const uint8_t gNB_index) {
+   uint8_t i = 0, rv[6];
+
+   LOG_D(NR_RRC, "[Remote UE] nr_rrc_ue_generate_RRCSetupRequest_sl called for module %d\n", module_id);
+
+   if(NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.payload_size == 0) {
+     /* Generate RRCSetupRequest for PC5 transmission (same as Uu, just different buffer)
+        Generate random byte stream for UE identity */
+     for (i = 0; i < 6; i++) {
+#ifdef SMBV
+       // if SMBV is configured the contention resolution needs to be fix for the connection procedure to succeed
+       rv[i] = i;
+#else
+       rv[i] = taus() & 0xff;
+#endif
+       LOG_T(NR_RRC, "%x.", rv[i]);
+     }
+
+     LOG_T(NR_RRC, "\n");
+     NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.payload_size =
+       do_RRCSetupRequest(
+         module_id,
+         (uint8_t *)NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.Payload,
+         sizeof(NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.Payload),
+         rv);
+     LOG_D(NR_RRC, "[Remote UE %d] : Logical Channel UL-CCCH (SL-SRB0), Generating RRCSetupRequest (bytes %d, gNB %d) for PC5\n",
+           module_id, NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.payload_size, gNB_index);
+
+     for (i=0; i<NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.payload_size; i++) {
+       LOG_T(NR_RRC, "%x.", NR_UE_rrc_inst[module_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.Payload[i]);
+     }
+
+     LOG_T(NR_RRC, "\n");
   }
 }
 
@@ -1639,6 +1745,12 @@ void nr_rrc_ue_process_RadioBearerConfig_sl(const protocol_ctxt_t *const ctxt_pP
  {
   long SRB_id;
 
+  bool is_remote_ue = (get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue);
+  LOG_D(NR_RRC, "[PROCESS_RADIOBEARERCONFIG_SL] ue_id=0x%04lx, is_remote_ue=%d, has_drb_list=%d, has_srb_list=%d\n",
+        ctxt_pP->rntiMaybeUEid, is_remote_ue,
+        radioBearerConfig->drb_ToAddModList != NULL,
+        radioBearerConfig->srb_ToAddModList != NULL);
+
   if(radioBearerConfig->srb3_ToRelease != NULL){
     if(*radioBearerConfig->srb3_ToRelease == true){
       //TODO (release the PDCP entity and the srb-Identity of the SRB3.)
@@ -1799,6 +1911,32 @@ void nr_rrc_ue_process_RadioBearerConfig_sl(const protocol_ctxt_t *const ctxt_pP
 
      for (cnt = 0; cnt < radioBearerConfig->drb_ToAddModList->list.count; cnt++) {
        DRB_id = radioBearerConfig->drb_ToAddModList->list.array[cnt]->drb_Identity;
+       NR_DRB_ToAddMod_t *drb_config = radioBearerConfig->drb_ToAddModList->list.array[cnt];
+
+       // Check for DRB 2 reestablishment at Relay UE (SRAP forwarding bearer)
+       if (DRB_id == 2 && drb_config->reestablishPDCP && *drb_config->reestablishPDCP == NR_DRB_ToAddMod__reestablishPDCP_true) {
+         LOG_D(NR_RRC, "[Relay UE] Received DRB 2 reestablishment command from gNB\n");
+
+         // Find the RLC bearer configuration for DRB 2
+         struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer_list = NR_UE_rrc_inst[ctxt_pP->module_id].cell_group_config->rlc_BearerToAddModList;
+         if (rlc_bearer_list != NULL) {
+           for (int j = 0; j < rlc_bearer_list->list.count; j++) {
+             NR_RLC_BearerConfig_t *rlc_bearer = rlc_bearer_list->list.array[j];
+             if (rlc_bearer->servedRadioBearer != NULL &&
+                 rlc_bearer->servedRadioBearer->present == NR_RLC_BearerConfig__servedRadioBearer_PR_drb_Identity &&
+                 rlc_bearer->servedRadioBearer->choice.drb_Identity == DRB_id) {
+
+               // Reconfigure RLC entity for DRB 2 (standard entity, SRAP routing in deliver_sdu)
+               nr_rlc_add_drb(NR_UE_rrc_inst[ctxt_pP->module_id].rnti, DRB_id, rlc_bearer);
+               LOG_D(NR_RRC, "[Relay UE] DRB 2 RLC entity reset complete (rx_next reset to 0)\n");
+               break;
+             }
+           }
+         } else {
+           LOG_W(NR_RRC, "[Relay UE] Cannot find RLC bearer configuration for DRB 2 reestablishment\n");
+         }
+       }
+
        if (NR_UE_rrc_inst[ctxt_pP->module_id].DRB_config[gNB_index][DRB_id-1]) {
 	 memcpy(NR_UE_rrc_inst[ctxt_pP->module_id].DRB_config[gNB_index][DRB_id-1],
 		 radioBearerConfig->drb_ToAddModList->list.array[cnt], sizeof(NR_DRB_ToAddMod_t));
@@ -1842,7 +1980,8 @@ void nr_rrc_ue_process_RadioBearerConfig_sl(const protocol_ctxt_t *const ctxt_pP
                       ue_rrc->cipheringAlgorithm | (ue_rrc->integrityProtAlgorithm << 4),
                       kUPenc,
                       kUPint,
-                      ue_rrc->cell_group_config->rlc_BearerToAddModList);
+                      ue_rrc->cell_group_config->rlc_BearerToAddModList,
+                      false); // UE side: not a Remote UE from gNB perspective
      // Refresh DRBs
      nr_rrc_addmod_drbs(ctxt_pP->rntiMaybeUEid,
                         radioBearerConfig->drb_ToAddModList,
@@ -2637,7 +2776,15 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
 
      if (ie->radioBearerConfig != NULL) {
        LOG_I(NR_RRC, "radio Bearer Configuration is present\n");
-       nr_rrc_ue_process_RadioBearerConfig(ctxt_pP, gNB_index, ie->radioBearerConfig);
+
+       /* Remote UE: Skip Uu radio bearer configuration - use only SL-DRB entities
+          Remote UE operates over PC5 sidelink and should not apply cellular bearer config */
+       bool is_remote_ue = get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue;
+       if (is_remote_ue) {
+         LOG_D(NR_RRC, "[Remote UE] Skipping Uu radioBearerConfig - using SL-DRB entities for PC5 transmission\n");
+       } else {
+         nr_rrc_ue_process_RadioBearerConfig(ctxt_pP, gNB_index, ie->radioBearerConfig);
+       }
      }
 
      /* Check if there is dedicated NAS information to forward to NAS */
@@ -2678,7 +2825,16 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
  void nr_rrc_ue_generate_RRCReconfigurationComplete( const protocol_ctxt_t *const ctxt_pP, const uint8_t gNB_index, const uint8_t Transaction_id ) {
    uint8_t buffer[32], size;
    bool is_remote_ue = get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue;
-   if (is_remote_ue) return;
+
+   /* Remote UE: Distinguish between peer sidelink RRC and cellular RRC
+      xid=3: Peer sidelink RRCReconfiguration from Relay UE (SL config) → Skip reply
+      xid!=3: Cellular RRCReconfiguration from gNB via SRAP → Send reply via SRAP */
+   if (is_remote_ue && Transaction_id == SL_PEER_RRC_RECONFIG_XID) {
+     LOG_D(NR_RRC, "[Remote UE%d] Received peer sidelink RRCReconfiguration (xid=3) - Skipping RRCReconfigurationComplete (no reply to peer)\n",
+           ctxt_pP->module_id);
+     return;
+   }
+
    size = do_NR_RRCReconfigurationComplete(ctxt_pP, buffer, sizeof(buffer), Transaction_id);
    LOG_D(NR_RRC,PROTOCOL_RRC_CTXT_UE_FMT" Logical Channel UL-DCCH (SRB1), Generating RRCReconfigurationComplete (bytes %d, gNB_index %d)\n",
 	 PROTOCOL_RRC_CTXT_UE_ARGS(ctxt_pP), size, gNB_index);
@@ -2691,7 +2847,19 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
 	 nr_rrc_mui,
 	 UE_MODULE_ID_TO_INSTANCE(ctxt_pP->module_id),
 	 DCCH);
-   nr_pdcp_data_req_srb(ctxt_pP->rntiMaybeUEid, DCCH, nr_rrc_mui++, size, buffer, deliver_pdu_srb_rlc, NULL, UU);
+
+   // Remote UE: Send cellular RRCReconfigurationComplete (xid!=3) via SRAP to gNB
+   if (is_remote_ue) {
+     LOG_D(NR_RRC, "[REMOTE_UE_MSG] TX RRCReconfigurationComplete from Remote UE (RNTI 0x%04lx, xid=%d): %d bytes\n",
+           (unsigned long)ctxt_pP->rntiMaybeUEid, Transaction_id, size);
+
+     // Use SRAP API which will add N2U header [remote_ue_id][bearer_id] automatically
+     protocol_ctxt_t ctxt = *ctxt_pP;  // Copy context
+     nr_srap_data_req_srb(&ctxt, 1, size, (char*)buffer, srap_deliver_pdu_srb, nr_rrc_mui++, PC5);
+   } else {
+     // Normal UE or Relay UE: Use standard PDCP path via Uu
+     nr_pdcp_data_req_srb(ctxt_pP->rntiMaybeUEid, DCCH, nr_rrc_mui++, size, buffer, deliver_pdu_srb_rlc, NULL, UU);
+   }
  }
 
  // from NR SRB1
@@ -2745,8 +2913,7 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
          rrc_ue_process_rrcReconfiguration(ctxt_pP,
            dl_dcch_msg->message.choice.c1->choice.rrcReconfiguration,
            gNB_indexP);
-        bool is_remote_ue = get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue;
-        if (is_remote_ue) return 0;
+         // Remote UE: RRCReconfigurationComplete will be sent via SRAP (handled in nr_rrc_ue_generate_RRCReconfigurationComplete)
          nr_rrc_ue_generate_RRCReconfigurationComplete(ctxt_pP,
            gNB_indexP,
            dl_dcch_msg->message.choice.c1->choice.rrcReconfiguration->rrc_TransactionIdentifier);
@@ -2799,6 +2966,17 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
            /* This message hold a dedicated info NAS payload, forward it to NAS */
            NR_DedicatedNAS_Message_t *dedicatedNAS_Message =
                dlInformationTransfer->criticalExtensions.choice.dlInformationTransfer->dedicatedNAS_Message;
+
+           // Check if Remote UE and log NAS message type
+           bool is_remote_ue_local = (get_softmodem_params()->relay_type == 1 &&
+                                      get_softmodem_params()->is_relay_ue == 0);
+           if (is_remote_ue_local && dedicatedNAS_Message->size > SECURITY_PROTECTED_5GS_NAS_MESSAGE_HEADER_LENGTH) {
+             uint8_t nas_msg_type = dedicatedNAS_Message->buf[SECURITY_PROTECTED_5GS_NAS_MESSAGE_HEADER_LENGTH];
+             if (nas_msg_type == REGISTRATION_ACCEPT) {
+               LOG_D(NR_RRC, "[REMOTE_UE_MSG] RX Registration Accept via dlInformationTransfer at Remote UE (RNTI 0x%04lx): %zu bytes\n",
+                     (unsigned long)ctxt_pP->rntiMaybeUEid, dedicatedNAS_Message->size);
+             }
+           }
 
            MessageDef *msg_p;
            msg_p = itti_alloc_new_message(TASK_RRC_NRUE, 0, NAS_DOWNLINK_DATA_IND);
@@ -2928,7 +3106,14 @@ void *rrc_nrue_task(void *args_p)
          NR_UE_Timers_Constants_t *timers = &NR_UE_rrc_inst[ue_mod_id].timers_and_constants;
          nr_rrc_handle_timers(timers);
          NR_UE_RRC_SI_INFO *SInfo = &NR_UE_rrc_inst[ue_mod_id].SInfo[NRRRC_SLOT_PROCESS (msg_p).gnb_id];
-         nr_rrc_SI_timers(SInfo);
+         /* The SI-expiry timers delete stored SIB structures once aged out. For a CONNECTED
+          * UE the serving-cell SIB1 is actively in use: the MAC caches raw pointers INTO it
+          * (e.g. DL_BWP->tdaList_Common -> sib1 pdsch_ConfigCommon, scc_SIB->tdd_...), read
+          * from the scheduler thread. Freeing it here (nr_rrc_SI_timers -> SEQUENCE_free of
+          * SInfo->sib1) races that reader -> heap-use-after-free in nr_dci_size(). Only age
+          * out stored SI while IDLE; a connected UE keeps its serving-cell SI alive. */
+         if (nr_rrc_get_state(ue_mod_id) <= RRC_STATE_IDLE_NR)
+           nr_rrc_SI_timers(SInfo);
 #ifdef PERIODIC_UE_ASSISTANCE_INFO
          if(NRRRC_SLOT_PROCESS (msg_p).frame % 128 == 0 && NRRRC_SLOT_PROCESS (msg_p).slot == 0 && get_NAS_status()) {
             uint32_t length;
@@ -3057,11 +3242,30 @@ void *rrc_nrue_task(void *args_p)
         LOG_I(NR_RRC, "[UE %d] Received %s: UEid %d\n", ue_mod_id, ITTI_MSG_NAME (msg_p), NAS_UPLINK_DATA_REQ (msg_p).UEid);
         /* Create message for PDCP (ULInformationTransfer_t) */
         length = do_NR_ULInformationTransfer(&buffer, NAS_UPLINK_DATA_REQ (msg_p).nasMsg.length, NAS_UPLINK_DATA_REQ (msg_p).nasMsg.data);
-        /* Transfer data to PDCP */
-        PROTOCOL_CTXT_SET_BY_MODULE_ID(&ctxt, ue_mod_id, GNB_FLAG_NO, NR_UE_rrc_inst[ue_mod_id].rnti, 0, 0,0);
-        // check if SRB2 is created, if yes request data_req on DCCH1 (SRB2)
-        rb_id_t srb_id = NR_UE_rrc_inst[ue_mod_id].SRB2_config[0] == NULL ? DCCH : DCCH1;
-        nr_pdcp_data_req_srb(ctxt.rntiMaybeUEid, srb_id, nr_rrc_mui++, length, buffer, deliver_pdu_srb_rlc, NULL, UU);
+
+        // Remote UE: Send NAS message via SRAP on SL-SRB1 (same path as RRCSetupComplete)
+        bool is_remote_ue = (get_softmodem_params()->relay_type == 1 &&
+                             get_softmodem_params()->is_relay_ue == 0);
+
+        if (is_remote_ue) {
+          LOG_D(NR_RRC, "[Remote UE%d] Sending NAS ULInformationTransfer (%d bytes) via SRAP on SL-SRB1\n",
+                ue_mod_id, length);
+
+          /* Use SRAP API which will add N2U header [remote_ue_id][bearer_id] automatically
+             Send on rb_id=1 (SL-SRB1) via PC5 - same path as RRCSetupComplete */
+          protocol_ctxt_t ctxt;
+          PROTOCOL_CTXT_SET_BY_MODULE_ID(&ctxt, ue_mod_id, GNB_FLAG_NO, NR_UE_rrc_inst[ue_mod_id].rnti, 0, 0, 0);
+          nr_srap_data_req_srb(&ctxt, 1, length, (char*)buffer, srap_deliver_pdu_srb, nr_rrc_mui++, PC5);
+
+          LOG_D(NR_RRC, "[Remote UE%d] NAS message sent: RRC → SRAP (adds N2U header) → PC5 SL-SRB1 (LCID 57)\n",
+                ue_mod_id);
+        } else {
+          /* Transfer data to PDCP (Normal UE or Relay UE) */
+          PROTOCOL_CTXT_SET_BY_MODULE_ID(&ctxt, ue_mod_id, GNB_FLAG_NO, NR_UE_rrc_inst[ue_mod_id].rnti, 0, 0,0);
+          // check if SRB2 is created, if yes request data_req on DCCH1 (SRB2)
+          rb_id_t srb_id = NR_UE_rrc_inst[ue_mod_id].SRB2_config[0] == NULL ? DCCH : DCCH1;
+          nr_pdcp_data_req_srb(ctxt.rntiMaybeUEid, srb_id, nr_rrc_mui++, length, buffer, deliver_pdu_srb_rlc, NULL, UU);
+        }
         break;
       }
 
@@ -3087,7 +3291,7 @@ void *rrc_nrue_task(void *args_p)
         LOG_W(NR_RRC, "\n*** [RelayUE %d] Full RRCReconfiguration: forwarding to Remote UE ***\n\n", ue_mod_id);
         rnti_t remote_ue_rnti = 0x1; // remote UE ID
         NR_RRCReconfiguration_v1610_IEs_t *rrc_ext_v1610 = prepare_rrc_reconfiguration_for_Remote_UE(remote_ue_rnti, NR_UE_rrc_inst[ue_mod_id].sl_dedicated_cfg);
-        uint8_t xid = 3;
+        uint8_t xid = SL_PEER_RRC_RECONFIG_XID;
         protocol_ctxt_t ctxt_pP;
         ctxt_pP.brOption = 0;
         ctxt_pP.enb_flag = 0;
@@ -3125,6 +3329,33 @@ void *rrc_nrue_task(void *args_p)
         nr_pdcp_data_req_srb(ctxt_pP.rntiMaybeUEid, srb_id, nr_rrc_mui++, size, buffer, deliver_pdu_srb_rlc, rrc, PC5);
         break;
       }
+
+      case NR_RRC_SETUP_REQ: {
+        // Remote UE: Generate and send RRCSetupRequest via SRAP over PC5
+        uint8_t gNB_index = 0;
+        ctxt.rntiMaybeUEid = get_softmodem_params()->remote_ue_id;
+        ctxt.eNB_index = gNB_index;
+        ctxt.enb_flag = 0;
+        ctxt.frame = NR_RRC_SETUP_REQ(msg_p).frame;
+        ctxt.subframe = NR_RRC_SETUP_REQ(msg_p).slot;
+        nr_rrc_ue_generate_RRCSetupRequest_sl(ue_mod_id, gNB_index);
+        uint8_t buf_size = NR_UE_rrc_inst[ue_mod_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.payload_size;
+        uint8_t buffer[buf_size];
+        memcpy(buffer, (uint8_t *)NR_UE_rrc_inst[ue_mod_id].sl_Srb0[gNB_index].Srb_info.Tx_buffer.Payload, buf_size);
+        nr_srap_data_req_srb(&ctxt, 0, buf_size, (char*)buffer, srap_deliver_pdu_srb, nr_rrc_mui++, PC5);
+
+        // Remote UE: Create SL-SRB1 RLC entity for receiving RRCSetup response on LCID 57
+        uint8_t priority = 1;
+        NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig_srb1 =
+            get_SRB_RLC_BearerConfig_sl(priority, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 1);
+        nr_rlc_add_srb_sl(get_softmodem_params()->remote_ue_id, 1, sl_RLC_BearerConfig_srb1);
+
+        // Also establish RRC state
+        nr_rrc_ue_establish_sl_srb1(ue_mod_id, ctxt.frame, gNB_index);
+
+        break;
+      }
+
       default:
         LOG_E(NR_RRC, "[UE %d] Received unexpected message %s\n", ue_mod_id, ITTI_MSG_NAME (msg_p));
         break;

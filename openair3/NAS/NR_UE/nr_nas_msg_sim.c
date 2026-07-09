@@ -52,6 +52,7 @@
 #include <openair1/SIMULATION/ETH_TRANSPORT/proto.h>
 #include "openair2/SDAP/nr_sdap/nr_sdap.h"
 #include "openair3/SECU/nas_stream_eia2.h"
+#include "executables/softmodem-common.h"
 
 uint8_t  *registration_request_buf;
 uint32_t  registration_request_len;
@@ -1067,6 +1068,45 @@ void *nas_nrue_task(void *args_p)
             break;
           case FGS_DEREGISTRATION_ACCEPT:
             LOG_I(NAS, "received deregistration accept\n");
+            break;
+          case REGISTRATION_ACCEPT:
+            {
+              /* DUAL-PATH DESIGN:
+               * - Remote UE: Receives REGISTRATION_ACCEPT via dlInformationTransfer (this path)
+               *              because gNB sends it early after SecurityModeComplete
+               * - Relay UE:  Receives REGISTRATION_ACCEPT via NAS_CONN_ESTABLI_CNF (line 985)
+               *              via dedicatedNAS_MessageList in RRCReconfiguration (standard 3GPP path)
+               */
+              bool is_remote_ue = get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue;
+
+              LOG_D(NAS, "[%s] Received REGISTRATION ACCEPT message via dlInformationTransfer (NAS_DOWNLINK_DATA_IND)\n",
+                    is_remote_ue ? "Remote UE" : "Relay UE");
+
+              // Decode Registration Accept and send Registration Complete
+              decodeRegistrationAccept(pdu_buffer, NAS_DOWNLINK_DATA_IND(msg_p).nasMsg.length, nas);
+
+              as_nas_info_t registrationCompleteMsg;
+              memset(&registrationCompleteMsg, 0, sizeof(as_nas_info_t));
+              generateRegistrationComplete(nas, &registrationCompleteMsg, NULL);
+              if (registrationCompleteMsg.length > 0) {
+                send_nas_uplink_data_req(instance, &registrationCompleteMsg);
+                LOG_D(NAS, "Send NAS_UPLINK_DATA_REQ message(RegistrationComplete) %d bytes\n",
+                      registrationCompleteMsg.length);
+              }
+
+              /* Send PDU Session Establishment Request - ONLY for Remote UE
+                 Note: Relay UE uses standard path (NAS_CONN_ESTABLI_CNF handler at line 985) */
+              if (is_remote_ue) {
+                as_nas_info_t pduEstablishMsg;
+                memset(&pduEstablishMsg, 0, sizeof(as_nas_info_t));
+                generatePduSessionEstablishRequest(nas, &pduEstablishMsg);
+                if (pduEstablishMsg.length > 0) {
+                  send_nas_uplink_data_req(instance, &pduEstablishMsg);
+                  LOG_D(NAS, "[Remote UE] Send NAS_UPLINK_DATA_REQ message(PduSessionEstablishRequest) %d bytes\n",
+                        pduEstablishMsg.length);
+                }
+              }
+            }
             break;
 	case FGS_PDU_SESSION_ESTABLISHMENT_ACC:
 	  {

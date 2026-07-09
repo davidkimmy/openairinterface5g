@@ -1085,14 +1085,19 @@ void nr_ue_ul_scheduler(nr_uplink_indication_t *ul_info)
             mac_pdu_exist = 1;
           } else {
 
-            if ((mac->UL_ndi[ulcfg_pdu->pusch_config_pdu.pusch_data.harq_process_id] != ulcfg_pdu->pusch_config_pdu.pusch_data.new_data_indicator ||
-                mac->first_ul_tx[ulcfg_pdu->pusch_config_pdu.pusch_data.harq_process_id] == 1) &&
-                (mac->state == UE_CONNECTED ||
-                (ra->ra_state == WAIT_RAR && ra->cfra))){
+            uint8_t harq_pid = ulcfg_pdu->pusch_config_pdu.pusch_data.harq_process_id;
+            bool ndi_changed = (mac->UL_ndi[harq_pid] != ulcfg_pdu->pusch_config_pdu.pusch_data.new_data_indicator);
+            bool first_tx = (mac->first_ul_tx[harq_pid] == 1);
+            bool ue_connected = (mac->state == UE_CONNECTED);
+            bool rar_cfra = (ra->ra_state == WAIT_RAR && ra->cfra);
+
+            if ((ndi_changed || first_tx) && (ue_connected || rar_cfra)){
 
               // Getting IP traffic to be transmitted
               nr_ue_get_sdu(mod_id, cc_id,frame_tx, slot_tx, gNB_index, ulsch_input_buffer, TBS_bytes);
               mac_pdu_exist = 1;
+            } else {
+              LOG_D(NR_MAC, "[UU_UL_SKIP] Skipping nr_ue_get_sdu due to condition failure\n");
             }
 
             LOG_D(NR_MAC,"Flipping NDI for harq_id %d\n",ulcfg_pdu->pusch_config_pdu.pusch_data.new_data_indicator);
@@ -3527,16 +3532,19 @@ uint8_t sl_determine_if_SSB_slot(uint16_t frame, uint16_t slot, uint16_t slots_p
 static void nr_store_slsch_buffer(NR_UE_MAC_INST_t *mac, frame_t frame, sub_frame_t slot) {
 
   NR_SL_UEs_t *UE_info = &mac->sl_info;
+  // For PC5 sidelink: LCID 0 (SL-SRB0, relay only), 1 (SL-SRB1), 4 (SL-DRB1)
   int lcid_max = 4;
-  if (get_softmodem_params()->relay_type != 0)
-    lcid_max++;
+  bool relay_enabled = (get_softmodem_params()->relay_type != 0);
+  int lcid_start = relay_enabled ? 0 : 1;  // Only query LCID 0 (SL-SRB0) for relay scenarios
 
   SL_UE_iterator(UE_info->list, UE) {
     NR_SL_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
     sched_ctrl->num_total_bytes = 0;
     sched_ctrl->sl_pdus_total = 0;
-    for (int lcid = 1; lcid <= lcid_max; lcid++) {
+
+    for (int lcid = lcid_start; lcid <= lcid_max; lcid++) {
       if ((lcid == 2) || (lcid == 3)) continue;
+
       sched_ctrl->rlc_status[lcid] = mac_rlc_status_ind(0, mac->src_id, 0, frame, slot, ENB_FLAG_NO, MBMS_FLAG_NO, lcid, mac->src_id, UE->uid);
 
       if (sched_ctrl->rlc_status[lcid].bytes_in_buffer == 0)
@@ -3544,14 +3552,13 @@ static void nr_store_slsch_buffer(NR_UE_MAC_INST_t *mac, frame_t frame, sub_fram
 
       sched_ctrl->sl_pdus_total += sched_ctrl->rlc_status[lcid].pdus_in_buffer;
       sched_ctrl->num_total_bytes += sched_ctrl->rlc_status[lcid].bytes_in_buffer;
-      LOG_D(MAC,
-            "[%4d.%2d] SLSCH, RLC status for UE: %d bytes in buffer, total DL buffer size = %d bytes, %d total PDU bytes\n",
-            frame,
-            slot,
-            sched_ctrl->rlc_status[lcid].bytes_in_buffer,
-            sched_ctrl->num_total_bytes,
-            sched_ctrl->sl_pdus_total);
+
+      LOG_D(NR_MAC, "[RLC_QUERY] %4d.%2d ✓ LCID %d HAS DATA: %d bytes, cumulative total = %d bytes\n",
+            frame, slot, lcid, sched_ctrl->rlc_status[lcid].bytes_in_buffer, sched_ctrl->num_total_bytes);
     }
+
+    LOG_D(NR_MAC, "[RLC_QUERY] %4d.%2d UE 0x%x final: num_total_bytes=%d, sl_pdus_total=%d\n",
+          frame, slot, UE->uid, sched_ctrl->num_total_bytes, sched_ctrl->sl_pdus_total);
   }
 }
 
@@ -3629,11 +3636,20 @@ void preprocess(NR_UE_MAC_INST_t *mac,
         continue;
       }
       bool control_info = get_control_info(mac, sched_ctrl, nr_slots_frame, frame, slot, UE->uid, configured_PSFCH, is_fdbk_scheduled);
-      LOG_D(NR_MAC, "sched_ctrl->num_total_bytes %d, control_info %d\n", sched_ctrl->num_total_bytes, control_info);
+
+      LOG_D(NR_MAC, "[PREPROCESS] %4d.%2d UE 0x%x: num_total_bytes=%d, control_info=%d\n",
+            frame, slot, UE->uid, sched_ctrl->num_total_bytes, control_info);
+
       /* Check SL buffer and control info, skip this UE if no bytes and no control info */
       if (sched_ctrl->num_total_bytes == 0) {
-        if (!control_info)
+        if (!control_info) {
+          LOG_D(NR_MAC, "[PREPROCESS] %4d.%2d UE 0x%x: SKIPPING (no data, no control info)\n", frame, slot, UE->uid);
           continue;
+        } else {
+          LOG_D(NR_MAC, "[PREPROCESS] %4d.%2d UE 0x%x: Proceeding with control_info only (no data)\n", frame, slot, UE->uid);
+        }
+      } else {
+        LOG_D(NR_MAC, "[PREPROCESS] %4d.%2d UE 0x%x: ✓ Has data (%d bytes), proceeding\n", frame, slot, UE->uid, sched_ctrl->num_total_bytes);
       }
     }
 
@@ -3677,6 +3693,81 @@ void preprocess(NR_UE_MAC_INST_t *mac,
   }
 }
 
+/**
+ * @brief Append one bearer SDU as a MAC sub-PDU into the SL-SCH transport block.
+ *
+ * Reserves the MAC subheader (SHORT or LONG), pulls up to buflen_remain bytes
+ * from the bearer's RLC buffer via mac_rlc_data_req, and on success fills the
+ * subheader {R,F,LCID,L} and advances the write pointer. On failure (RLC returns
+ * <= 0, or the grant is too small, or the RLC buffer is empty) it leaves *pdu and
+ * *buflen_remain untouched.
+ *
+ * @return SDU byte count appended (subheader NOT included); 0 if nothing appended.
+ */
+static int sl_append_bearer_sdu(uint8_t **pdu, int *buflen_remain,
+                                NR_SL_UE_sched_ctrl_t *sched_ctrl,
+                                frame_t frame, uint32_t src_id, uint32_t dst_l2_id,
+                                uint8_t rb_id, uint8_t mac_lcid, bool long_hdr,
+                                const char *ue_type_str)
+{
+  const uint8_t sh_size = long_hdr ? sizeof(NR_MAC_SUBHEADER_LONG)
+                                   : sizeof(NR_MAC_SUBHEADER_SHORT);
+
+  // Need room for the subheader plus at least one SDU byte, and RLC must have data.
+  if (*buflen_remain <= sh_size + 1 || sched_ctrl->rlc_status[rb_id].bytes_in_buffer == 0)
+    return 0;
+
+  uint8_t *hdr = *pdu;
+  *pdu += sh_size;
+  *buflen_remain -= sh_size;
+
+  const rlc_buffer_occupancy_t ndata = min(sched_ctrl->rlc_status[rb_id].bytes_in_buffer, *buflen_remain);
+  LOG_D(NR_MAC, "[%s] Reading SL-RB%d (LCID %d) via RLC (max=%d bytes), buflen_remain=%d\n",
+        ue_type_str, rb_id, mac_lcid, ndata, *buflen_remain);
+
+  tbs_size_t sdu_length = 0;
+  if (ndata > 0) {
+    sdu_length = mac_rlc_data_req(0,
+                                  src_id,
+                                  0,
+                                  frame,
+                                  ENB_FLAG_NO,
+                                  MBMS_FLAG_NO,
+                                  rb_id,
+                                  ndata,
+                                  (char *)*pdu,
+                                  src_id,
+                                  dst_l2_id);
+  }
+
+  if (sdu_length > 0) {
+    *pdu += sdu_length;
+    *buflen_remain -= sdu_length;
+    if (long_hdr) {
+      NR_MAC_SUBHEADER_LONG *h = (NR_MAC_SUBHEADER_LONG *) hdr;
+      h->R = 0;
+      h->F = 1;
+      h->LCID = mac_lcid;
+      h->L = htons(sdu_length);
+    } else {
+      NR_MAC_SUBHEADER_SHORT *h = (NR_MAC_SUBHEADER_SHORT *) hdr;
+      h->R = 0;
+      h->F = 0;
+      h->LCID = mac_lcid;
+      h->L = sdu_length;
+    }
+    sched_ctrl->rlc_status[rb_id].bytes_in_buffer -= sdu_length;
+    LOG_D(NR_MAC, "[%s] Added SL-RB%d SDU: LCID %d, sdu_length %d (%s header)\n",
+          ue_type_str, rb_id, mac_lcid, sdu_length, long_hdr ? "LONG" : "SHORT");
+    return sdu_length;
+  }
+
+  // Roll back the subheader reservation.
+  *pdu -= sh_size;
+  *buflen_remain += sh_size;
+  return 0;
+}
+
 bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
                               nr_sidelink_indication_t *sl_ind,
                               const NR_SL_BWP_Generic_r16_t *sl_bwp_generic,
@@ -3693,11 +3784,12 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
   int sdu_length = 0;
   uint16_t sdu_length_total = 0;
   uint8_t total_mac_pdu_header_len = 0;
+  int num_sdus = 0;
   bool is_resource_allocated = false;
   *config_type = 0;
+  /* For PC5 sidelink: LCID 0 (SL-SRB0), 1 (SL-SRB1), 4 (SL-DRB1)
+     Note: relay_type doesn't add extra SL-DRBs for PC5 (only for Uu) */
   int lcid_max = 4;
-  if (get_softmodem_params()->relay_type != 0)
-    lcid_max++;
 
   sl_nr_ue_mac_params_t* sl_mac_params = mac->SL_MAC_PARAMS;
   NR_SetupRelease_SL_PSFCH_Config_r16_t *configured_PSFCH  = mac->sl_tx_res_pool->sl_PSFCH_Config_r16;
@@ -3724,7 +3816,9 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
 
   preprocess(mac, frame, slot, &feedback_frame, &feedback_slot, sl_bwp_generic, configured_PSFCH, is_fdbk_scheduled);
 
+  int ue_count = 0;
   SL_UE_iterator(UE_info->list, UE) {
+    ue_count++;
     NR_mac_dir_stats_t *sl_mac_stats = &UE->mac_sl_stats.sl;
     NR_SL_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
     sl_mac_stats->current_bytes = 0;
@@ -3858,157 +3952,201 @@ bool nr_ue_sl_pssch_scheduler(NR_UE_MAC_INST_t *mac,
       sched_ctrl->sched_sl_bytes += sched_pssch->tb_size;
       sl_mac_stats->total_rbs += sched_pssch->rbSize;
 
-
+      // Initialize common variables for both Mode 1 and Mode 2
       int buflen = tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu.tb_size;
-
-      LOG_D(NR_MAC, "[UE%d] Initial TTI-%d:%d TX PSCCH_PSSCH REQ  TBS %d\n", sl_ind->module_id, frame, slot, buflen);
-
       uint8_t *pdu = (uint8_t *) cur_harq->transportBlock;
       int buflen_remain = buflen;
 
+      LOG_D(NR_MAC, "[UE%d] Initial TTI-%d:%d TX PSCCH_PSSCH REQ  TBS %d\n", sl_ind->module_id, frame, slot, buflen);
+
+      // Add SL-SCH MAC subheader with SRC/DST (common for all modes)
       NR_SLSCH_MAC_SUBHEADER_FIXED *sl_sch_subheader = (NR_SLSCH_MAC_SUBHEADER_FIXED *) pdu;
       sl_sch_subheader->V = 0;
       sl_sch_subheader->R = 0;
       sl_sch_subheader->SRC = mac->sci2_pdu.source_id;
       sl_sch_subheader->DST = mac->sci2_pdu.dest_id;
       pdu += sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
-      LOG_D(NR_MAC, "%4d.%2d Tx V %d, R %d, SRC %d, DST %d\n", frame, slot, sl_sch_subheader->V, sl_sch_subheader->R, sl_sch_subheader->SRC, sl_sch_subheader->DST);
       buflen_remain -= sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
-      LOG_D(NR_MAC, "buflen_remain after adding SL_SCH_MAC_SUBHEADER_FIXED %d\n", buflen_remain);
-      const uint8_t sh_size = sizeof(NR_MAC_SUBHEADER_LONG);
+      LOG_D(NR_MAC, "%4d.%2d Added SL-SCH header: V=%d R=%d SRC=0x%x DST=0x%x\n",
+            frame, slot, sl_sch_subheader->V, sl_sch_subheader->R, sl_sch_subheader->SRC, sl_sch_subheader->DST);
 
-      int num_sdus=0;
-      for (lcid = 1; lcid <= lcid_max; lcid++) {
-        if ((lcid == 2) || (lcid == 3)) continue;
-        if (sched_ctrl->rlc_status[lcid].bytes_in_buffer > 0) {
-          while (buflen_remain > sh_size + 1) {
+      // Standard LCID loop for Mode 1, Mode 2, and Relay UE (but not Remote UE in SA relay mode)
+      bool is_remote_ue = (get_softmodem_params()->relay_type > 0) &&
+                          (get_softmodem_params()->remote_ue_id == mac->src_id);
+      if (!is_remote_ue) {
+        const uint8_t sh_size = sizeof(NR_MAC_SUBHEADER_LONG);
+        LOG_D(NR_MAC, "[MODE1] %4d.%2d Starting LCID loop, sh_size=%d\n", frame, slot, sh_size);
 
-            // Pointer used to build the MAC sub-PDU headers in the ULSCH buffer for each SDU
-            NR_MAC_SUBHEADER_LONG *header = (NR_MAC_SUBHEADER_LONG *) pdu;
-            pdu += sh_size;
-            buflen_remain -= sh_size;
-            const rlc_buffer_occupancy_t ndata = min(sched_ctrl->rlc_status[lcid].bytes_in_buffer, buflen_remain);
+        num_sdus = 0;  // Reset for Mode 1
+        for (lcid = 1; lcid <= lcid_max; lcid++) {
+          if ((lcid == 2) || (lcid == 3)) continue;
 
-            start_meas(&mac->rlc_data_req);
+          if (sched_ctrl->rlc_status[lcid].bytes_in_buffer > 0) {
+            while (buflen_remain > sh_size + 1) {
 
-            sdu_length = mac_rlc_data_req(0,
-                                          mac->src_id,
-                                          0,
-                                          frame,
-                                          ENB_FLAG_NO,
-                                          MBMS_FLAG_NO,
-                                          lcid,
-                                          ndata,
-                                          (char *)pdu,
-                                          sl_sch_subheader->SRC,
-                                          sl_sch_subheader->DST);
-            stop_meas(&mac->rlc_data_req);
-            AssertFatal(buflen_remain >= sdu_length, "In %s: LCID = 0x%02x RLC has segmented %d bytes but MAC has max %d remaining bytes\n",
-                        __FUNCTION__,
-                        lcid,
-                        sdu_length,
-                        buflen_remain);
-            if (sdu_length > 0) {
+              // Pointer used to build the MAC sub-PDU headers in the ULSCH buffer for each SDU
+              NR_MAC_SUBHEADER_LONG *header = (NR_MAC_SUBHEADER_LONG *) pdu;
+              pdu += sh_size;
+              buflen_remain -= sh_size;
+              const rlc_buffer_occupancy_t ndata = min(sched_ctrl->rlc_status[lcid].bytes_in_buffer, buflen_remain);
 
-              LOG_D(NR_MAC, "In %s: [UE %d] [%d.%d] SL-DXCH -> SLSCH, Generating SL MAC sub-PDU for SDU %d, length %d bytes, RB with LCID 0x%02x (buflen (TBS) %d bytes)\n",
-                __FUNCTION__,
-                0,
-                frame,
-                slot,
-                num_sdus + 1,
-                sdu_length,
-                lcid,
-                buflen);
+              start_meas(&mac->rlc_data_req);
 
-              header->R = 0;
-              header->F = 1;
-              header->LCID = lcid;
-              header->L = htons(sdu_length);
-              pdu += sdu_length;
-              sdu_length_total += sdu_length;
-              total_mac_pdu_header_len += sh_size;
-              buflen_remain -= sdu_length;
-              LOG_D(NR_PHY, "buflen_remain %d, subtracting (sh_size + sdu_length) %d, total_mac_pdu_header_len %hhu sdu total length %d, sdu_length %d\n", buflen_remain, (sh_size + sdu_length), total_mac_pdu_header_len, sdu_length_total, sdu_length);
-              num_sdus++;
+              sdu_length = mac_rlc_data_req(0,
+                                            mac->src_id,
+                                            0,
+                                            frame,
+                                            ENB_FLAG_NO,
+                                            MBMS_FLAG_NO,
+                                            lcid,
+                                            ndata,
+                                            (char *)pdu,
+                                            sl_sch_subheader->SRC,
+                                            sl_sch_subheader->DST);
+              stop_meas(&mac->rlc_data_req);
+              AssertFatal(buflen_remain >= sdu_length, "In %s: LCID = 0x%02x RLC has segmented %d bytes but MAC has max %d remaining bytes\n",
+                          __FUNCTION__,
+                          lcid,
+                          sdu_length,
+                          buflen_remain);
+              if (sdu_length > 0) {
 
-            } else {
-              pdu -= sh_size;
-              buflen_remain += sh_size;
-              LOG_D(NR_MAC, "In %s: no data to transmit for RB with LCID 0x%02x\n", __FUNCTION__, lcid);
-              break;
+                LOG_D(NR_MAC, "In %s: [UE %d] [%d.%d] SL-DXCH -> SLSCH, Generating SL MAC sub-PDU for SDU %d, length %d bytes, RB with LCID 0x%02x (buflen (TBS) %d bytes)\n",
+                  __FUNCTION__,
+                  0,
+                  frame,
+                  slot,
+                  num_sdus + 1,
+                  sdu_length,
+                  lcid,
+                  buflen);
+
+                header->R = 0;
+                header->F = 1;
+                header->LCID = lcid;
+                header->L = htons(sdu_length);
+                pdu += sdu_length;
+                sdu_length_total += sdu_length;
+                total_mac_pdu_header_len += sh_size;
+                buflen_remain -= sdu_length;
+                LOG_D(NR_MAC, "[MODE1] %4d.%2d LCID %d: Added SDU, buflen_remain=%d, sdu_length_total=%d, num_sdus=%d\n",
+                      frame, slot, lcid, buflen_remain, sdu_length_total, num_sdus);
+                num_sdus++;
+                // Update cached RLC status after consuming data to prevent double-reading
+                sched_ctrl->rlc_status[lcid].bytes_in_buffer -= sdu_length;
+
+              } else {
+                pdu -= sh_size;
+                buflen_remain += sh_size;
+                LOG_D(NR_MAC, "[MODE1] %4d.%2d LCID %d: RLC returned 0 bytes, breaking loop\n", frame, slot, lcid);
+                break;
+              }
             }
           }
-#if 0
-          if (buflen_remain > 0) {
-            NR_UE_MAC_CE_INFO *mac_ce_p = (NR_UE_MAC_CE_INFO *) pdu;
-            mac_ce_p->bsr_len = 0;
-            mac_ce_p->bsr_ce_len = 0;
-            mac_ce_p->bsr_header_len = 0;
-            mac_ce_p->phr_len = 0;
-            mac_ce_p->sdu_length_total = sdu_length_total;
-            mac_ce_p->total_mac_pdu_header_len = total_mac_pdu_header_len;
+        }
+        uint8_t sizeof_csi_report = (sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t));
+        LOG_D(NR_MAC, "%4d.%2d Building PDU: buflen_remain=%d, CSI_Report: active=%d, sched_for=%4d.%2d, size=%d\n",
+              frame,
+              slot,
+              buflen_remain,
+              sched_ctrl->sched_csi_report.active,
+              sched_ctrl->sched_csi_report.frame,
+              sched_ctrl->sched_csi_report.slot,
+              sizeof_csi_report);
 
-            //nr_ue_get_sdu_mac_ce_pre updates all mac_ce related header field related to length
-            mac_ce_p->tot_mac_ce_len = nr_ue_get_sdu_mac_ce_pre(0, 0, frame, slot, 0, pdu, buflen, mac_ce_p, PC5);
-            buflen_remain -= mac_ce_p->tot_mac_ce_len;
-            pdu += mac_ce_p->tot_mac_ce_len;
-            LOG_D(NR_PHY, "buflen_remain %d, sdu_length_total %d, total_mac_pdu_header_len %d, adding tot_mac_ce_len %d, \n", buflen_remain, mac_ce_p->sdu_length_total, mac_ce_p->total_mac_pdu_header_len, mac_ce_p->tot_mac_ce_len);
+        if (sched_ctrl->sched_csi_report.active &&
+            (sched_ctrl->sched_csi_report.frame == frame) &&
+            (sched_ctrl->sched_csi_report.slot == slot)) {
+
+          if (buflen_remain >= sizeof_csi_report) {
+            ((NR_MAC_SUBHEADER_FIXED *) pdu)->R = 0;
+            ((NR_MAC_SUBHEADER_FIXED *) pdu)->LCID = SL_SCH_LCID_SL_CSI_REPORT;
+            pdu++;
+            buflen_remain -= sizeof(NR_MAC_SUBHEADER_FIXED);
+            ((nr_sl_csi_report_t *) pdu)->RI = sched_ctrl->sched_csi_report.ri;
+            ((nr_sl_csi_report_t *) pdu)->CQI = sched_ctrl->sched_csi_report.cqi;
+            ((nr_sl_csi_report_t *) pdu)->R = 0;
+            LOG_D(NR_MAC, "Tx CSI Report %4d.%2d: CQI=%i, RI=%i\n",
+                  frame,
+                  slot,
+                  ((nr_sl_csi_report_t *) pdu)->CQI,
+                  ((nr_sl_csi_report_t *) pdu)->RI);
+            pdu++;
+            buflen_remain -= sizeof(nr_sl_csi_report_t);
           }
-#endif
+          sched_ctrl->sched_csi_report.active = false;
+        } else if (sched_ctrl->sched_csi_report.active) {
+          // Check if scheduled slot has passed
+          bool slot_passed = false;
+          if (sched_ctrl->sched_csi_report.frame < frame) {
+            slot_passed = true;
+          } else if (sched_ctrl->sched_csi_report.frame == frame &&
+                    sched_ctrl->sched_csi_report.slot < slot) {
+            slot_passed = true;
+          }
+
+          if (slot_passed) {
+            LOG_D(NR_MAC, "%4d.%2d CSI Report EXPIRED: was scheduled for %4d.%2d - clearing active flag\n",
+                  frame, slot, sched_ctrl->sched_csi_report.frame, sched_ctrl->sched_csi_report.slot);
+            sched_ctrl->sched_csi_report.active = false;
+          } else {
+            LOG_D(NR_MAC, "%4d.%2d CSI Report SKIPPED: scheduled_for=%4d.%2d (frame_match=%d, slot_match=%d)\n",
+                  frame, slot,
+                  sched_ctrl->sched_csi_report.frame,
+                  sched_ctrl->sched_csi_report.slot,
+                  (sched_ctrl->sched_csi_report.frame == frame),
+                  (sched_ctrl->sched_csi_report.slot == slot));
+          }
         }
       }
-      uint8_t sizeof_csi_report = (sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t));
-      LOG_D(NR_MAC, "%4d.%2d Building PDU: buflen_remain=%d, CSI_Report: active=%d, sched_for=%4d.%2d, size=%d\n",
-            frame,
-            slot,
-            buflen_remain,
-            sched_ctrl->sched_csi_report.active,
-            sched_ctrl->sched_csi_report.frame,
-            sched_ctrl->sched_csi_report.slot,
-            sizeof_csi_report);
 
-      if (sched_ctrl->sched_csi_report.active &&
-          (sched_ctrl->sched_csi_report.frame == frame) &&
-          (sched_ctrl->sched_csi_report.slot == slot)) {
+      // Handle SL-SRB0, SL-SRB1, and SL-DRB1 for Remote UE and Relay UE (Mode 2).
+      // These three bearers share one MAC sub-PDU assembly ritual (reserve subheader,
+      // pull from RLC, fill or roll back); see sl_append_bearer_sdu(). They differ only
+      // in the fields captured by the descriptor table below.
+      if (buflen_remain > 0 && mac->is_synced_sl) {
+        bool is_remote_ue = (get_softmodem_params()->relay_type > 0) &&
+                            (get_softmodem_params()->remote_ue_id == mac->src_id);
+        bool is_relay_ue = get_softmodem_params()->is_relay_ue == 1;
 
-        if (buflen_remain >= sizeof_csi_report) {
-          ((NR_MAC_SUBHEADER_FIXED *) pdu)->R = 0;
-          ((NR_MAC_SUBHEADER_FIXED *) pdu)->LCID = SL_SCH_LCID_SL_CSI_REPORT;
-          pdu++;
-          buflen_remain -= sizeof(NR_MAC_SUBHEADER_FIXED);
-          ((nr_sl_csi_report_t *) pdu)->RI = sched_ctrl->sched_csi_report.ri;
-          ((nr_sl_csi_report_t *) pdu)->CQI = sched_ctrl->sched_csi_report.cqi;
-          ((nr_sl_csi_report_t *) pdu)->R = 0;
-          LOG_D(NR_MAC, "Tx CSI Report %4d.%2d: CQI=%i, RI=%i\n",
-                frame,
-                slot,
-                ((nr_sl_csi_report_t *) pdu)->CQI,
-                ((nr_sl_csi_report_t *) pdu)->RI);
-          pdu++;
-          buflen_remain -= sizeof(nr_sl_csi_report_t);
-        }
-        sched_ctrl->sched_csi_report.active = false;
-      } else if (sched_ctrl->sched_csi_report.active) {
-        // Check if scheduled slot has passed
-        bool slot_passed = false;
-        if (sched_ctrl->sched_csi_report.frame < frame) {
-          slot_passed = true;
-        } else if (sched_ctrl->sched_csi_report.frame == frame &&
-                   sched_ctrl->sched_csi_report.slot < slot) {
-          slot_passed = true;
-        }
+        if (is_remote_ue || is_relay_ue) {
+          const char *ue_type_str = is_relay_ue ? "Relay UE" : "Remote UE";
+          const uint32_t remote_ue_id = get_softmodem_params()->remote_ue_id;
 
-        if (slot_passed) {
-          LOG_D(NR_MAC, "%4d.%2d CSI Report EXPIRED: was scheduled for %4d.%2d - clearing active flag\n",
-                frame, slot, sched_ctrl->sched_csi_report.frame, sched_ctrl->sched_csi_report.slot);
-          sched_ctrl->sched_csi_report.active = false;
-        } else {
-          LOG_D(NR_MAC, "%4d.%2d CSI Report SKIPPED: scheduled_for=%4d.%2d (frame_match=%d, slot_match=%d)\n",
-                frame, slot,
-                sched_ctrl->sched_csi_report.frame,
-                sched_ctrl->sched_csi_report.slot,
-                (sched_ctrl->sched_csi_report.frame == frame),
-                (sched_ctrl->sched_csi_report.slot == slot));
+          // rb_id, MAC LCID, LONG subheader?, pack multiple SDUs?, dst L2 id
+          const struct {
+            uint8_t rb_id;
+            uint8_t mac_lcid;
+            bool long_hdr;
+            bool pack_multi;
+            uint32_t dst_l2_id;
+          } bearers[] = {
+            {0, SL_SCH_LCID_SCCH_RRC_SL_RLC0, false, false, remote_ue_id}, // SL-SRB0 (CCCH)
+            {1, SL_SCH_LCID_SCCH_RRC_SL_RLC1, false, false, remote_ue_id}, // SL-SRB1 (DCCH)
+            {4, 4,                            true,  true,  0},            // SL-DRB1 (data)
+          };
+
+          for (unsigned int b = 0; b < sizeofArray(bearers); b++) {
+            if (bearers[b].pack_multi) {
+              // SL-DRB1: pack as many SDUs as the grant allows; update stats per SDU.
+              // LONG subheader (16-bit L, F=1) because DRB SDUs can exceed 255 bytes.
+              int len;
+              while ((len = sl_append_bearer_sdu(&pdu, &buflen_remain, sched_ctrl,
+                                                 frame, mac->src_id, bearers[b].dst_l2_id,
+                                                 bearers[b].rb_id, bearers[b].mac_lcid,
+                                                 bearers[b].long_hdr, ue_type_str)) > 0) {
+                num_sdus++;
+                sdu_length_total += len;
+              }
+            } else {
+              // SL-SRB0 / SL-SRB1: at most one SDU per grant, no stats update
+              // (matches prior behavior — SRB SDUs were never counted).
+              sl_append_bearer_sdu(&pdu, &buflen_remain, sched_ctrl,
+                                   frame, mac->src_id, bearers[b].dst_l2_id,
+                                   bearers[b].rb_id, bearers[b].mac_lcid,
+                                   bearers[b].long_hdr, ue_type_str);
+            }
+          }
         }
       }
 

@@ -83,6 +83,9 @@ MESSAGE_DEF(NRRRC_SIDELINK_UE_INFO,     MESSAGE_PRIORITY_MED,       NRRrcSlUEInf
 // UE: Triggers RRC_RECONFIGURATION on relay UE for remote UE
 MESSAGE_DEF(NR_RRC_RECONFIGURATION_IND, MESSAGE_PRIORITY_MED,       NRRrcReconfiguration_ind,   nr_rrc_reconfiguration_indication)
 
+// UE: Triggers RRC_RECONFIGURATION on relay UE for remote UE
+MESSAGE_DEF(NR_RRC_SETUP_REQ, MESSAGE_PRIORITY_MED,       NRRrcSetup_Req_t,   nr_rrc_setup_request)
+
 // eNB: realtime -> RRC messages
 MESSAGE_DEF(RRC_SUBFRAME_PROCESS,       MESSAGE_PRIORITY_MED,       RrcSubframeProcess,         rrc_subframe_process)
 MESSAGE_DEF(NRRRC_SLOT_PROCESS,         MESSAGE_PRIORITY_MED,       NRRrcSlotProcess,           nr_rrc_slot_process)

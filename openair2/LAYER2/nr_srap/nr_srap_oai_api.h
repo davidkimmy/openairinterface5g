@@ -28,6 +28,8 @@ typedef struct {
   confirm_t       confirmP;
   sdu_size_t      sdu_sizeP;
   mem_block_t     *sdu_pP;
+  uint32_t        sourceL2Id;      // For PC5 sidelink bearers
+  uint32_t        destinationL2Id; // For PC5 sidelink bearers
 } srap_data_req_queue_item;
 
 typedef struct {
@@ -69,9 +71,7 @@ void srap_deliver_sdu_drb(const protocol_ctxt_t *const  ctxt_pP,
                           const MBMS_flag_t MBMS_flagP,
                           const rb_id_t rb_id);
 
-void srap_deliver_sdu_srb(void *_ue, nr_srap_entity_t *entity,
-                          char *buf, int size);
-
+// TX callback: Enqueue message for transmission
 void srap_deliver_pdu_drb(protocol_ctxt_t *ctxt, int rb_id,
                           char *buf, int size, int sdu_id,
                           nr_intf_type_t intf_type);
@@ -79,30 +79,14 @@ void srap_deliver_pdu_drb(protocol_ctxt_t *ctxt, int rb_id,
 void srap_deliver_pdu_srb(protocol_ctxt_t *ctxt, int srb_id, char *buf,
                           int size, int sdu_id, nr_intf_type_t intf_type);
 
-void enqueue_srap_pc5_data_req(const protocol_ctxt_t *const ctxt_pP,
-                               const srb_flag_t   srb_flagP,
-                               const MBMS_flag_t  MBMS_flagP,
-                               const rb_id_t      rb_idP,
-                               const mui_t        muiP,
-                               confirm_t    confirmP,
-                               sdu_size_t   sdu_sizeP,
-                               mem_block_t *sdu_pP);
-
-void enqueue_srap_uu_data_req(const protocol_ctxt_t *const ctxt_pP,
-                              const srb_flag_t   srb_flagP,
-                              const MBMS_flag_t  MBMS_flagP,
-                              const rb_id_t      rb_idP,
-                              const mui_t        muiP,
-                              confirm_t    confirmP,
-                              sdu_size_t   sdu_sizeP,
-                              mem_block_t *sdu_pP);
-
 bool nr_srap_data_req_drb(protocol_ctxt_t *ctxt,
                           const rb_id_t rb_id,
                           const mui_t sdu_id,
                           const sdu_size_t sdu_buffer_size,
                           char *sdu_buffer,
                           nr_intf_type_t intf_type);
+
+// Special function for gNB downlink to Remote UE via SRAP
 
 bool nr_srap_data_req_srb(protocol_ctxt_t *ctxt,
                           const rb_id_t rb_id,
@@ -128,7 +112,9 @@ void enqueue_fwd_srap_pc5_data_req(protocol_ctxt_t *const ctxt_pP,
                                    const mui_t muiP,
                                    confirm_t confirmP,
                                    sdu_size_t sdu_sizeP,
-                                   mem_block_t *sdu_pP);
+                                   mem_block_t *sdu_pP,
+                                   const uint32_t sourceL2Id,
+                                   const uint32_t destinationL2Id);
 
 void enqueue_fwd_srap_uu_data_req(protocol_ctxt_t *const ctxt_pP,
                                   const srb_flag_t srb_flagP,
@@ -137,4 +123,8 @@ void enqueue_fwd_srap_uu_data_req(protocol_ctxt_t *const ctxt_pP,
                                   confirm_t confirmP,
                                   sdu_size_t sdu_sizeP,
                                   mem_block_t *sdu_pP);
+
+// gNB/Relay UE: Uu RLC received SRAP message - gNB delivers to RRC, Relay forwards to PC5
+void nr_srap_rlc_data_ind(int rb_id, char *buf, int size, nr_intf_type_t intf_type, rnti_t relay_rnti);
+
 #endif /* _NR_SRAP_OAI_API_H_ */

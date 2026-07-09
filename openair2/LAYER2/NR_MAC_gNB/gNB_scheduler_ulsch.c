@@ -142,7 +142,8 @@ static int nr_process_mac_pdu(instance_t module_idP,
     uint16_t mac_subheader_len=sizeof(NR_MAC_SUBHEADER_FIXED);
     uint8_t rx_lcid = ((NR_MAC_SUBHEADER_FIXED *)pduP)->LCID;
 
-    LOG_D(NR_MAC, "In %s: received UL-SCH sub-PDU with LCID 0x%x in %d.%d (remaining PDU length %d)\n", __func__, rx_lcid, frameP, slot, pdu_len);
+    LOG_D(NR_MAC, "[MAC_PDU_DEBUG] RNTI 0x%04x frame %d.%d: Parsing sub-PDU LCID=0x%02x, remaining_pdu_len=%d\n",
+          UE->rnti, frameP, slot, rx_lcid, pdu_len);
 
     unsigned char *ce_ptr;
     int n_Lcg = 0;
@@ -460,6 +461,8 @@ static int nr_process_mac_pdu(instance_t module_idP,
 
       if (pdu_len < 0) {
         LOG_E(NR_MAC, "In %s: residual UL MAC PDU in %d.%d with length < 0!, pdu_len %d \n", __func__, frameP, slot, pdu_len);
+        LOG_E(NR_MAC, "[MAC_PDU_CORRUPTION] RNTI 0x%04x: Last parsed LCID=0x%02x, mac_subheader_len=%d, mac_len=%d\n",
+              UE->rnti, rx_lcid, mac_subheader_len, mac_len);
         LOG_E(NR_MAC, "MAC PDU ");
         for (int i = 0; i < 20; i++) // Only printf 1st - 20nd bytes
           printf("%02x ", pduP[i]);

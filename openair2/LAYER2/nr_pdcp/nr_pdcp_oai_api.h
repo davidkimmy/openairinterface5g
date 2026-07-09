@@ -54,11 +54,15 @@ void nr_pdcp_add_drbs(eNB_flag_t enb_flag,
                       const uint8_t security_modeP,
                       uint8_t *const kUPenc,
                       uint8_t *const kUPint,
-                      struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer2add_list);
+                      struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer2add_list,
+                      bool is_remote_ue);
 
 void nr_DRB_preconfiguration(ue_id_t crntiMaybeUEid);
 
 bool nr_pdcp_remove_UE(ue_id_t ue_id);
+
+/* Find Remote UE RNTI by relay_ue_rnti and remote_ue_id */
+rnti_t nr_pdcp_get_remote_ue_rnti(rnti_t relay_ue_rnti, uint8_t remote_ue_id);
 
 void nr_pdcp_config_set_security(ue_id_t ue_id,
                                  const rb_id_t rb_id,

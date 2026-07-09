@@ -55,12 +55,22 @@ __attribute__((weak)) NR_UE_MAC_INST_t *get_mac_inst(uint8_t module_id) {
 #include "LAYER2/nr_srap/nr_srap_oai_api.h"
 
 extern nr_srap_manager_t *nr_srap_manager;
+
+// Forward declare gNB RRC types and function
+struct rrc_gNB_ue_context_s;
+
+/* Weak helper: check if a UE is a Remote UE (gNB only)
+   Returns true if this is a Remote UE, false otherwise
+   In UE builds, this weak symbol always returns false */
+__attribute__((weak)) bool rrc_get_remote_ue_relay_info(rnti_t ue_rnti, rnti_t *relay_ue_rnti, uint8_t *remote_ue_id) {
+  return false;  // UE builds: no Remote UE concept
+}
 #define TODO do { \
     printf("%s:%d:%s: todo\n", __FILE__, __LINE__, __FUNCTION__); \
     exit(1); \
   } while (0)
 
-static nr_pdcp_ue_manager_t *nr_pdcp_ue_manager;
+nr_pdcp_ue_manager_t *nr_pdcp_ue_manager;
 
 /* TODO: handle time a bit more properly */
 static uint64_t nr_pdcp_current_time;
@@ -364,8 +374,10 @@ static void do_pdcp_data_ind(
   if (rb != NULL) {
       rb->recv_pdu(rb, (char *)sdu_buffer->data, sdu_buffer_size);
   } else {
-    LOG_E(PDCP, "%s:%d:%s: no RB found (rb_id %ld, srb_flag %d)\n",
-          __FILE__, __LINE__, __FUNCTION__, rb_id, srb_flagP);
+    /* This can happen during initial setup when data arrives before DRB is configured
+       It's a race condition but harmless - the packet is discarded and will be retransmitted */
+    LOG_W(PDCP, "[PDCP_EARLY_DATA] Data arrived before DRB configured: ue_id=0x%04lx, rb_id=%ld, srb_flag=%d, size=%d (discarding, will be retransmitted)\n",
+          ctxt_pP->rntiMaybeUEid, rb_id, srb_flagP, sdu_buffer_size);
   }
 
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
@@ -857,6 +869,28 @@ static void deliver_pdu_drb(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
   bool is_relay_ue = get_softmodem_params()->is_relay_ue;
   bool remote_UE_flag = ((node_type == -1) && !is_relay_ue);
 
+  /* CRITICAL: Check if this is gNB downlink for Remote UE
+     Remote UE has no RLC configured - must forward via SRAP to Relay UE */
+  if (gNB_flag && srap_enabled) {
+    rnti_t relay_ue_rnti;
+    uint8_t remote_ue_id;
+
+    // Check if this UE is a Remote UE (uses weak symbol, always false in UE builds)
+    if (rrc_get_remote_ue_relay_info(ue_id, &relay_ue_rnti, &remote_ue_id)) {
+      /* Forward to SRAP with Relay UE's RNTI.
+         Pass the Remote UE's LOGICAL DRB id (rb_id) so the SRAP header bearer_id
+         encodes the Remote UE's own bearer (DRB1 -> bearer 4), matching the uplink.
+         The Uu TRANSPORT is remapped to the Relay UE's dedicated DRB2 inside
+         srap_deliver_pdu_drb (keyed on ctxt.remote_ue_id > 0). */
+      ctxt.rntiMaybeUEid = relay_ue_rnti;
+      ctxt.remote_ue_id = remote_ue_id;  // CRITICAL: Pass Remote UE ID for SRAP header creation
+
+      // Use original nr_srap_data_req_drb from episys/sl-mode1-relay
+      nr_srap_data_req_drb(&ctxt, rb_id, sdu_id, size, buf, UU);
+      return;
+    }
+  }
+
   if (NODE_IS_CU(node_type)) {
     MessageDef  *message_p = itti_alloc_new_message_sized(TASK_PDCP_ENB, 0,
 							  GTPV1U_TUNNEL_DATA_REQ,
@@ -866,7 +900,7 @@ static void deliver_pdu_drb(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
     AssertFatal(message_p != NULL, "OUT OF MEMORY");
     gtpv1u_tunnel_data_req_t *req=&GTPV1U_TUNNEL_DATA_REQ(message_p);
     uint8_t *gtpu_buffer_p = (uint8_t*)(req+1);
-    memcpy(gtpu_buffer_p+GTPU_HEADER_OVERHEAD_MAX, 
+    memcpy(gtpu_buffer_p+GTPU_HEADER_OVERHEAD_MAX,
 	   buf, size);
     req->buffer        = gtpu_buffer_p;
     req->length        = size;
@@ -993,15 +1027,28 @@ static void add_srb(int is_gnb, ue_id_t rntiMaybeUEid, struct NR_SRB_ToAddMod *s
     nr_pdcp_ue_add_srb_pdcp_entity(ue, srb_id, pdcp_srb, intf_type);
     static bool srap_uu_created;
     bool srap_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
+    /* Use the cached file-scoped node_type (set once in nr_pdcp_layer_init); calling
+       get_node_type() here re-parses the config file and leaks managed config pointers
+       on every add_srb (CONFIG_MAX_ALLOCATEDPTRS pool exhaustion crash). */
+    LOG_D(PDCP, "add_srb SRB%d: srap_enabled=%d, srap_uu_created=%d, node_type=%d\n", srb_id, srap_enabled, srap_uu_created, node_type);
     if (srap_enabled && !srap_uu_created) {
       nr_srap_manager_internal_t *m = nr_srap_manager;
       // We check for node being the DU because SRAP exists there (not in the CU)
-      if (m && m->srap_entity[0] && (NODE_IS_DU(get_node_type()) || NODE_IS_MONOLITHIC(get_node_type()))) { // on gNB - UU entity is on index 0
+      if (m && !m->srap_entity[0] && (NODE_IS_DU(node_type) || NODE_IS_MONOLITHIC(node_type))) { // on gNB - UU entity is on index 0
         m->srap_entity[0] = new_nr_srap_entity(NR_SRAP_UU, srap_deliver_sdu_drb, ue, srap_deliver_pdu_drb, ue, rntiMaybeUEid);
         srap_uu_created = true;
-      } else if (m && m->srap_entity[1] && (get_softmodem_params()->is_relay_ue)) { // on relay UE, UU entity is on index 1
+      } else if (m && !m->srap_entity[1] && (get_softmodem_params()->is_relay_ue)) { // on relay UE, UU entity is on index 1
         m->srap_entity[1] = new_nr_srap_entity(NR_SRAP_UU, srap_deliver_sdu_drb, ue, srap_deliver_pdu_drb, ue, rntiMaybeUEid);
         srap_uu_created = true;
+      } else if (!get_softmodem_params()->is_relay_ue && !NODE_IS_DU(node_type) && !NODE_IS_MONOLITHIC(node_type)) {
+        /* Remote UE (node_type == -1, not a Relay UE): it reaches the network only
+           over PC5 via the Relay UE and owns no Uu SRAP entity by design. This is
+           the expected path, not a failure. */
+        LOG_D(PDCP, "Remote UE: no Uu SRAP entity needed (relay traffic uses PC5)\n");
+      } else {
+        LOG_W(PDCP, "Failed to create SRAP UU entity: conditions not met (node_type=%d, is_relay_ue=%d, entity[0]=%p, entity[1]=%p)\n",
+              node_type, get_softmodem_params()->is_relay_ue,
+              m ? m->srap_entity[0] : NULL, m ? m->srap_entity[1] : NULL);
       }
     }
     LOG_D(PDCP, "%s:%d:%s: added srb %d to UE ID/RNTI %ld\n", __FILE__, __LINE__, __FUNCTION__, srb_id, rntiMaybeUEid);
@@ -1015,6 +1062,7 @@ void add_drb_am(int is_gnb, ue_id_t rntiMaybeUEid, ue_id_t reestablish_ue_id, st
   nr_pdcp_ue_t *ue;
 
   int drb_id = s->drb_Identity;
+
   int sn_size_ul = decode_sn_size_ul(*s->pdcp_Config->drb->pdcp_SN_SizeUL);
   int sn_size_dl = decode_sn_size_dl(*s->pdcp_Config->drb->pdcp_SN_SizeDL);
   int discard_timer = decode_discard_timer(*s->pdcp_Config->drb->discardTimer);
@@ -1067,9 +1115,21 @@ void add_drb_am(int is_gnb, ue_id_t rntiMaybeUEid, ue_id_t reestablish_ue_id, st
       has_sdap_rx = s->cnAssociation->choice.sdap_Config->sdap_HeaderDL == NR_SDAP_Config__sdap_HeaderDL_present;
     }
     is_sdap_DefaultDRB = s->cnAssociation->choice.sdap_Config->defaultDRB == true ? 1 : 0;
-    mappedQFIs2Add = (NR_QFI_t*)s->cnAssociation->choice.sdap_Config->mappedQoS_FlowsToAdd->list.array[0]; 
-    mappedQFIs2AddCount = s->cnAssociation->choice.sdap_Config->mappedQoS_FlowsToAdd->list.count;
-    LOG_D(SDAP, "Captured mappedQoS_FlowsToAdd from RRC: %ld \n", *mappedQFIs2Add);
+    // Check if mappedQoS_FlowsToAdd pointer is NULL (relay forwarding DRB with no QoS flows)
+    if (s->cnAssociation->choice.sdap_Config->mappedQoS_FlowsToAdd == NULL) {
+      mappedQFIs2AddCount = 0;
+      mappedQFIs2Add = NULL;
+      LOG_D(PDCP, "No QoS flows mapped for DRB %d (mappedQoS_FlowsToAdd is NULL, relay forwarding DRB)\n", drb_id);
+    } else {
+      mappedQFIs2AddCount = s->cnAssociation->choice.sdap_Config->mappedQoS_FlowsToAdd->list.count;
+      if (mappedQFIs2AddCount > 0) {
+        mappedQFIs2Add = (NR_QFI_t*)s->cnAssociation->choice.sdap_Config->mappedQoS_FlowsToAdd->list.array[0];
+        LOG_D(SDAP, "Captured mappedQoS_FlowsToAdd from RRC: %ld \n", *mappedQFIs2Add);
+      } else {
+        mappedQFIs2Add = NULL;
+        LOG_D(PDCP, "No QoS flows mapped for DRB %d (count is 0, relay forwarding DRB)\n", drb_id);
+      }
+    }
   }
   /* TODO(?): accept different UL and DL SN sizes? */
   if (sn_size_ul != sn_size_dl) {
@@ -1082,29 +1142,31 @@ void add_drb_am(int is_gnb, ue_id_t rntiMaybeUEid, ue_id_t reestablish_ue_id, st
   nr_pdcp_manager_lock(nr_pdcp_ue_manager);
   ue = nr_pdcp_manager_get_ue(nr_pdcp_ue_manager, rntiMaybeUEid);
   if (ue->drb[drb_id-1] != NULL) {
-    LOG_W(PDCP, "%s:%d:%s: warning DRB %d already exist for UE ID/RNTI %ld, do nothing\n", __FILE__, __LINE__, __FUNCTION__, drb_id, rntiMaybeUEid);
-  } else {
-    pdcp_drb = new_nr_pdcp_entity(NR_PDCP_DRB_AM, is_gnb, drb_id, pdusession_id,
-                                  has_sdap_rx, has_sdap_tx,
-                                  deliver_sdu_drb, ue, deliver_pdu_drb, ue,
-                                  sn_size_dl, t_reordering, discard_timer,
-                                  has_ciphering ? ciphering_algorithm : 0,
-                                  has_integrity ? integrity_algorithm : 0,
-                                  has_ciphering ? ciphering_key : NULL,
-                                  has_integrity ? integrity_key : NULL);
-    nr_pdcp_ue_add_drb_pdcp_entity(ue, drb_id, pdcp_drb);
-
-    if (reestablish_ue_id > 0) {
-      nr_pdcp_ue_t *reestablish_ue = nr_pdcp_manager_get_ue(nr_pdcp_ue_manager, reestablish_ue_id);
-      if (reestablish_ue != NULL) {
-        pdcp_drb->tx_next = reestablish_ue->drb[drb_id - 1]->tx_next;
-        LOG_I(PDCP, "Applying tx_next %d in DRB %d from old UEid %lx to new UEid %lx\n", reestablish_ue->drb[drb_id - 1]->tx_next, drb_id, reestablish_ue_id, rntiMaybeUEid);
-      }
-    }
-
-    LOG_D(PDCP, "%s:%d:%s: added drb %d to UE ID/RNTI %ld\n", __FILE__, __LINE__, __FUNCTION__, drb_id, rntiMaybeUEid);
-    new_nr_sdap_entity(is_gnb, has_sdap_rx, has_sdap_tx, rntiMaybeUEid, pdusession_id, is_sdap_DefaultDRB, drb_id, mappedQFIs2Add, mappedQFIs2AddCount);
+    LOG_W(PDCP, "%s:%d:%s: warning DRB %d already exist for UE ID/RNTI %ld, do nothing (preventing duplicate creation)\n", __FILE__, __LINE__, __FUNCTION__, drb_id, rntiMaybeUEid);
+    nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
+    return;
   }
+
+  pdcp_drb = new_nr_pdcp_entity(NR_PDCP_DRB_AM, is_gnb, drb_id, pdusession_id,
+                                has_sdap_rx, has_sdap_tx,
+                                deliver_sdu_drb, ue, deliver_pdu_drb, ue,
+                                sn_size_dl, t_reordering, discard_timer,
+                                has_ciphering ? ciphering_algorithm : 0,
+                                has_integrity ? integrity_algorithm : 0,
+                                has_ciphering ? ciphering_key : NULL,
+                                has_integrity ? integrity_key : NULL);
+  nr_pdcp_ue_add_drb_pdcp_entity(ue, drb_id, pdcp_drb);
+
+  if (reestablish_ue_id > 0) {
+    nr_pdcp_ue_t *reestablish_ue = nr_pdcp_manager_get_ue(nr_pdcp_ue_manager, reestablish_ue_id);
+    if (reestablish_ue != NULL) {
+      pdcp_drb->tx_next = reestablish_ue->drb[drb_id - 1]->tx_next;
+      LOG_D(PDCP, "Applying tx_next %d in DRB %d from old UEid %lx to new UEid %lx\n", reestablish_ue->drb[drb_id - 1]->tx_next, drb_id, reestablish_ue_id, rntiMaybeUEid);
+    }
+  }
+
+  LOG_D(PDCP, "%s:%d:%s: added drb %d to UE ID/RNTI %ld\n", __FILE__, __LINE__, __FUNCTION__, drb_id, rntiMaybeUEid);
+  new_nr_sdap_entity(is_gnb, has_sdap_rx, has_sdap_tx, rntiMaybeUEid, pdusession_id, is_sdap_DefaultDRB, drb_id, mappedQFIs2Add, mappedQFIs2AddCount);
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 }
 
@@ -1113,9 +1175,13 @@ void add_srap_entity(int src_id) {
   bool srap_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
   if (srap_enabled && !srap_pc5_created) {
     nr_srap_manager_internal_t *m = nr_srap_manager;
-    if (m && m->srap_entity[0]) {
+    if (m && !m->srap_entity[0]) {
+      /* deliver_pdu callback is for TX (enqueueing PDU to RLC for transmission)
+         SRB messages use parameter callback in nr_srap_data_req_srb, so this only affects DRB */
       m->srap_entity[0] = new_nr_srap_entity(NR_SRAP_PC5, srap_deliver_sdu_drb, NULL, srap_deliver_pdu_drb, NULL, src_id); // index 0 will always have NR_SRAP_PC5 entity.
       srap_pc5_created = true;
+    } else {
+      LOG_W(PDCP, "Failed to create PC5 SRAP entity: manager=%p, entity[0]=%p\n", m, m ? m->srap_entity[0] : NULL);
     }
   }
 }
@@ -1215,19 +1281,53 @@ void nr_pdcp_add_drbs(eNB_flag_t enb_flag,
                       const uint8_t security_modeP,
                       uint8_t *const kUPenc,
                       uint8_t *const kUPint,
-                      struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer2add_list)
+                      struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer2add_list,
+                      bool is_remote_ue)
 {
+  bool is_relay_ue = (enb_flag && !is_remote_ue && get_softmodem_params()->relay_type == U2N);
+
   if (drb2add_list != NULL) {
     for (int i = 0; i < drb2add_list->list.count; i++) {
+      int drb_id = drb2add_list->list.array[i]->drb_Identity;
+
+      /* For Relay UE's DRB2: skip PDCP configuration at UE side only (!enb_flag)
+         gNB side (enb_flag=1) MUST create PDCP for the transport bearer
+         UE side (enb_flag=0) skips PDCP - routing handled by RLC deliver_sdu() */
+      if (!enb_flag && is_relay_ue && drb_id == 2) {
+        LOG_D(PDCP, "[Relay UE] Skipping PDCP configuration for DRB 2 (routing via SRAP in RLC)\n");
+        continue;
+      }
+
       add_drb(enb_flag, rntiMaybeUEid, reestablish_ue_id, drb2add_list->list.array[i], rlc_bearer2add_list->list.array[i]->rlc_Config, security_modeP & 0x0f, (security_modeP >> 4) & 0x0f, kUPenc, kUPint);
 #if 1
+      /* Restored from episys/sl-mode1-relay: Automatically create DRB 2 at gNB for Relay UE
+         This creates the transport bearer PDCP entity for forwarding Remote UE traffic
+         RRC (rrc_gNB.c:fill_DRB_configList) creates config, this creates the PDCP entity */
       bool relay_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
-      if (relay_enabled && enb_flag) {
+      if (relay_enabled && enb_flag && !is_remote_ue) {
+        /* CRITICAL: Clear QFI mappings for DRB2 before creation
+           DRB2 is a relay transport bearer - it should NOT have QFI-to-DRB mappings
+           Mappings are only for Relay UE's own traffic (DRB1), not forwarded Remote UE traffic */
+        NR_SDAP_Config_t *saved_sdap_config = drb2add_list->list.array[i]->cnAssociation->choice.sdap_Config;
+        void *saved_qfi_list = NULL;  // Use void* to avoid anonymous struct type
+
+        if (saved_sdap_config && saved_sdap_config->mappedQoS_FlowsToAdd) {
+          // Temporarily clear QFI list for DRB2 creation
+          saved_qfi_list = saved_sdap_config->mappedQoS_FlowsToAdd;
+          saved_sdap_config->mappedQoS_FlowsToAdd = NULL;
+          LOG_D(PDCP, "[gNB] Cleared QFI mappings for Relay UE DRB2 (transport bearer - no QFI associations)\n");
+        }
+
         drb2add_list->list.array[i]->drb_Identity = drb2add_list->list.array[i]->drb_Identity + 1;
-        LOG_D(NR_RRC, "Calling add_drb from nr_pdcp_add_drbs for relay specific drb %ld.\n",
-                      drb2add_list->list.array[i]->drb_Identity);
+        LOG_D(PDCP, "[gNB] Creating PDCP entity for Relay UE DRB %ld (transport bearer)\n",
+                    drb2add_list->list.array[i]->drb_Identity);
         add_drb(enb_flag, rntiMaybeUEid, reestablish_ue_id, drb2add_list->list.array[i], rlc_bearer2add_list->list.array[i]->rlc_Config, security_modeP & 0x0f, (security_modeP >> 4) & 0x0f, kUPenc, kUPint);
         drb2add_list->list.array[i]->drb_Identity = drb2add_list->list.array[i]->drb_Identity - 1;
+
+        // Restore QFI list for DRB1 (original configuration)
+        if (saved_sdap_config && saved_qfi_list) {
+          saved_sdap_config->mappedQoS_FlowsToAdd = saved_qfi_list;
+        }
       }
 #endif
     }
@@ -1268,6 +1368,32 @@ bool nr_pdcp_remove_UE(ue_id_t ue_id)
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 
   return 1;
+}
+
+rnti_t nr_pdcp_get_remote_ue_rnti(rnti_t relay_ue_rnti, uint8_t remote_ue_id)
+{
+  rnti_t remote_ue_rnti = 0;
+
+  nr_pdcp_manager_lock(nr_pdcp_ue_manager);
+
+  /* Get UE list and count */
+  nr_pdcp_ue_t **ue_list = nr_pdcp_manager_get_ue_list(nr_pdcp_ue_manager);
+  int ue_count = nr_pdcp_manager_get_ue_count(nr_pdcp_ue_manager);
+
+  /* Iterate through all UEs to find Remote UE matching relay+id */
+  for (int i = 0; i < ue_count; i++) {
+    nr_pdcp_ue_t *ue = ue_list[i];
+    if (ue && ue->is_remote_ue &&
+        ue->remote_ue_id == remote_ue_id &&
+        ue->relay_ue_rnti == relay_ue_rnti) {
+      remote_ue_rnti = ue->rntiMaybeUEid;
+      break;
+    }
+  }
+
+  nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
+
+  return remote_ue_rnti;
 }
 
 /* hack: dummy function needed due to LTE dependencies */
@@ -1337,9 +1463,16 @@ bool nr_pdcp_data_req_srb(ue_id_t ue_id,
   nr_pdcp_entity_t *rb;
 
   bool srap_enabled = get_softmodem_params()->relay_type > 0 ? true : false;
-  // WE may need to keep control msgs on non-srap
-  srap_enabled = false;// FIXME: Temporary - We are not following standard; control messages are not passed through SRAP
-  // We only send to SRAP from PDCP if we are CU (split occurs at PDCP/SRAP) or a standard gNB
+
+  /* CRITICAL: Disable SRAP for PC5 peer-to-peer RRC signaling (Relay UE ↔ Remote UE sidelink config)
+     SRAP should only be used for:
+       - gNB downlink: gNB → Relay UE → Remote UE (cellular RRC via SRAP U2N headers)
+       - Remote UE uplink: Remote UE → Relay UE → gNB (cellular RRC via SRAP N2U headers)
+     Peer sidelink RRC (e.g., RRCReconfiguration xid=3 for SL config) must bypass SRAP */
+  if (intf_type == PC5) {
+    srap_enabled = false;
+    LOG_D(PDCP, "[PDCP] PC5 interface: Disabling SRAP for peer-to-peer sidelink RRC signaling\n");
+  }
 
   nr_pdcp_manager_lock(nr_pdcp_ue_manager);
 
@@ -1360,17 +1493,47 @@ bool nr_pdcp_data_req_srb(ue_id_t ue_id,
     return 0;
   }
 
+  /* For Remote UE traffic from gNB, extract remote_ue_id and route via SRAP
+     For peer sidelink RRC (PC5), bypass SRAP (goes directly to RLC) */
+  uint8_t remote_ue_id_for_srap = 0;
+  bool route_via_srap = false;
+  ue_id_t rlc_rnti = ue_id;  // RNTI to use for RLC delivery
+
+  // Check if this is Remote UE cellular traffic (not peer sidelink)
+  if (srap_enabled && ue->is_remote_ue) {
+    remote_ue_id_for_srap = ue->remote_ue_id;
+    rlc_rnti = ue->relay_ue_rnti;  // Deliver to Relay UE's RLC, not Remote UE's RLC
+    route_via_srap = true;
+  }
+
+  /* Remote UE PC5 SL-SRBs don't have PDCP entities, so skip PDCP processing for Remote UE
+     Deliver raw RRC message to SRAP (symmetric with uplink path) */
+  char *pdu_buf_ptr;
+  int pdu_size;
   int max_size = sdu_buffer_size + 3 + 4; // 3: max header, 4: max integrity
   char pdu_buf[max_size];
-  int pdu_size = rb->process_sdu(rb, (char *)sdu_buffer, sdu_buffer_size, muiP, pdu_buf, max_size);
-  AssertFatal(rb->deliver_pdu == NULL, "SRB callback should be NULL, to be provided on every invocation\n");
+
+  if (route_via_srap) {
+    // Remote UE: Skip PDCP processing, deliver raw RRC to SRAP
+    pdu_buf_ptr = (char *)sdu_buffer;
+    pdu_size = sdu_buffer_size;
+  } else {
+    // Normal UE: Process SDU with PDCP header
+    pdu_size = rb->process_sdu(rb, (char *)sdu_buffer, sdu_buffer_size, muiP, pdu_buf, max_size);
+    pdu_buf_ptr = pdu_buf;
+    AssertFatal(rb->deliver_pdu == NULL, "SRB callback should be NULL, to be provided on every invocation\n");
+  }
 
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
-  protocol_ctxt_t ctxt = { .enb_flag = 1, .rntiMaybeUEid = ue_id };
-  if (srap_enabled) {
-    nr_srap_data_req_srb(&ctxt, rb_id, pdu_size, pdu_buf, srap_deliver_pdu_srb, muiP, intf_type);
-  } else { // Sending directly to RLC
-    deliver_pdu_cb(data, ue_id, rb_id, pdu_buf, pdu_size, muiP, intf_type);
+  // For Remote UE: use Relay UE RNTI for RLC delivery, but pass remote_ue_id for SRAP header
+  protocol_ctxt_t ctxt = { .enb_flag = 1, .rntiMaybeUEid = rlc_rnti, .remote_ue_id = remote_ue_id_for_srap };
+
+  if (route_via_srap) {
+    // Remote UE traffic: RRC → SRAP (no PDCP header) → RLC
+    nr_srap_data_req_srb(&ctxt, rb_id, pdu_size, pdu_buf_ptr, srap_deliver_pdu_srb, muiP, intf_type);
+  } else {
+    // Normal UE traffic (including Relay UE itself): RRC → PDCP → RLC (bypass SRAP)
+    deliver_pdu_cb(data, ue_id, rb_id, pdu_buf_ptr, pdu_size, muiP, intf_type);
   }
 
   return 1;
@@ -1389,10 +1552,10 @@ bool nr_pdcp_data_req_drb(protocol_ctxt_t *ctxt_pP,
 {
   DevAssert(srb_flagP == SRB_FLAG_NO);
 
-  LOG_D(PDCP, "%s() called, size %d\n", __func__, sdu_buffer_size);
+  ue_id_t ue_id = ctxt_pP->rntiMaybeUEid;
+
   nr_pdcp_ue_t *ue;
   nr_pdcp_entity_t *rb;
-  ue_id_t ue_id = ctxt_pP->rntiMaybeUEid;
 
   if (ctxt_pP->module_id != 0 ||
       //ctxt_pP->enb_flag != 1 ||
@@ -1414,10 +1577,19 @@ bool nr_pdcp_data_req_drb(protocol_ctxt_t *ctxt_pP,
     rb = ue->drb[rb_id - 1];
 
   if (rb == NULL) {
-    LOG_E(PDCP, "%s:%d:%s: no DRB found (ue_id %ld, rb_id %ld)\n", __FILE__, __LINE__, __FUNCTION__, ue_id, rb_id);
+    LOG_E(PDCP, "[gNB_PDCP_DL_ERROR] NO DRB FOUND! ue_id=0x%04lx, rb_id=%ld, is_remote_ue=%d - PACKET DROPPED!\n",
+          ue_id, rb_id, ue->is_remote_ue);
     nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
     return 0;
   }
+
+  bool is_gnb = (ctxt_pP->enb_flag == 1);
+  bool srap_enabled = get_softmodem_params()->relay_type > 0;
+
+  /* At gNB: Check if this is Remote UE traffic
+     Remote UE has its own PDU session, packets come with Remote UE RNTI
+     Must route via SRAP to add U2N header and forward to Relay UE's DRB2 */
+  bool is_remote_ue_traffic = (is_gnb && srap_enabled && ue->is_remote_ue);
 
   int max_size = sdu_buffer_size + 3 + 4; // 3: max header, 4: max integrity
   char pdu_buf[max_size];
@@ -1427,6 +1599,28 @@ bool nr_pdcp_data_req_drb(protocol_ctxt_t *ctxt_pP,
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
   bool is_pc5_link = sourceL2Id != 0 || destinationL2Id != 0;
   nr_intf_type_t intf_type = is_pc5_link ? PC5 : UU;
+
+  // Route via SRAP for Remote UE traffic at gNB (using episys/sl-mode1-relay original function)
+  if (is_remote_ue_traffic) {
+    protocol_ctxt_t relay_ctx = *ctxt_pP;
+    relay_ctx.rntiMaybeUEid = ue->relay_ue_rnti;
+    relay_ctx.remote_ue_id = ue->remote_ue_id;  // Pass Remote UE ID to SRAP for header
+
+    if (!nr_srap_data_req_drb(&relay_ctx, rb_id, muiP, pdu_size, pdu_buf, UU)) {
+      LOG_E(PDCP, "[gNB] ERROR: nr_srap_data_req_drb failed for Remote UE traffic\n");
+      return 0;
+    }
+
+    return 1;
+  }
+
+  // Normal path: deliver to RLC directly
+  if (deliver_pdu_cb == NULL) {
+    LOG_E(PDCP, "[%s] ERROR: deliver_pdu_cb is NULL for RNTI 0x%04lx rb_id %ld! Cannot deliver DRB packet!\n",
+          is_gnb ? "gNB" : "UE", ue_id, rb_id);
+    return 0;
+  }
+
   deliver_pdu_cb(NULL, ue_id, rb_id, pdu_buf, pdu_size, muiP, intf_type);
 
   return 1;

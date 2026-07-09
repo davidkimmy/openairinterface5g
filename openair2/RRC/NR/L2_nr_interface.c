@@ -120,3 +120,15 @@ int8_t nr_mac_rrc_bwp_switch_req(const module_id_t     module_idP,
 
   return 0;
 }
+
+/* gNB implementation of the Remote UE relay-info lookup
+   Overrides the weak symbol in nr_pdcp_oai_api.c */
+bool rrc_get_remote_ue_relay_info(rnti_t ue_rnti, rnti_t *relay_ue_rnti, uint8_t *remote_ue_id) {
+  rrc_gNB_ue_context_t *ue_context = rrc_gNB_get_ue_context_by_rnti(RC.nrrrc[0], ue_rnti);
+  if (ue_context && ue_context->ue_context.is_remote_ue) {
+    *relay_ue_rnti = ue_context->ue_context.relay_ue_rnti;
+    *remote_ue_id = ue_context->ue_context.remote_ue_id;
+    return true;
+  }
+  return false;
+}

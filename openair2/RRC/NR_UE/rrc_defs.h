@@ -226,6 +226,7 @@ typedef struct NR_UE_RRC_INST_s {
   NR_SRB_INFO                    Srb0[NB_SIG_CNX_UE];
   NR_SRB_INFO_TABLE_ENTRY        Srb1[NB_CNX_UE];
   NR_SRB_INFO_TABLE_ENTRY        Srb2[NB_CNX_UE];
+  NR_SRB_INFO_TABLE_ENTRY        sl_Srb0[NB_CNX_UE];
   NR_SRB_INFO_TABLE_ENTRY        sl_Srb1[NB_CNX_UE];
 
   OAI_NR_UECapability_t          *UECap;

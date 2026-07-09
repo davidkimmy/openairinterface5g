@@ -1247,7 +1247,8 @@ void *gtpv1uTask(void *args)  {
           // DATA TO BE SENT TO UDP
 
         case GTPV1U_TUNNEL_DATA_REQ: {
-          gtpv1uSend(compatInst(myInstance), &GTPV1U_TUNNEL_DATA_REQ(message_p), false, false);
+          gtpv1u_tunnel_data_req_t *req = &GTPV1U_TUNNEL_DATA_REQ(message_p);
+          gtpv1uSend(compatInst(myInstance), req, false, false);
         }
         break;
 

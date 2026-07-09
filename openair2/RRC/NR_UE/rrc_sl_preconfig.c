@@ -629,8 +629,9 @@ static NR_SRB_ToAddModList_t *createSRBlist_sl(NR_UE_RRC_INST_t *ue, uint8_t ue_
   return list;
 }
 
-static NR_SL_RLC_BearerConfig_r16_t *get_SRB_RLC_BearerConfig_sl(long priority,
-                                                                 e_NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16 bucketSizeDuration)
+NR_SL_RLC_BearerConfig_r16_t *get_SRB_RLC_BearerConfig_sl(long priority,
+                                                          e_NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16 bucketSizeDuration,
+                                                          uint8_t srb_id)
 {
   NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig                = CALLOC(1, sizeof(NR_SL_RLC_BearerConfig_r16_t));
   sl_RLC_BearerConfig->sl_RLC_Config_r16                           = CALLOC(1, sizeof(NR_SL_RLC_Config_r16_t));
@@ -673,7 +674,8 @@ void add_sl_srbs(module_id_t module_id) {
   NR_UE_rrc_inst[module_id].sl_Srb1[0].Active = 1;
 
   uint8_t priority = 3; // TODO: Check priorities from standard
-  NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig = get_SRB_RLC_BearerConfig_sl(priority, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5);
+  uint8_t sl_srb_id = 1;
+  NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig = get_SRB_RLC_BearerConfig_sl(priority, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, sl_srb_id);
 
   uint8_t ue_index = 0; // TODO: Currently we are assuming each UE is connected to only one UE
   NR_SRB_ToAddModList_t *SRB_configList = createSRBlist_sl(&NR_UE_rrc_inst[module_id], ue_index, false);
@@ -757,22 +759,67 @@ void nr_UE_configure_Sidelink(uint8_t id, uint8_t is_sync_source, ueinfo_t *uein
         sl_preconfig->sidelinkPreconfigNR_r16.sl_RadioBearerPreConfigList_r16->list.array[i]->slrb_Uu_ConfigIndex_r16 -= 1;
       }
     }
+    // For L2 relay in SL Mode 2: add SRAP entity and SL-SRB0 RLC entity
+    if (relay_enabled) {
+      // Add SRAP entity for relay message processing
+      add_srap_entity(ueinfo->srcid);
+
+      LOG_D(NR_RRC, "[SL Mode 2] Adding SL-SRB0 for L2 relay RRC forwarding (srcid=0x%x)\n", ueinfo->srcid);
+      uint8_t priority = 1;
+      NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig = get_SRB_RLC_BearerConfig_sl(priority, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 0);
+      nr_rlc_add_srb_sl(ueinfo->srcid, 0, sl_RLC_BearerConfig);
+    }
+
     // configure RLC
     for (int i = 0; i < sl_preconfig->sidelinkPreconfigNR_r16.sl_RLC_BearerPreConfigList_r16->list.count; i++) {
       LOG_D(NR_RRC, "Calling nr_rlc_add_drb_sl from nr_UE_configure_Sidelink for UE specific drb.\n");
-      nr_rlc_add_drb_sl(ueinfo->srcid, 1, (NR_SL_RLC_BearerConfig_r16_t *)sl_preconfig->sidelinkPreconfigNR_r16.sl_RLC_BearerPreConfigList_r16->list.array[i]);
+      NR_SL_RLC_BearerConfig_r16_t *bearer_config = (NR_SL_RLC_BearerConfig_r16_t *)sl_preconfig->sidelinkPreconfigNR_r16.sl_RLC_BearerPreConfigList_r16->list.array[i];
+      nr_rlc_add_drb_sl(ueinfo->srcid, 1, bearer_config);
+
+      /* Configure MAC with LCID for SL-DRB 1
+         Per 3GPP TS 38.321: SL-DRB 1 uses LCID 4, SL-DRB 2 uses LCID 5 */
+      extern int nr_rrc_mac_config_req_ue_logicalChannelBearer(module_id_t, int, uint8_t, long, bool);
+      nr_rrc_mac_config_req_ue_logicalChannelBearer(id, 0, 0, 4, true);  // LCID 4 for SL-DRB 1
+      LOG_D(NR_RRC, "[SL Mode 2] Configured MAC with LCID 4 for SL-DRB 1\n");
+
       if (relay_enabled) {
         int relay_specific_drb_id = 2;
         LOG_D(NR_RRC, "Calling nr_rlc_add_drb_sl from nr_UE_configure_Sidelink_Dedicated_Cfg for relay specific drb.\n");
-        nr_rlc_add_drb_sl(ueinfo->srcid, relay_specific_drb_id, (NR_SL_RLC_BearerConfig_r16_t *) sl_preconfig->sidelinkPreconfigNR_r16.sl_RLC_BearerPreConfigList_r16->list.array[i]);
+        nr_rlc_add_drb_sl(ueinfo->srcid, relay_specific_drb_id, bearer_config);
+
+        // Configure MAC with LCID for SL-DRB 2
+        nr_rrc_mac_config_req_ue_logicalChannelBearer(id, 0, 0, 5, true);  // LCID 5 for SL-DRB 2
+        LOG_D(NR_RRC, "[SL Mode 2] Configured MAC with LCID 5 for SL-DRB 2 (relay)\n");
+
         // TODO: Need to update configuration with the following after receiving SL RRCReconfiguration message from relay UE.
         // nr_sl_dedicated_cfg->sl_PHY_MAC_RLC_Config_r16->sl_RLC_BearerToAddModList_r16->list.array[i]);
         relay_specific_drb_id++;
       }
     }
+
+    /* Configure SDAP PDU session ID for Mode 2
+       add_drb_sl() creates SDAP entities with pdusession_id=10, so TUN thread must use the same */
+    extern void set_qfi_pduid(uint8_t qfi, uint8_t pduid);
+    set_qfi_pduid(7, 10);  // QFI=7, PDU session ID=10 (matches add_drb_sl hardcoded value)
+    LOG_D(NR_RRC, "[SL Mode 2] Configured SDAP: QFI=7, PDU session ID=10 for user plane traffic\n");
   } else if (get_softmodem_params()->sl_mode == 1) {
     // SL RadioBearers
     add_srap_entity(ueinfo->srcid);
+
+    /* For L2 relay: add SL-SRB0 and SL-SRB1 for RRC message forwarding
+       Relay UE needs TX to send to Remote UE, Remote UE needs RX to receive from Relay UE
+       relay_type: 0=No Relay, 1=U2N, 2=U2U */
+    if (get_softmodem_params()->relay_type == 1) {  // U2N relay mode
+      LOG_D(NR_RRC, "[SL Mode 1] Adding SL-SRB0 for L2 relay CCCH forwarding (srcid=0x%x)\n", ueinfo->srcid);
+      uint8_t priority = 1;
+      NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig_srb0 = get_SRB_RLC_BearerConfig_sl(priority, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 0);
+      nr_rlc_add_srb_sl(ueinfo->srcid, 0, sl_RLC_BearerConfig_srb0);
+
+      LOG_D(NR_RRC, "[SL Mode 1] Adding SL-SRB1 for L2 relay DCCH forwarding (srcid=0x%x)\n", ueinfo->srcid);
+      NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig_srb1 = get_SRB_RLC_BearerConfig_sl(priority, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 1);
+      nr_rlc_add_srb_sl(ueinfo->srcid, 1, sl_RLC_BearerConfig_srb1);
+    }
+
     // configure RLC
     for (int i = 0; i < sl_preconfig->sidelinkPreconfigNR_r16.sl_RLC_BearerPreConfigList_r16->list.count; i++) {
       nr_rlc_add_drb_sl(ueinfo->srcid, 1, (NR_SL_RLC_BearerConfig_r16_t *)sl_preconfig->sidelinkPreconfigNR_r16.sl_RLC_BearerPreConfigList_r16->list.array[i]);

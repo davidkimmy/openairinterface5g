@@ -175,9 +175,29 @@ void nr_pdcp_add_drbs(eNB_flag_t enb_flag,
                       const uint8_t security_modeP,
                       uint8_t *const kUPenc,
                       uint8_t *const kUPint,
-                      struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer2add_list);
+                      struct NR_CellGroupConfig__rlc_BearerToAddModList *rlc_bearer2add_list,
+                      bool is_remote_ue);
 
 int rrc_gNB_generate_pcch_msg(uint32_t tmsi, uint8_t paging_drx, instance_t instance, uint8_t CC_id);
 
 void prepare_nr_sl_SyncConfig_gNB(NR_SL_SyncConfig_r16_t *sl_syncconfig);
+
+/* L2 Relay: decode CCCH message at gNB with optional Remote UE context */
+int nr_rrc_gNB_decode_ccch(module_id_t module_id,
+                           rnti_t rnti,
+                           const uint8_t *buffer,
+                           int buffer_length,
+                           const uint8_t *du_to_cu_rrc_container,
+                           int du_to_cu_rrc_container_len,
+                           bool remote_ue_context,
+                           rnti_t relay_rnti,
+                           uint8_t remote_id);
+
+/* L2 Relay: SRAP layer calls this to deliver Remote UE DCCH messages with SRAP header
+   Buffer format: [bearer_id][remote_ue_id][RRC payload] */
+int nr_rrc_gNB_process_srap_message(module_id_t module_id,
+                                    rnti_t relay_rnti,
+                                    const uint8_t *buffer,
+                                    int buffer_length);
+
 #endif

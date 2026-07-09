@@ -136,6 +136,12 @@ static inline int get_mac_len(uint8_t* pdu, int pdu_len, uint16_t *mac_ce_len, u
     *mac_subheader_len = sizeof(*s);
     *mac_ce_len = s->L;
   }
+
+  // Validate that mac_ce_len + mac_subheader_len doesn't exceed remaining PDU length
+  if (*mac_subheader_len + *mac_ce_len > pdu_len) {
+    return false;
+  }
+
   return true;
 }
 

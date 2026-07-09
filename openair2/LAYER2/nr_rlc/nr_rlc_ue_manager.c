@@ -168,28 +168,40 @@ void nr_rlc_ue_add_srb_rlc_entity(nr_rlc_ue_t *ue, int srb_id, nr_rlc_entity_t *
 
   /* special case: srb0 */
   if (srb_id == 0) {
-    if (ue->srb0 != NULL) {
-      LOG_E(RLC, "fatal, srb0 already present\n");
-      exit(1);
+    if (entity->intf_type == PC5) {
+      if (ue->sl_srb0 != NULL) {
+        LOG_E(RLC, "fatal, sl-srb0 already present\n");
+        exit(1);
+      }
+      ue->sl_srb0 = entity;
+      return;
+    } else {
+      if (ue->srb0 != NULL) {
+        LOG_E(RLC, "fatal, srb0 already present\n");
+        exit(1);
+      }
+      ue->srb0 = entity;
+      return;
     }
-
-    ue->srb0 = entity;
-
-    return;
   }
 
   srb_id--;
 
-  if (ue->srb[srb_id] != NULL) {
-    LOG_E(RLC, "%s:%d:%s: fatal, srb already present\n",
-          __FILE__, __LINE__, __FUNCTION__);
-    exit(1);
-  }
-
-  if (entity->intf_type == PC5)
+  if (entity->intf_type == PC5) {
+    if (ue->sl_srb[srb_id] != NULL) {
+      LOG_E(RLC, "%s:%d:%s: fatal, sl_srb already present\n",
+            __FILE__, __LINE__, __FUNCTION__);
+      exit(1);
+    }
     ue->sl_srb[srb_id] = entity;
-  else
+  } else {
+    if (ue->srb[srb_id] != NULL) {
+      LOG_E(RLC, "%s:%d:%s: fatal, srb already present\n",
+            __FILE__, __LINE__, __FUNCTION__);
+      exit(1);
+    }
     ue->srb[srb_id] = entity;
+  }
 }
 
 /* must be called with lock acquired */

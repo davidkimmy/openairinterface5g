@@ -52,13 +52,29 @@ void generateDRB(gNB_RRC_UE_t *ue,
     est_drb->drb_id = drb_id;
     est_drb->reestablishPDCP = -1;
     est_drb->recoverPDCP = -1;
+
+    /* Check if another DRB for this PDU session already has defaultDRB=true
+       Only mark this DRB as default if no other DRB is already the default */
+    bool has_default_drb = false;
     for (i = 0; i < MAX_DRBS_PER_UE; i++) {
-      if ((est_drb->cnAssociation.sdap_config.pdusession_id == 0
-           || est_drb->cnAssociation.sdap_config.pdusession_id == pduSession->param.pdusession_id)
-          && est_drb->defaultDRBid == 0) {
-        est_drb->cnAssociation.sdap_config.defaultDRB = true;
-        est_drb->defaultDRBid = drb_id;
+      if (ue->established_drbs[i].status != DRB_INACTIVE &&
+          ue->established_drbs[i].cnAssociation.sdap_config.pdusession_id == pduSession->param.pdusession_id &&
+          ue->established_drbs[i].cnAssociation.sdap_config.defaultDRB == true) {
+        has_default_drb = true;
+        break;
       }
+    }
+
+    if (!has_default_drb && est_drb->defaultDRBid == 0) {
+      est_drb->cnAssociation.sdap_config.defaultDRB = true;
+      est_drb->defaultDRBid = drb_id;
+      LOG_D(RRC, "Marking DRB %d as default for PDU session %d (first DRB for this session)\n",
+            drb_id, pduSession->param.pdusession_id);
+    } else {
+      est_drb->cnAssociation.sdap_config.defaultDRB = false;
+      est_drb->defaultDRBid = 0;
+      LOG_D(RRC, "DRB %d is NOT default for PDU session %d (default already exists)\n",
+            drb_id, pduSession->param.pdusession_id);
     }
     /* SDAP Configuration */
     est_drb->cnAssociation.present = NR_DRB_ToAddMod__cnAssociation_PR_sdap_Config;
@@ -101,7 +117,6 @@ NR_DRB_ToAddMod_t *generateDRB_ASN1(const drb_t *drb_asn1)
   NR_SDAP_Config_t *SDAP_config = CALLOC(1, sizeof(NR_SDAP_Config_t));
 
   asn1cCalloc(DRB_config->cnAssociation, association);
-  asn1cCalloc(SDAP_config->mappedQoS_FlowsToAdd, sdapFlows);
   asn1cCalloc(DRB_config->pdcp_Config, pdcpConfig);
   asn1cCalloc(pdcpConfig->drb, drb);
 
@@ -114,11 +129,28 @@ NR_DRB_ToAddMod_t *generateDRB_ASN1(const drb_t *drb_asn1)
   SDAP_config->sdap_HeaderUL = drb_asn1->cnAssociation.sdap_config.sdap_HeaderUL;
   SDAP_config->defaultDRB = drb_asn1->cnAssociation.sdap_config.defaultDRB;
 
+  // Check if there are any QoS flows to add
+  bool has_qos_flows = false;
   for (int qos_flow_index = 0; qos_flow_index < QOSFLOW_MAX_VALUE; qos_flow_index++) {
     if (drb_asn1->cnAssociation.sdap_config.mappedQoS_FlowsToAdd[qos_flow_index] != 0) {
-      asn1cSequenceAdd(sdapFlows->list, NR_QFI_t, qfi);
-      *qfi = drb_asn1->cnAssociation.sdap_config.mappedQoS_FlowsToAdd[qos_flow_index];
+      has_qos_flows = true;
+      break;
     }
+  }
+
+  // Only allocate mappedQoS_FlowsToAdd list if there are QoS flows
+  if (has_qos_flows) {
+    asn1cCalloc(SDAP_config->mappedQoS_FlowsToAdd, sdapFlows);
+    for (int qos_flow_index = 0; qos_flow_index < QOSFLOW_MAX_VALUE; qos_flow_index++) {
+      if (drb_asn1->cnAssociation.sdap_config.mappedQoS_FlowsToAdd[qos_flow_index] != 0) {
+        asn1cSequenceAdd(sdapFlows->list, NR_QFI_t, qfi);
+        *qfi = drb_asn1->cnAssociation.sdap_config.mappedQoS_FlowsToAdd[qos_flow_index];
+      }
+    }
+  } else {
+    // No QoS flows: leave mappedQoS_FlowsToAdd as NULL (relay forwarding DRB)
+    SDAP_config->mappedQoS_FlowsToAdd = NULL;
+    LOG_D(RRC, "DRB %d: No QoS flows - mappedQoS_FlowsToAdd set to NULL (relay forwarding DRB)\n", drb_asn1->drb_id);
   }
 
   association->choice.sdap_Config = SDAP_config;

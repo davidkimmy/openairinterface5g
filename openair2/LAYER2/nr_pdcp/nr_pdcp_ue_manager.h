@@ -33,11 +33,19 @@ typedef struct nr_pdcp_ue_t {
   nr_pdcp_entity_t *srb[3];
   nr_pdcp_entity_t *sl_srb[4];
   nr_pdcp_entity_t *drb[MAX_DRBS_PER_UE];
+
+  // L2 Relay - Remote UE information (for gNB to add SRAP header on DL)
+  bool is_remote_ue;
+  ue_id_t relay_ue_rnti;
+  uint8_t remote_ue_id;
 } nr_pdcp_ue_t;
 
 /***********************************************************************/
 /* manager functions                                                   */
 /***********************************************************************/
+
+// Global PDCP UE manager instance
+extern nr_pdcp_ue_manager_t *nr_pdcp_ue_manager;
 
 nr_pdcp_ue_manager_t *new_nr_pdcp_ue_manager(int enb_flag);
 

@@ -20,6 +20,22 @@ typedef struct {
   bearer_to_rlc_mapping_t *pc5_mapping;
 } srap_mapping_t;
 
+// Relay-specific: Track remote UEs and their DRB indices
+#ifndef MAX_REMOTE_UES
+#define MAX_REMOTE_UES 32
+#endif
+typedef struct {
+  uint8_t remote_ue_id;       // Remote UE ID from SRAP header (0-255)
+  uint8_t sl_drb_index;       // Index in sl_drb[] array (1-based, 0 means unused)
+  bool is_active;             // TRUE when DRBs created
+} remote_ue_relay_context_t;
+
+typedef struct {
+  remote_ue_relay_context_t remote_ues[MAX_REMOTE_UES];
+  uint8_t num_remote_ues;     // Number of active remote UEs
+  uint8_t next_drb_index;     // Next available sl_drb index (starts from 1)
+} relay_ue_context_t;
+
 typedef struct {
   srap_mapping_t *array;
   int size;
@@ -55,6 +71,8 @@ typedef struct nr_srap_entity_s {
   srap_mapping_list_t bearer_to_rlc_map;
   uint8_t num_ue;
   int rnti;
+  uint8_t srcid;  // sourceL2Id for PC5 entity (Relay UE's own L2 ID)
+  relay_ue_context_t *relay_ctx;  // NULL for non-relay, allocated for Relay UE
   /* functions provided by the SRAP module */
   void (*recv_pdu)(protocol_ctxt_t *const  ctxt_pP,
                    struct nr_srap_entity_s *entity,
@@ -68,7 +86,9 @@ typedef struct nr_srap_entity_s {
                       int rb_id,
                       char *pdu_buffer,
                       uint8_t header_size,
-                      void *header); // Adds headers inside this function to received SDU from above layer and create PDU to send to the lower layers.
+                      void *header,
+                      uint8_t dc_bit,
+                      uint8_t remote_ue_id); // Adds headers inside this function to received SDU from above layer and create PDU to send to the lower layers.
 
   void (*delete_entity)(struct nr_srap_entity_s *entity);
 
@@ -133,4 +153,11 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
                              const srb_flag_t srb_flagP,
                              const MBMS_flag_t MBMS_flagP,
                              const rb_id_t rb_id);
+
+// Relay context management functions
+relay_ue_context_t *nr_srap_create_relay_context(void);
+void nr_srap_free_relay_context(relay_ue_context_t *ctx);
+int nr_srap_get_drb_index_for_remote_ue(relay_ue_context_t *ctx, uint8_t remote_ue_id);
+void nr_srap_register_remote_ue(relay_ue_context_t *ctx, uint8_t remote_ue_id, uint8_t relay_srcid);
+
 #endif /* _NR_SRAP_ENTITY_H_ */

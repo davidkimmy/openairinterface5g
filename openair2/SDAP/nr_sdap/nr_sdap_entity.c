@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
@@ -63,26 +64,6 @@ void nr_pdcp_submit_sdap_ctrl_pdu(ue_id_t ue_id, rb_id_t sdap_ctrl_pdu_drb, nr_s
   LOG_D(SDAP, "Control PDU - Submitting Control PDU to DRB ID:  %ld\n", sdap_ctrl_pdu_drb);
   LOG_D(SDAP, "QFI: %u\n R: %u\n D/C: %u\n", ctrl_pdu.QFI, ctrl_pdu.R, ctrl_pdu.DC);
   return;
-}
-
-void update_drb_id(unsigned char *const sdu_buffer, int offset, rb_id_t *sdap_drb_id)
-{
-  struct iphdr *ip = (struct iphdr *)&sdu_buffer[offset];
-  LOG_D(SDAP, "protocol %d offset %d\n", ip->protocol, offset);
-
-  char src_ip[INET_ADDRSTRLEN];
-  char dst_ip[INET_ADDRSTRLEN];
-  inet_ntop(AF_INET, &ip->saddr, src_ip, INET_ADDRSTRLEN);
-  if (!inet_ntop(AF_INET, &ip->daddr, dst_ip, INET_ADDRSTRLEN))
-    LOG_E(SDAP, "Invalid IP address format.\n");
-  else {
-    LOG_D(SDAP, "Received Packet from %s to %s.\n", src_ip, dst_ip);
-    unsigned char *bytes = (unsigned char *)&ip->daddr;
-    int last_octet = bytes[3];
-    LOG_D(SDAP, "The last octet = %d\n", last_octet);
-    // Fix me: The last octet of remote UE IP address was assumed to have 100.
-    *sdap_drb_id = (last_octet == 100) ? 2 : 1;
-  }
 }
 
 static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
@@ -120,8 +101,6 @@ static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
   }
 
   if(!pdcp_ent_has_sdap){
-    if((ctxt_p->enb_flag && get_softmodem_params()->ip_demo))
-      update_drb_id(sdu_buffer, offset, &sdap_drb_id);
     LOG_D(SDAP, "TX - DRB ID: %ld does not have SDAP\n", entity->qfi2drb_table[qfi].drb_id);
     ret = nr_pdcp_data_req_drb(ctxt_p,
                                srb_flag,
@@ -208,76 +187,6 @@ static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
   return ret;
 }
 
-bool check_buffer_payload(char buffer[NL_MAX_PAYLOAD], int nread, comp_name_t component, char* tx_or_rx)
-{
-  #define BUFFER_SIZE 2048 // Max size of an IP packet
-  // --- Parse IP Header ---
-  struct iphdr *ip_header = (struct iphdr *)buffer;
-  int ip_header_len = ip_header->ihl * 4;
-
-  if (nread < ip_header_len) {
-      LOG_W(component, "Packet too short to contain full IP header. Skipping.\n");
-      return false;
-  }
-
-  // Check for UDP protocol
-  if (ip_header->protocol == IPPROTO_UDP) {
-      // --- Parse UDP Header ---
-      LOG_I(component, "IP Header: Src=%s Dst=%s Proto=%d TTL=%d\n",
-              inet_ntoa(*(struct in_addr *)&ip_header->saddr),
-              inet_ntoa(*(struct in_addr *)&ip_header->daddr),
-              ip_header->protocol,
-              ip_header->ttl);
-
-      struct udphdr *udp_header = (struct udphdr *)(buffer + ip_header_len);
-      int udp_header_len = sizeof(struct udphdr);
-
-      if (nread < ip_header_len + udp_header_len) {
-          LOG_W(component, "Packet too short to contain full UDP header. Skipping.\n");
-          return false;
-      }
-
-      // --- Extract UDP Data (Your String) ---
-      char *udp_data = buffer + ip_header_len + udp_header_len;
-      int udp_data_len = ntohs(udp_header->len) - udp_header_len;
-
-      if (nread < ip_header_len + udp_header_len + udp_data_len) {
-          LOG_W(component, "Packet too short to contain full UDP data. Skipping.\n");
-          return false;
-      }
-
-      // Assume the string is null-terminated or handle length explicitly
-      // For a "string", it's common to treat it as null-terminated for printf
-      // but for raw data, you should always respect data_len.
-      // Be careful not to read beyond allocated buffer size.
-      int display_len = (udp_data_len < (BUFFER_SIZE - (ip_header_len + udp_header_len))) ? udp_data_len : (BUFFER_SIZE - (ip_header_len + udp_header_len));
-
-      if(!display_len)
-        return false;
-      else if( display_len > 15) {
-        int cmp = strncmp(udp_data, "M-SEARCH * HTTP", 15);
-        if (!cmp) return false;
-      }
-
-      // Ensure null termination for safe printing, even if original wasn't
-      char received_string[display_len + 1];
-      memcpy(received_string, udp_data, display_len);
-      received_string[display_len] = '\0';
-      LOG_I(component, "==================================================\n");
-      LOG_I(component, "%s String (%d bytes): \"%s\"\n", tx_or_rx, udp_data_len, received_string);
-      LOG_I(component, "==================================================\n\n");
-      return true;
-  } else if (ip_header->protocol == IPPROTO_ICMP) {
-      LOG_I(component, "%s ICMP packet. (Parsing logic not fully implemented here)\n\n", tx_or_rx);
-      // You could add logic here to parse ICMP headers (struct icmphdr)
-      // and extract data if it's an Echo Request/Reply, similar to your first code snippet.
-      return true;
-  } else {
-      LOG_I(component, "Received unknown IP protocol (%d). Skipping.\n\n", ip_header->protocol);
-      return false;
-  }
-}
-
 static void nr_sdap_rx_entity(nr_sdap_entity_t *entity,
                               rb_id_t pdcp_entity,
                               int is_gnb,
@@ -336,16 +245,9 @@ static void nr_sdap_rx_entity(nr_sdap_entity_t *entity,
     req->ue_id         = ue_id;
     req->bearer_id     = pdusession_id;
     LOG_D(SDAP, "%s()  sending message to gtp size %d\n", __func__,  size-offset);
+
     // very very dirty hack gloabl var N3GTPUInst
     itti_send_msg_to_task(TASK_GTPV1_U, *N3GTPUInst, message_p);
-    if (get_softmodem_params()->ip_demo == 2) {
-      LOG_D(SDAP, "RX buf ============> %s\n", buf + offset);
-      struct iphdr *ip = (struct iphdr *)&buf[offset];
-      LOG_D(SDAP, "ip %p\n", ip);
-      LOG_D(SDAP, "protocol %d\n", ip->protocol);
-      if (ip->protocol == IPPROTO_UDP)
-        check_buffer_payload(&buf[offset], size - offset, SDAP, "Received");
-    }
   } else { //nrUE
     /*
      * TS 37.324 5.2 Data transfer
@@ -422,14 +324,25 @@ static void nr_sdap_rx_entity(nr_sdap_entity_t *entity,
      */
     extern int nas_sock_fd[];
     int index = get_tun_fd_index();
+
+    if (nas_sock_fd[index] <= 0) {
+      LOG_E(SDAP, "invalid nas_sock_fd[%d]=%d: dropping %d bytes for ue_id=0x%04lx\n",
+            index, nas_sock_fd[index], size-offset, ue_id);
+      return;
+    }
+
     int len = write(nas_sock_fd[index], &buf[offset], size-offset);
     LOG_D(SDAP, "RX Entity len : %d\n", len);
     LOG_D(SDAP, "RX Entity size : %d\n", size);
     LOG_D(SDAP, "RX Entity offset : %d\n", offset);
 
-    if (len != size-offset)
-      LOG_E(SDAP, "FATAL: write failed! Expected %d bytes, wrote %d bytes to nas_sock_fd[%d]\n",
-            size-offset, len, index);
+    if (len != size-offset) {
+      LOG_E(SDAP, "FATAL: write failed! Expected %d bytes, wrote %d bytes to nas_sock_fd[%d]=%d, errno=%d (%s)\n",
+            size-offset, len, index, nas_sock_fd[index], errno, strerror(errno));
+    } else {
+      LOG_D(SDAP, "[TUN_WRITE_SUCCESS] Wrote %d bytes to nas_sock_fd[%d] (oaitun_ue%d) for ue_id=0x%04lx\n",
+            len, index, index+1, ue_id);
+    }
   }
 }
 
@@ -532,11 +445,31 @@ void nr_sdap_ue_qfi2drb_config(nr_sdap_entity_t *existing_sdap_entity, rb_id_t p
 nr_sdap_entity_t *new_nr_sdap_entity(int is_gnb, bool has_sdap_rx, bool has_sdap_tx, ue_id_t ue_id, int pdusession_id, bool is_defaultDRB, uint8_t drb_identity, NR_QFI_t *mapped_qfi_2_add, uint8_t mappedQFIs2AddCount)
 {
   if (nr_sdap_get_entity(ue_id, pdusession_id)) {
-    LOG_E(SDAP, "SDAP Entity for UE already exists with RNTI/UE ID: %lu and PDU SESSION ID: %d\n", ue_id, pdusession_id);
+    LOG_W(SDAP, "SDAP Entity for UE already exists with RNTI/UE ID: %lu and PDU SESSION ID: %d - updating configuration\n", ue_id, pdusession_id);
     nr_sdap_entity_t *existing_sdap_entity = nr_sdap_get_entity(ue_id, pdusession_id);
+
+    /* Do NOT update default DRB if one is already set - default should remain stable
+       Additional DRBs should NOT change the default (they should have is_defaultDRB=false) */
+    if (is_defaultDRB && existing_sdap_entity->default_drb == 0) {
+      existing_sdap_entity->default_drb = drb_identity;
+      LOG_D(SDAP, "Set default DRB to %d for existing SDAP entity (UE %lu, PDU Session %d)\n",
+            drb_identity, ue_id, pdusession_id);
+    } else if (is_defaultDRB) {
+      LOG_W(SDAP, "Ignoring defaultDRB flag for DRB %d - default DRB %ld already set for UE %lu, PDU Session %d\n",
+            drb_identity, existing_sdap_entity->default_drb, ue_id, pdusession_id);
+    }
+
+    // Get PDCP entity for QFI-to-DRB mapping update
     rb_id_t pdcp_entity = existing_sdap_entity->default_drb;
-    if(!is_gnb)
-      nr_sdap_ue_qfi2drb_config(existing_sdap_entity, pdcp_entity, ue_id, mapped_qfi_2_add, mappedQFIs2AddCount, drb_identity, has_sdap_rx, has_sdap_tx);
+
+    /* Update QFI-to-DRB mapping for both gNB and UE
+       This is needed when PDU session is re-established with new DRB configuration */
+    nr_sdap_ue_qfi2drb_config(existing_sdap_entity, pdcp_entity, ue_id, mapped_qfi_2_add,
+                               mappedQFIs2AddCount, drb_identity, has_sdap_rx, has_sdap_tx);
+
+    LOG_D(SDAP, "SDAP entity configuration updated for UE %lu, PDU Session %d (gNB=%d, DRB=%d)\n",
+          ue_id, pdusession_id, is_gnb, drb_identity);
+
     return existing_sdap_entity;
   }
 

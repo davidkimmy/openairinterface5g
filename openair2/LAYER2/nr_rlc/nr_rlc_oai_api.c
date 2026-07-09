@@ -23,6 +23,9 @@
 #include "rlc.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
 #include "LAYER2/nr_srap/nr_srap_oai_api.h"
+#include "LAYER2/nr_srap/nr_srap_manager.h"
+#include "LAYER2/nr_srap/nr_srap_entity.h"
+#include "LAYER2/nr_srap/nr_srap_header.h"  // For SRAP U2N header field masks
 
 /* from nr rlc module */
 #include "nr_rlc_asn1_utils.h"
@@ -165,11 +168,19 @@ void mac_rlc_data_ind (const module_id_t         module_idP,
   nr_rlc_manager_lock(nr_rlc_ue_manager);
   ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rntiP);
 
-  if(ue == NULL)
-	  LOG_I(RLC, "RLC instance for the given UE was not found \n");
+  if(ue == NULL) {
+	  LOG_E(RLC, "[RLC_RX] RNTI 0x%04x: RLC instance for the given UE was not found\n", rntiP);
+	  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+	  return;
+  }
 
   switch (channel_idP) {
-  case 0:        rb = ue->srb0;                 break;
+  case 0:
+    if (is_pc5_link)
+      rb = ue->sl_srb0;
+    else
+      rb = ue->srb0;
+    break;
   case 1 ... 3:
     if (is_pc5_link)
       rb = ue->sl_srb[channel_idP - 1];
@@ -186,7 +197,6 @@ void mac_rlc_data_ind (const module_id_t         module_idP,
   }
 
   if (rb != NULL) {
-    LOG_D(RLC, "RB found! (channel ID %d) \n", channel_idP);
     rb->set_time(rb, nr_rlc_current_time);
     rb->recv_pdu(rb, buffer_pP, tb_sizeP);
 #ifdef IP_TRAFFIC_MONITORING
@@ -195,8 +205,8 @@ void mac_rlc_data_ind (const module_id_t         module_idP,
     }
 #endif
   } else {
-    LOG_E(RLC, "%s:%d:%s: fatal: no RB found (channel ID %d)\n",
-          __FILE__, __LINE__, __FUNCTION__, channel_idP);
+    LOG_E(RLC, "[RLC_RX] RNTI 0x%04x channel_id=%d is_pc5=%d enb_flag=%d: FATAL no RB found (sourceL2Id=0x%04x, destL2Id=0x%02x)\n",
+          rntiP, channel_idP, is_pc5_link, enb_flagP, sourceL2Id, destinationL2Id);
     // exit(1);
   }
 
@@ -227,10 +237,24 @@ tbs_size_t mac_rlc_data_req(
   bool is_pc5_link = sourceL2Id != 0 || destinationL2Id != 0;
 
   nr_rlc_manager_lock(nr_rlc_ue_manager);
-  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rntiP);
+  // For PC5 sidelink, use sourceL2Id for UE lookup; otherwise use RNTI
+  rnti_t lookup_key = is_pc5_link ? sourceL2Id : rntiP;
+  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, lookup_key);
+
+  if(ue == NULL) {
+    LOG_E(RLC, "[%s] RLC UE not found for lookup_key=0x%04x (is_pc5=%d, rntiP=0x%04x, srcL2Id=0x%04x, channel_idP=%d)\n",
+          __FUNCTION__, lookup_key, is_pc5_link, rntiP, sourceL2Id, channel_idP);
+    nr_rlc_manager_unlock(nr_rlc_ue_manager);
+    return 0;
+  }
 
   switch (channel_idP) {
-  case 0:        rb = ue->srb0;                 break;
+  case 0:
+    if (is_pc5_link)
+      rb = ue->sl_srb0;
+    else
+      rb = ue->srb0;
+    break;
   case 1 ... 3:
     if (is_pc5_link)
       rb = ue->sl_srb[channel_idP - 1];
@@ -285,15 +309,43 @@ mac_rlc_status_resp_t mac_rlc_status_ind(
   mac_rlc_status_resp_t ret;
   nr_rlc_entity_t *rb;
   /* In Sidelink (Mode 1 and Mode 2), we have source and destination IDs defined.
-    In SA Mode, these are undefined and therefore both are zeros.
-  */
+     In SA Mode, these are undefined and therefore both are zeros. */
+  bool is_relay_ue = get_softmodem_params()->is_relay_ue;
   bool is_pc5_link = sourceL2Id != 0 || destinationL2Id != 0;
 
+  /* SPECIAL CASE: a Relay UE can use srcid=0 for PC5, so sourceL2Id=0 and the check
+     above wrongly looks like an SA query. The SL scheduler also passes the srcid in
+     rntiP, so if this looked like SA but we are the Relay UE and rntiP is a small
+     value (< 0x100, i.e. an L2 ID rather than a real RNTI) on a real bearer
+     (LCID >= 1), treat it as a PC5 lookup using rntiP as the key. */
+  if (!is_pc5_link && is_relay_ue && rntiP < 0x100 && channel_idP >= 1) {
+    is_pc5_link = true;
+  }
+
   nr_rlc_manager_lock(nr_rlc_ue_manager);
-  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rntiP);
+  // For PC5 sidelink, use sourceL2Id for UE lookup (or rntiP if sourceL2Id=0 for Relay UE); otherwise use RNTI
+  rnti_t lookup_key = is_pc5_link ? (sourceL2Id != 0 ? sourceL2Id : rntiP) : rntiP;
+  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, lookup_key);
+
+  if(ue == NULL) {
+    LOG_W(RLC, "[%s] RLC UE not found for lookup_key=0x%04x (is_pc5=%d, rntiP=0x%04x, srcL2Id=0x%04x, channel_idP=%d)\n",
+          __FUNCTION__, lookup_key, is_pc5_link, rntiP, sourceL2Id, channel_idP);
+    ret.bytes_in_buffer = 0;
+    ret.pdus_in_buffer = 0;
+    ret.head_sdu_creation_time = 0;
+    ret.head_sdu_remaining_size_to_send = 0;
+    ret.head_sdu_is_segmented = 0;
+    nr_rlc_manager_unlock(nr_rlc_ue_manager);
+    return ret;
+  }
 
   switch (channel_idP) {
-  case 0:                          rb = ue->srb0;                 break;
+  case 0:
+    if (is_pc5_link)
+      rb = ue->sl_srb0;
+    else
+      rb = ue->srb0;
+    break;
   case 1 ... 3:
     if (is_pc5_link)
       rb = ue->sl_srb[channel_idP - 1];
@@ -413,9 +465,11 @@ rlc_op_status_t rlc_data_req(const protocol_ctxt_t *const ctxt_pP,
   nr_rlc_ue_t *ue;
   nr_rlc_entity_t *rb;
 
-  LOG_D(RLC, "%s rnti %d srb_flag %d rb_id %ld mui %d confirm %d sdu_size %d MBMS_flag %d\n",
-        __FUNCTION__, rnti, srb_flagP, rb_idP, muiP, confirmP, sdu_sizeP,
-        MBMS_flagP);
+  // For PC5 sidelink, use sourceL2Id instead of RNTI for UE lookup
+  if (intf_type == PC5 && sourceL2Id != NULL) {
+    rnti = (int)*sourceL2Id;
+    LOG_D(RLC, "%s PC5: using sourceL2Id 0x%x as rnti for UE lookup\n", __FUNCTION__, rnti);
+  }
 
   if (ctxt_pP->enb_flag)
     T(T_ENB_RLC_DL, T_INT(ctxt_pP->module_id), T_INT(ctxt_pP->rntiMaybeUEid), T_INT(rb_idP), T_INT(sdu_sizeP));
@@ -426,9 +480,12 @@ rlc_op_status_t rlc_data_req(const protocol_ctxt_t *const ctxt_pP,
   rb = NULL;
 
   if (srb_flagP) {
-    if (rb_idP >= 1 && rb_idP <= 2) {
+    if (rb_idP >= 0 && rb_idP <= 2) {
       if (intf_type == PC5) {
-        rb = ue->sl_srb[rb_idP - 1];
+        if (rb_idP == 0)
+          rb = ue->sl_srb0;
+        else
+          rb = ue->sl_srb[rb_idP - 1];
       } else if (intf_type == UU) {
         rb = ue->srb[rb_idP - 1];
       }
@@ -525,6 +582,108 @@ void rlc_util_print_hex_octets(comp_name_t componentP, unsigned char *dataP, con
 {
 }
 
+/* L2 Relay: Check for SRAP U2N messages on Uu SRB1 and DRB2 (per TS 38.401) and,
+ * if matched, forward them straight to SRAP (bypassing PDCP).
+ *   SRB1 carries Remote UE signaling (RRCSetupRequest, RRCSetupComplete, etc.)
+ *   DRB2 at Relay UE is configured as transport bearer for Remote UE user plane
+ *   At gNB: Remote UE messages forwarded by Relay UE on SRB1 (signaling) or DRB2 (user plane)
+ *   At Relay UE: Downlink messages from gNB for Remote UE
+ *   SRAP messages must bypass PDCP (no PDCP header/integrity) and go directly to SRAP
+ * Returns true if the SDU was consumed (forwarded to SRAP), false otherwise. */
+static bool deliver_sdu_srap_u2n(nr_rlc_ue_t *ue, nr_rlc_entity_t *entity, char *buf, int size, int is_srb, int rb_id, int is_enb)
+{
+  if (!(entity->intf_type == UU && ((is_srb && rb_id == 1) || (!is_srb && rb_id == 2)) && size >= 2 &&
+        get_softmodem_params()->relay_type == U2N))
+    return false;
+
+  uint8_t byte0 = (uint8_t)buf[0];
+  uint8_t byte1 = (uint8_t)buf[1];
+
+  /* Basic SRAP pattern check
+     For signaling (SRB1): Bearer ID 0-2 (SRB0-2)
+     For user plane (DRB2): Bearer ID 4+ (Remote UE DRB1+ mapped to bearer_id 4+) */
+  bool matches_srap_pattern = ((byte0 & SRAP_HDR_RESERVED_MASK) == 0) &&         // Reserved bits clear (bits 6-5 must be 00)
+                              (is_srb ? ((byte0 & SRAP_HDR_BEARER_ID_MASK) <= 2) : ((byte0 & SRAP_HDR_BEARER_ID_MASK) >= 4)) && // Bearer ID check depends on SRB/DRB
+                              (byte1 >= SRAP_REMOTE_UE_ID_MIN && byte1 <= SRAP_REMOTE_UE_ID_MAX); // Remote UE ID 1-255
+
+  if (!matches_srap_pattern)
+    return false;
+
+  uint8_t bearer_id = byte0 & SRAP_HDR_BEARER_ID_MASK;
+  bool is_srap_u2n = false;
+  if (is_enb) {
+    // gNB uplink: Distinguish SRAP from Relay UE's own PDCP traffic via D/C bit
+    bool dc_bit_set = (byte0 & SRAP_HDR_DC_MASK) != 0;  // D/C=1 means data (SRAP payload)
+    if (dc_bit_set) {
+      // D/C=1 → SRAP (Remote UE forwarded traffic)
+      is_srap_u2n = true;
+      LOG_D(RLC, "[gNB] Uu RLC %s: D/C=1, size=%d → SRAP\n", is_srb ? "SRB1" : "DRB2", size);
+    } else {
+      // D/C=0 → Normal PDCP (Relay UE's own traffic)
+      LOG_D(RLC, "[gNB] Uu RLC %s: D/C=0, size=%d → Normal PDCP\n", is_srb ? "SRB1" : "DRB2", size);
+    }
+  } else {
+    // Relay UE downlink: Check bearer_id
+    if (is_srb) {
+      // SRB1: bearer=1 or bearer=2 → SRAP (Remote UE SRB1/SRB2)
+      if (bearer_id >= 1 && bearer_id <= 2) {
+        is_srap_u2n = true;
+        LOG_D(RLC, "[Relay UE] Uu RLC SRB1: bearer=%d → SRAP (forward to Remote UE PC5 SRB%d)\n", bearer_id, bearer_id);
+      } else {
+        LOG_D(RLC, "[Relay UE] Uu RLC SRB1: bearer=%d → Normal PDCP (Relay UE own traffic)\n", bearer_id);
+      }
+    } else {
+      // DRB2: bearer=4+ → SRAP (Remote UE DRB traffic)
+      if (bearer_id >= 4) {
+        is_srap_u2n = true;
+        LOG_D(RLC, "[Relay UE] Uu RLC DRB2: bearer=%d → SRAP (forward to Remote UE PC5 DRB%d)\n", bearer_id, bearer_id - 3);
+      } else {
+        LOG_D(RLC, "[Relay UE] Uu RLC DRB2: bearer=%d → Normal PDCP (unexpected pattern)\n", bearer_id);
+      }
+    }
+  }
+
+  if (!is_srap_u2n)
+    return false;
+
+  LOG_D(RLC, "[%s] Uu RLC %s: SRAP U2N bearer=%d remote_ue=%d, forwarding %d bytes to SRAP%s, relay_rnti=0x%04x\n",
+        is_enb ? "gNB" : "Relay UE", is_srb ? "SRB1" : "DRB2", bearer_id, byte1, size,
+        is_enb ? " (bypassing PDCP)" : " for PC5 relay", ue->rnti);
+  nr_srap_rlc_data_ind(rb_id, buf, size, UU, ue->rnti);
+  return true;
+}
+
+/* L2 Relay: decide whether an SDU that reached PDCP delivery should instead be
+ * routed through SRAP (N2U path), based on interface type and SRAP header content.
+ *   PC5 traffic: All messages on PC5 go through SRAP for relay
+ *     At Relay UE: PC5 RX → SRAP strips U2N header → Uu TX
+ *     At Remote UE: PC5 RX → SRAP strips U2N header → PDCP → TUN
+ *   Uu traffic: Relay UE DRB2 receives Remote UE traffic from gNB (with N2U header)
+ *     At Relay UE: Uu RX → SRAP strips N2U header → PC5 TX
+ * Returns true if the SDU should be delivered to SRAP instead of PDCP. */
+static bool deliver_sdu_use_srap(nr_rlc_entity_t *entity, char *buf, int size, int is_srb, int rb_id)
+{
+  if (entity->intf_type == PC5) {
+    if (get_softmodem_params()->is_relay_ue) {
+      // Relay UE: all PC5 traffic goes to SRAP for forwarding to Uu
+      return true;
+    } else if (get_softmodem_params()->relay_type > 0) {
+      /* Remote UE: Check SRAP N2U header (from Relay UE via PC5)
+         N2U header format: buf[0]=bearer_id (LCID), buf[1]=remote_ue_id
+         Note: bearer_id uses LCID numbering (SRB1=1, DRB1=4), not RLC rb_id (SRB1=1, DRB1=1)
+         So we check remote_ue_id match only, not bearer_id vs rb_id (different numbering schemes) */
+      return size >= 2 && buf[1] == get_softmodem_params()->remote_ue_id;
+    }
+  } else if (entity->intf_type == UU && !is_srb) {
+    if (get_softmodem_params()->is_relay_ue && rb_id == 2) {
+      /* Check for SRAP N2U header: buf[0] high bits indicate SRAP message
+         N2U format: bearer_id + remote_ue_id encoded in first bytes */
+      return size >= 2 && (buf[0] == 0x84 || buf[0] == 0x85 || (buf[0] & SRAP_HDR_DC_MASK));
+    }
+  }
+  return false;
+}
+
 static void deliver_sdu(void *_ue, nr_rlc_entity_t *entity, char *buf, int size)
 {
   nr_rlc_ue_t *ue = _ue;
@@ -535,6 +694,13 @@ static void deliver_sdu(void *_ue, nr_rlc_entity_t *entity, char *buf, int size)
   int i;
   int is_enb;
 
+  if (entity->intf_type == PC5) {
+    if (entity == ue->sl_srb0) {
+      is_srb = 1;
+      rb_id = 0;
+      goto rb_found;
+    }
+  }
   if (entity->intf_type == PC5) {
     for (i = 0; i < sizeofArray(ue->sl_srb); i++) {
       if (entity == ue->sl_srb[i]) {
@@ -581,6 +747,12 @@ rb_found:
   LOG_D(RLC, "%s:%d:%s: delivering SDU (rnti %d is_srb %d rb_id %d) size %d\n",
         __FILE__, __LINE__, __FUNCTION__, ue->rnti, is_srb, rb_id, size);
 
+  is_enb = nr_rlc_manager_get_enb_flag(nr_rlc_ue_manager);
+
+  /* L2 Relay: forward SRAP U2N messages straight to SRAP, bypassing PDCP */
+  if (deliver_sdu_srap_u2n(ue, entity, buf, size, is_srb, rb_id, is_enb))
+    return;
+
   /* unused fields? */
   ctx.instance = 0;
   ctx.frame = 0;
@@ -591,8 +763,6 @@ rb_found:
   /* used fields? */
   ctx.module_id = 0;
   ctx.rntiMaybeUEid = ue->rnti;
-
-  is_enb = nr_rlc_manager_get_enb_flag(nr_rlc_ue_manager);
   ctx.enb_flag = is_enb;
 
   if (is_enb) {
@@ -646,11 +816,10 @@ rb_found:
     exit(1);
   }
   memcpy(memblock->data, buf, size);
-  bool srap_enabled = get_softmodem_params()->relay_type > 0 ? (buf[1] == get_softmodem_params()->remote_ue_id) && ((int)(buf[0]&0x1F) == rb_id)
-                                                             : false;
-  srap_enabled = is_srb ? false : srap_enabled;
 
-  if (srap_enabled) {
+  /* SRAP routing logic: Check interface type and data content
+     Based on episys/sl-mode1-relay architecture with enhancements */
+  if (deliver_sdu_use_srap(entity, buf, size, is_srb, rb_id)) {
     LOG_D(RLC, "Deliver from RLC to SRAP for rb_id %d\n", rb_id);
     if (!srap_data_ind(&ctx, is_srb, 0, rb_id, size, memblock, NULL, NULL, entity->intf_type)) {
       LOG_E(RLC, "%s:%d:%s: ERROR: srap_data_ind failed\n", __FILE__, __LINE__, __FUNCTION__);
@@ -676,6 +845,13 @@ static void successful_delivery(void *_ue, nr_rlc_entity_t *entity, int sdu_id)
   int is_enb;
 
   if (entity->intf_type == PC5) {
+    /* check sl_srb0 first */
+    if (entity == ue->sl_srb0) {
+      is_srb = 1;
+      rb_id = 0;
+      goto rb_found;
+    }
+    /* then check sl_srb[1..2] */
     for (i = 0; i < 2; i++) {
       if (entity == ue->sl_srb[i]) {
         is_srb = 1;
@@ -753,6 +929,13 @@ static void max_retx_reached(void *_ue, nr_rlc_entity_t *entity)
   int is_enb;
 
   if (entity->intf_type == PC5) {
+    /* check sl_srb0 first */
+    if (entity == ue->sl_srb0) {
+      is_srb = 1;
+      rb_id = 0;
+      goto rb_found;
+    }
+    /* then check sl_srb[1..2] */
     for (i = 0; i < 2; i++) {
       if (entity == ue->sl_srb[i]) {
         is_srb = 1;
@@ -926,7 +1109,7 @@ void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t 
   int sn_field_length;
 
   LOG_D(RLC,"Trying to add SRB %d\n", srb_id);
-  if (srb_id < 1 && srb_id > 3) {
+  if (srb_id < 0 && srb_id > 3) {
     LOG_E(RLC, "%s:%d:%s: fatal, bad srb id %d\n",
         __FILE__, __LINE__, __FUNCTION__, srb_id);
     exit(1);
@@ -964,9 +1147,16 @@ void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t 
 
   nr_rlc_manager_lock(nr_rlc_ue_manager);
   ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rnti);
-  if (ue->sl_srb[srb_id - 1] != NULL) {
-    LOG_W(RLC, "%s:%d:%s: SRB %d already exists for UE with RNTI %04x, do nothing\n", __FILE__, __LINE__, __FUNCTION__, srb_id, rnti);
-  } else {
+
+  nr_rlc_entity_t *temp_srb_entity = (srb_id == 0) ? ue->sl_srb0 : ue->sl_srb[srb_id - 1];
+  if (temp_srb_entity != NULL) {
+    /* Do NOT delete and recreate - this would reset tx_next/rx_next and break sequence numbers
+       The existing RLC entity preserves the sequence number state, which is critical for RLC AM
+       Configuration updates (like MCS changes) don't require RLC entity recreation */
+    nr_rlc_manager_unlock(nr_rlc_ue_manager);
+    return;
+  }
+  {
     /* hack: hardcode values for NR */
     t_poll_retransmit = 45;
     t_reassembly = 35;
@@ -992,10 +1182,11 @@ void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t 
   nr_rlc_manager_unlock(nr_rlc_ue_manager);
 }
 
-static void add_drb_am(int rnti, int drb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig)
+static bool add_drb_am(int rnti, int drb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig)
 {
   nr_rlc_entity_t            *nr_rlc_am;
   nr_rlc_ue_t                *ue;
+  bool created = false;
 
   struct NR_RLC_Config *r = rlc_BearerConfig->rlc_Config;
   struct NR_LogicalChannelConfig *l = rlc_BearerConfig->mac_LogicalChannelConfig;
@@ -1049,6 +1240,7 @@ static void add_drb_am(int rnti, int drb_id, const NR_RLC_BearerConfig_t *rlc_Be
   ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rnti);
   if (ue->drb[drb_id-1] != NULL) {
     LOG_W(RLC, "%s:%d:%s: DRB %d already exists for UE with RNTI %04x, do nothing\n", __FILE__, __LINE__, __FUNCTION__, drb_id, rnti);
+    created = false;
   } else {
     nr_rlc_am = new_nr_rlc_entity_am(RLC_RX_MAXSIZE,
                                      RLC_TX_MAXSIZE,
@@ -1063,8 +1255,10 @@ static void add_drb_am(int rnti, int drb_id, const NR_RLC_BearerConfig_t *rlc_Be
     nr_rlc_ue_add_drb_rlc_entity(ue, drb_id, nr_rlc_am);
 
     LOG_I(RLC, "%s:%d:%s: added drb %d to UE with RNTI 0x%x\n", __FILE__, __LINE__, __FUNCTION__, drb_id,rnti);
+    created = true;
   }
   nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  return created;
 }
 
 static void add_drb_am_sl(int src_id, int drb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)
@@ -1247,21 +1441,26 @@ static void add_drb_um_sl(int src_id, int drb_id, const NR_SL_RLC_BearerConfig_r
   nr_rlc_manager_unlock(nr_rlc_ue_manager);
 }
 
-void nr_rlc_add_drb(int rnti, int drb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig)
+bool nr_rlc_add_drb(int rnti, int drb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig)
 {
+  bool created = false;
   switch (rlc_BearerConfig->rlc_Config->present) {
   case NR_RLC_Config_PR_am:
-    add_drb_am(rnti, drb_id, rlc_BearerConfig);
+    created = add_drb_am(rnti, drb_id, rlc_BearerConfig);
     break;
   case NR_RLC_Config_PR_um_Bi_Directional:
     add_drb_um(rnti, drb_id, rlc_BearerConfig);
+    created = true; // add_drb_um doesn't return bool yet
     break;
   default:
     LOG_E(RLC, "%s:%d:%s: fatal: unhandled DRB type\n",
           __FILE__, __LINE__, __FUNCTION__);
     exit(1);
   }
-  LOG_I(RLC, "%s:%s:%d: added DRB to UE with RNTI 0x%x\n", __FILE__, __FUNCTION__, __LINE__, rnti);
+  if (created) {
+    LOG_I(RLC, "%s:%s:%d: added DRB %d to UE with RNTI 0x%x\n", __FILE__, __FUNCTION__, __LINE__, drb_id, rnti);
+  }
+  return created;
 }
 
 void nr_rlc_add_drb_sl(int srcid, int drb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)

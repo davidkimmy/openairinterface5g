@@ -94,6 +94,8 @@
 
 #define NR_RRC_RECONFIGURATION_IND(mSGpTR) (mSGpTR)->ittiMsg.nr_rrc_reconfiguration_indication
 
+#define NR_RRC_SETUP_REQ(mSGpTR) (mSGpTR)->ittiMsg.nr_rrc_setup_request
+
 #define RLC_SDU_INDICATION(mSGpTR)      (mSGpTR)->ittiMsg.rlc_sdu_indication
 #define RLC_TRAFFIC_PTN_CHG_IND(mSGpTR) (mSGpTR)->ittiMsg.rlc_traffic_ptn_chg_indication
 
@@ -503,6 +505,12 @@ typedef struct NRRrcReconfiguration_ind_s {
   uint8_t   gnb_id;
   bool      mcs_only; /* true = MCS-only HARQ update; Relay UE must NOT forward to Remote UE */
 } NRRrcReconfiguration_ind;
+
+typedef struct NRRrcSetup_Req_s {
+  uint32_t frame;
+  uint8_t slot;
+  uint8_t gnb_id;
+} NRRrcSetup_Req_t;
 
 typedef struct NRRrcSL_HARQ_Report_ind_s {
   uint32_t frame;

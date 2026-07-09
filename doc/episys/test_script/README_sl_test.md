@@ -137,7 +137,7 @@ cp -pr ~/openairinterface5g/doc/episys/test_script ~/ci_script
   ├── run_sl_test.sh                      # Main test execution script
   ├── run_sl_test_config.sh               # User configuration (defines bler_hosts array)
   ├── plot_sl_test_iperf3.py              # iperf3 bandwidth sweep plot generator
-  ├── bler_scripts/
+  ├── bler_test/
   │   ├── check_test_status.sh            # Monitor distributed test progress
   │   ├── process_and_fetch_results.sh    # Results collection and plotting
   │   └── *.py                            # Python processing scripts
@@ -610,7 +610,7 @@ The BLER (Block Error Rate) testing framework provides automated performance cha
 - Automated data collection, processing, and plotting
 - Real-time progress monitoring
 
-**📖 Complete Guide:** See [README_BLER_test.md](bler_scripts/README_BLER_test.md) for:
+**📖 Complete Guide:** See [README_BLER_test.md](bler_test/README_BLER_test.md) for:
 - Prerequisites and BLER instrumentation build
 - Local and distributed test execution
 - Progress monitoring with `check_test_status.sh`
@@ -618,7 +618,7 @@ The BLER (Block Error Rate) testing framework provides automated performance cha
 - Plot interpretation and data analysis
 - Troubleshooting and configuration options
 
-For detailed instructions, see [README_BLER_test.md](bler_scripts/README_BLER_test.md).
+For detailed instructions, see [README_BLER_test.md](bler_test/README_BLER_test.md).
 
 ## Test Results
 

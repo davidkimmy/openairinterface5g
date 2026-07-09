@@ -19,28 +19,24 @@ nr_srap_manager_t *new_nr_srap_manager(bool gNB_flag) {
   }
   bool is_relay_ue = get_softmodem_params()->is_relay_ue;
   uint8_t relay_type = get_softmodem_params()->relay_type;
+  /* For Relay UE: 2 entities (PC5 and UU)
+     For gNB with relay_type=U2N: 1 entity (UU for Relay UE communication)
+     For others: 1 entity (PC5 for Remote UE, or UU for normal gNB) */
   uint8_t num_of_entities = (is_relay_ue && relay_type == U2N) ? 2 : 1; // 38.351 - 4.2.2
-  ret->srap_entity = (nr_srap_entity_t**)malloc16_clear(sizeof(nr_srap_entity_t *));
+  ret->srap_entity = (nr_srap_entity_t**)malloc16_clear(num_of_entities * sizeof(nr_srap_entity_t *));
 
   if (!ret->srap_entity) {
       LOG_E(NR_SRAP, "Memory allocation failed\n");
       exit(EXIT_FAILURE);
   }
 
-  for (uint8_t i = 0; i < num_of_entities; i++) {
-    // Now allocate memory for the actual structure
-    ret->srap_entity[i] = (nr_srap_entity_t*)malloc16_clear(sizeof(nr_srap_entity_t));
-    if (ret->srap_entity[i] == NULL) {
-        LOG_E(NR_SRAP, "Memory allocation failed\n");
-        for (int j = 0; j < i; j++) {
-          free(ret->srap_entity[j]);
-        }
-      free(ret->srap_entity);
-      exit(EXIT_FAILURE);
-    }
-    if (pthread_mutex_init(&ret->lock, NULL)) abort();
-    ret->gNB_flag = gNB_flag;
-  }
+  /* Entity pointers are initialized to NULL by malloc16_clear
+     Actual entities will be created later by new_nr_srap_entity when needed */
+  if (pthread_mutex_init(&ret->lock, NULL)) abort();
+  ret->gNB_flag = gNB_flag;
+
+  LOG_D(NR_SRAP, "Created SRAP manager: gNB_flag=%d, num_entities=%d, entity_array=%p\n",
+        gNB_flag, num_of_entities, ret->srap_entity);
   return ret;
 }
 

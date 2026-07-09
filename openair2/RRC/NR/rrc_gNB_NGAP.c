@@ -69,6 +69,7 @@
 #include "NGAP_NonDynamic5QIDescriptor.h"
 #include "conversions.h"
 #include "RRC/NR/rrc_gNB_radio_bearers.h"
+#include <openair3/NAS/NR_UE/nr_nas_msg_sim.h>  // For NAS message-type macros (REGISTRATION_ACCEPT)
 
 #include "uper_encoder.h"
 
@@ -184,9 +185,13 @@ rrc_gNB_send_NGAP_NAS_FIRST_REQ(
 
   req->gNB_ue_ngap_id = UE->gNB_ue_ngap_id;
 
-  /* Assume that cause is coded in the same way in RRC and NGap, just check that the value is in NGap range */
-  AssertFatal(UE->establishment_cause < NGAP_RRC_CAUSE_LAST, "Establishment cause invalid (%jd/%d) for gNB %d!", UE->establishment_cause, NGAP_RRC_CAUSE_LAST, ctxt_pP->module_id);
-  req->establishment_cause = UE->establishment_cause;
+  /* Map NR RRC EstablishmentCause (0-15) to NGAP RRCEstablishmentCause (0-10)
+   * NR RRC spare values (10-15) map to NGAP notAvailable (10) */
+  if (UE->establishment_cause > 10) {
+    req->establishment_cause = 10;  // NGAP_RRCEstablishmentCause_notAvailable
+  } else {
+    req->establishment_cause = UE->establishment_cause;
+  }
 
   /* Forward NAS message */
   req->nas_pdu.buffer = rrcSetupComplete->dedicatedNAS_Message.buf;
@@ -372,6 +377,15 @@ int rrc_gNB_process_NGAP_INITIAL_CONTEXT_SETUP_REQ(MessageDef *msg_p, instance_t
   }
   PROTOCOL_CTXT_SET_BY_INSTANCE(&ctxt, instance, GNB_FLAG_YES, UE->rnti, 0, 0);
   UE->amf_ue_ngap_id = req->amf_ue_ngap_id;
+
+  // Check if NAS PDU contains Registration Accept (for Remote UE logging)
+  if (UE->is_remote_ue && req->nas_pdu.length > SECURITY_PROTECTED_5GS_NAS_MESSAGE_HEADER_LENGTH) {
+    uint8_t nas_msg_type = req->nas_pdu.buffer[SECURITY_PROTECTED_5GS_NAS_MESSAGE_HEADER_LENGTH];
+    if (nas_msg_type == REGISTRATION_ACCEPT) {
+      LOG_D(NR_RRC, "[REMOTE_UE_MSG] RX Registration Accept from AMF for Remote UE ID=%d (RNTI 0x%04x) via Relay RNTI=0x%04x\n",
+            UE->remote_ue_id, UE->rnti, UE->relay_ue_rnti);
+    }
+  }
   uint8_t nb_pdusessions_tosetup = req->nb_of_pdusessions;
   if (nb_pdusessions_tosetup) {
     AssertFatal(false, "PDU sessions in Initial context setup request not handled by E1 yet\n");
@@ -610,8 +624,10 @@ int rrc_gNB_process_NGAP_DOWNLINK_NAS(MessageDef *msg_p, instance_t instance, mu
   PROTOCOL_CTXT_SET_BY_INSTANCE(&ctxt, instance, GNB_FLAG_YES, UE->rnti, 0, 0);
 
   /* Create message for PDCP (DLInformationTransfer_t) */
-  length = do_NR_DLInformationTransfer(instance, &buffer, rrc_gNB_get_next_transaction_identifier(instance), req->nas_pdu.length, req->nas_pdu.buffer);
+  uint8_t transaction_id = rrc_gNB_get_next_transaction_identifier(instance);
+  length = do_NR_DLInformationTransfer(instance, &buffer, transaction_id, req->nas_pdu.length, req->nas_pdu.buffer);
   LOG_DUMPMSG(NR_RRC, DEBUG_RRC, buffer, length, "[MSG] RRC DL Information Transfer\n");
+
   /*
    * switch UL or DL NAS message without RRC piggybacked to SRB2 if active.
    */

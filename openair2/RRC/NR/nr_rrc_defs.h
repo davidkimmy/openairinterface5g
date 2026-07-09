@@ -274,6 +274,12 @@ typedef struct gNB_RRC_UE_s {
   rnti_t                             rnti;
   uint64_t                           random_ue_identity;
 
+  /* L2 Relay - Remote UE information */
+  bool                               is_remote_ue;        // True if this UE is Remote UE via Relay
+  rnti_t                             relay_ue_rnti;       // RNTI of Relay UE (if is_remote_ue==true)
+  uint8_t                            remote_ue_id;        // Remote UE ID from SRAP header octet2
+  bool                               relay_drb2_needs_reconfig; // Relay UE needs RRCReconfig for DRB 2 reset
+
   /* Information from UE RRC Setup Request */
   NR_UE_S_TMSI                       Initialue_identity_5g_s_TMSI;
   uint64_t                           ng_5G_S_TMSI_Part1;

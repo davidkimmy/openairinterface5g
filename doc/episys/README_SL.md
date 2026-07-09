@@ -219,7 +219,7 @@ Based on the received Configured Grant Type 1 configurations, the SL MAC schedul
 
 ### 6.3 **Pre-requisite: Core Network**
 
-&emsp; To test IP traffic using `ping` in 5G SL mode 1, the OAI Core Network must first be launched as a prerequisite. In this SRAP release, we used a proprietary 5G Core Network. For details on setting up and launching this core network, refer to the [OAI SRAP CN5G](./oai-srap-cn5g.md) installation guide.<br>
+&emsp; To test IP traffic using `ping` in 5G SL mode 1, the OAI Core Network must first be launched as a prerequisite.<br>
 
 &emsp; Once the Core Network is running, the gNB, Relay UE (SyncRef UE), and Remote UE (Nearby UE) can be started either on the same machine or on separate machines. The following sections demonstrate how to test 5G SL mode 1 using RF simulator and USRP hardware.
 
@@ -240,7 +240,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-softmodem -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf \
 --gNBs.[0].min_rxtxtime 6 --sa --sl-mode 1 --rfsim \
 --rfsimulator.serveraddr server --rfsimulator.serverport 4048 \
- --relay-type 1 --remote-ue-id 1  --ip-demo 1 2>&1 | tee ~/result_gNB.log
+ --relay-type 1 --remote-ue-id 1 2>&1 | tee ~/result_gNB.log
 ```
 &emsp; ***Relay UE in Terminal 1 of Machine 2:***
 ```
@@ -313,7 +313,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-softmodem -O ../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf \
 --gNBs.[0].min_rxtxtime 6 --sa  --sl-mode 1 -E \
 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
---relay-type 1 --remote-ue-id 1  --ip-demo 1 2>&1 | tee ~/result_gNB.log
+--relay-type 1 --remote-ue-id 1 2>&1 | tee ~/result_gNB.log
 ```
 &emsp; ***Relay UE in Terminal 1 of Machine 2:***
 ```
@@ -539,7 +539,7 @@ The following commands demonstrate how to test 5G SL mode 2 with two UEs using t
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
---sa --sl-mode 2 --sync-ref --rfsim --thread-pool -1,-1,-1,-1 \
+--sa --sl-mode 2 --sync-ref --rfsim --thread-pool -1,-1 \
 --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4048
 ```
 &emsp; ***Nearby UE on Machine 2:***
@@ -547,7 +547,7 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
---sa --sl-mode 2 --rfsim --thread-pool -1,-1,-1,-1 \
+--sa --sl-mode 2 --rfsim --thread-pool -1,-1 \
 --rfsimulator.serveraddrsl <MACHINE 1 IP Address> --rfsimulator.serverportsl 4048
 ```
 

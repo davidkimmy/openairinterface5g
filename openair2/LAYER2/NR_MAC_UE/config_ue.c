@@ -488,32 +488,41 @@ void configure_ss_coreset(NR_UE_MAC_INST_t *mac,
   }
 
   // configuration of coresets
-  int cset_configured = 0;
-  int common_cset_id = -1;
-  if (pdcch_ConfigCommon &&
-      pdcch_ConfigCommon->commonControlResourceSet) {
-    mac->BWP_coresets[cset_configured] = pdcch_ConfigCommon->commonControlResourceSet;
-    common_cset_id = pdcch_ConfigCommon->commonControlResourceSet->controlResourceSetId;
-    cset_configured++;
-  }
-  if(pdcch_Config &&
-     pdcch_Config->controlResourceSetToAddModList) {
-    struct NR_PDCCH_Config__controlResourceSetToAddModList *controlResourceSetToAddModList = pdcch_Config->controlResourceSetToAddModList;
-    for (int i = 0; i < controlResourceSetToAddModList->list.count; i++) {
-      AssertFatal(cset_configured < FAPI_NR_MAX_CORESET_PER_BWP, "Attempting to configure %d CORESET but only %d per BWP are allowed",
-                  cset_configured + 1, FAPI_NR_MAX_CORESET_PER_BWP);
-      // In case network reconfigures control resource set with the same ControlResourceSetId as used for commonControlResourceSet
-      // configured via PDCCH-ConfigCommon, the configuration from PDCCH-Config always takes precedence
-      if (controlResourceSetToAddModList->list.array[i]->controlResourceSetId == common_cset_id)
-        mac->BWP_coresets[0] = controlResourceSetToAddModList->list.array[i];
-      else {
-        mac->BWP_coresets[cset_configured] = controlResourceSetToAddModList->list.array[i];
-        cset_configured++;
+  /* Only (re)build the CORESET array when this reconfiguration actually carries
+     CORESET config, mirroring the SearchSpace handling above. RRC uses delta
+     signaling (ToAddModList), so a reconfiguration that omits CORESET config must
+     NOT wipe previously-installed coresets: doing so leaves live SearchSpaces
+     (e.g. USS on CORESET 1) dangling and makes ue_get_coreset() assert on the next
+     DL slot. Observed on the Relay UE after a partial (SL-MCS-only) reconfiguration:
+     BWP_coresets[] all NULL while SearchSpace 5 still referenced CORESET 1. */
+  const bool has_common_cset = pdcch_ConfigCommon && pdcch_ConfigCommon->commonControlResourceSet;
+  const bool has_dedicated_csets = pdcch_Config && pdcch_Config->controlResourceSetToAddModList;
+  if (has_common_cset || has_dedicated_csets) {
+    int cset_configured = 0;
+    int common_cset_id = -1;
+    if (has_common_cset) {
+      mac->BWP_coresets[cset_configured] = pdcch_ConfigCommon->commonControlResourceSet;
+      common_cset_id = pdcch_ConfigCommon->commonControlResourceSet->controlResourceSetId;
+      cset_configured++;
+    }
+    if (has_dedicated_csets) {
+      struct NR_PDCCH_Config__controlResourceSetToAddModList *controlResourceSetToAddModList = pdcch_Config->controlResourceSetToAddModList;
+      for (int i = 0; i < controlResourceSetToAddModList->list.count; i++) {
+        AssertFatal(cset_configured < FAPI_NR_MAX_CORESET_PER_BWP, "Attempting to configure %d CORESET but only %d per BWP are allowed",
+                    cset_configured + 1, FAPI_NR_MAX_CORESET_PER_BWP);
+        /* In case network reconfigures control resource set with the same ControlResourceSetId as used for commonControlResourceSet
+           configured via PDCCH-ConfigCommon, the configuration from PDCCH-Config always takes precedence */
+        if (controlResourceSetToAddModList->list.array[i]->controlResourceSetId == common_cset_id)
+          mac->BWP_coresets[0] = controlResourceSetToAddModList->list.array[i];
+        else {
+          mac->BWP_coresets[cset_configured] = controlResourceSetToAddModList->list.array[i];
+          cset_configured++;
+        }
       }
     }
+    for (int i = cset_configured; i < FAPI_NR_MAX_CORESET_PER_BWP; i++)
+      mac->BWP_coresets[i] = NULL;
   }
-  for (int i = cset_configured; i < FAPI_NR_MAX_CORESET_PER_BWP; i++)
-    mac->BWP_coresets[i] = NULL;
 }
 
 // todo handle mac_LogicalChannelConfig
@@ -594,8 +603,12 @@ void configure_current_BWP(NR_UE_MAC_INST_t *mac,
         bwp_dlcommon = &mac->scc_SIB->downlinkConfigCommon.initialDownlinkBWP;
         bwp_ulcommon = &mac->scc_SIB->uplinkConfigCommon->initialUplinkBWP;
       }
-      else
-        AssertFatal(false, "Either SCC or SCC SIB should be non-NULL\n");
+      else {
+        /* Remote UE doesn't have scc/scc_SIB (connects via PC5 relay, no SIB1 reception)
+           Skip BWP configuration - Remote UE doesn't use Uu interface directly */
+        LOG_W(NR_MAC, "SCC and SCC_SIB are both NULL - skipping BWP configuration (Remote UE?)\n");
+        return;
+      }
 
       NR_BWP_Downlink_t *bwp_downlink = NULL;
       const struct NR_ServingCellConfig__downlinkBWP_ToAddModList *bwpList = spCellConfigDedicated->downlinkBWP_ToAddModList;

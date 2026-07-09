@@ -60,7 +60,23 @@ static inline int ngap_gNB_encode_initiating(NGAP_NGAP_PDU_t *pdu, uint8_t **buf
   }
 
   asn_encode_to_new_buffer_result_t res = asn_encode_to_new_buffer(NULL, ATS_ALIGNED_CANONICAL_PER, &asn_DEF_NGAP_NGAP_PDU, pdu);
-  AssertFatal(res.result.encoded > 0, "failed to encode NGAP msg\n");
+
+  if (res.result.encoded <= 0) {
+    // ASN.1 encoding failed - print detailed error information
+    NGAP_ERROR("Failed to encode NGAP PDU (procedure code %d): encoded=%ld\n",
+               (int)pdu->choice.initiatingMessage->procedureCode,
+               (long)res.result.encoded);
+
+    // Try to get constraint violation details by printing the structure
+    if (pdu->choice.initiatingMessage->procedureCode == NGAP_ProcedureCode_id_InitialUEMessage) {
+      NGAP_ERROR("InitialUEMessage encoding failed - dumping structure:\n");
+      asn_fprint(stderr, &asn_DEF_NGAP_NGAP_PDU, pdu);
+    }
+
+    AssertFatal(0, "failed to encode NGAP msg (procedure %d, result=%ld)\n",
+                (int)pdu->choice.initiatingMessage->procedureCode, (long)res.result.encoded);
+  }
+
   *buffer = res.buffer;
   *len = res.result.encoded;
   return 0;
