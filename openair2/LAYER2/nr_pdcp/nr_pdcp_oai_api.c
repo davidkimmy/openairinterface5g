@@ -970,6 +970,8 @@ srb_found:
     NR_RRC_DCCH_DATA_IND(message_p).sdu_p = rrc_buffer_p;
     NR_RRC_DCCH_DATA_IND(message_p).sdu_size = size;
     NR_RRC_DCCH_DATA_IND(message_p).rnti = ue->rntiMaybeUEid;
+    /* Used by the Remote UE to decide whether an RRCReconfiguration needs an RRCReconfigurationComplete. */
+    NR_RRC_DCCH_DATA_IND(message_p).intf_type = (entity->type == NR_PDCP_SL_SRB) ? PC5 : UU;
     itti_send_msg_to_task(TASK_RRC_NRUE, 0, message_p);
   }
 }

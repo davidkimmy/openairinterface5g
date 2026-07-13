@@ -2822,15 +2822,20 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
  }
 
  //-----------------------------------------------------------------------------
- void nr_rrc_ue_generate_RRCReconfigurationComplete( const protocol_ctxt_t *const ctxt_pP, const uint8_t gNB_index, const uint8_t Transaction_id ) {
+ void nr_rrc_ue_generate_RRCReconfigurationComplete( const protocol_ctxt_t *const ctxt_pP, const uint8_t gNB_index, const uint8_t Transaction_id, const nr_intf_type_t src_intf ) {
    uint8_t buffer[32], size;
    bool is_remote_ue = get_softmodem_params()->relay_type > 0 && !get_softmodem_params()->is_relay_ue;
 
-   /* Remote UE: Distinguish between peer sidelink RRC and cellular RRC
-      xid=3: Peer sidelink RRCReconfiguration from Relay UE (SL config) → Skip reply
-      xid!=3: Cellular RRCReconfiguration from gNB via SRAP → Send reply via SRAP */
-   if (is_remote_ue && Transaction_id == SL_PEER_RRC_RECONFIG_XID) {
-     LOG_D(NR_RRC, "[Remote UE%d] Received peer sidelink RRCReconfiguration (xid=3) - Skipping RRCReconfigurationComplete (no reply to peer)\n",
+   /* Remote UE: Distinguish peer-sidelink RRC from cellular RRC by SOURCE, not by
+      transaction id. The rrc-TransactionIdentifier is only 2 bits (0..3) and the
+      gNB legitimately cycles through all four values, so a cellular reconfiguration
+      can land on xid==3 and collide with any sentinel value (previous bug: DRB
+      reconfig with xid==3 was mistaken for a peer reconfig, no Complete was sent,
+      and the DRB was never brought up -> intermittent ping failure).
+      PC5  = peer-sidelink RRCReconfiguration from the Relay UE (SL-SRB) -> no reply.
+      UU   = cellular RRCReconfiguration from the gNB (via SRAP or Uu)   -> reply. */
+   if (is_remote_ue && src_intf == PC5) {
+     LOG_D(NR_RRC, "[Remote UE%d] Received peer sidelink RRCReconfiguration (PC5 SL-SRB) - Skipping RRCReconfigurationComplete (no reply to peer)\n",
            ctxt_pP->module_id);
      return;
    }
@@ -2870,7 +2875,8 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
    const srb_id_t               Srb_id,
    const uint8_t         *const Buffer,
    size_t                       Buffer_size,
-   const uint8_t                gNB_indexP
+   const uint8_t                gNB_indexP,
+   const nr_intf_type_t         src_intf
  )
  //-----------------------------------------------------------------------------
  {
@@ -2914,9 +2920,11 @@ void extract_nr_sl_ResourcePool(struct NR_SL_ResourcePool_r16 *sl_ResourcePool, 
            dl_dcch_msg->message.choice.c1->choice.rrcReconfiguration,
            gNB_indexP);
          // Remote UE: RRCReconfigurationComplete will be sent via SRAP (handled in nr_rrc_ue_generate_RRCReconfigurationComplete)
+         // Reply decision is based on src_intf (PC5 peer-SL vs UU/SRAP cellular), not the transaction id.
          nr_rrc_ue_generate_RRCReconfigurationComplete(ctxt_pP,
            gNB_indexP,
-           dl_dcch_msg->message.choice.c1->choice.rrcReconfiguration->rrc_TransactionIdentifier);
+           dl_dcch_msg->message.choice.c1->choice.rrcReconfiguration->rrc_TransactionIdentifier,
+           src_intf);
          if (get_softmodem_params()->sl_mode == 1)
            nr_ue_rrc_SL_UEInformation_trigger(ctxt_pP->module_id, ctxt_pP->frame, 0);
          break;
@@ -3211,7 +3219,8 @@ void *rrc_nrue_task(void *args_p)
           NR_RRC_DCCH_DATA_IND (msg_p).dcch_index,
           NR_RRC_DCCH_DATA_IND (msg_p).sdu_p,
           NR_RRC_DCCH_DATA_IND (msg_p).sdu_size,
-          NR_RRC_DCCH_DATA_IND (msg_p).gNB_index);
+          NR_RRC_DCCH_DATA_IND (msg_p).gNB_index,
+          (nr_intf_type_t) NR_RRC_DCCH_DATA_IND (msg_p).intf_type);
         break;
 
       case NAS_KENB_REFRESH_REQ:

@@ -39,7 +39,8 @@ __attribute__((weak)) int nr_rrc_ue_decode_dcch(const protocol_ctxt_t *const ctx
                                                   const srb_id_t Srb_id,
                                                   const uint8_t *const Buffer,
                                                   size_t Buffer_size,
-                                                  const uint8_t gNB_indexP) {
+                                                  const uint8_t gNB_indexP,
+                                                  const nr_intf_type_t src_intf) {
   LOG_W(NR_SRAP, "nr_rrc_ue_decode_dcch called but not available (gNB build?)\n");
   return -1;
 }
@@ -738,7 +739,10 @@ void srap_deliver_sdu_drb(const protocol_ctxt_t *const  ctxt_pP,
         /* State-based rule: If UE is CONNECTED, all messages on SRB1 are DCCH messages
            The only exception is during RRC setup, which is handled by the rrc_state == RRC_STATE_IDLE_NR check above */
 
-        nr_rrc_ue_decode_dcch(ctxt_pP, rb_id, (uint8_t *)buf, size, 0);
+        /* Message arrived from the gNB over the SRAP relay path (cellular Uu
+           signalling). Tag it UU so the Remote UE sends RRCReconfigurationComplete
+           regardless of the gNB's transaction id. */
+        nr_rrc_ue_decode_dcch(ctxt_pP, rb_id, (uint8_t *)buf, size, 0, UU);
       }
 
       free_mem_block(memblock, __FUNCTION__);

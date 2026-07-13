@@ -731,7 +731,7 @@ wait_for_tun_interface() {
 }
 
 wait_for_pc5_sync() {
-    local log_file="$HOME/result_nearby.log"
+    local log_file="/tmp/result_nearby.log"
     local timeout=${1:-60}
 
     echo "Waiting for PC5 sync (timeout: ${timeout}s)..."
@@ -745,6 +745,30 @@ wait_for_pc5_sync() {
         elapsed=$((elapsed + 1))
     done
     echo "WARNING: PC5 sync not detected after ${timeout}s"
+    return 1
+}
+
+wait_for_remote_ue_core_ip() {
+    # The nr-uesoftmodem logs the assigned address only after
+    # nas_config() has already reconfigured oaitun_ue2
+    # (PduSessionEstablishmentAccept.c).
+    local log_file="/tmp/result_nearby.log"
+    local timeout=${1:-40}
+    local marker="PDU SESSION ESTABLISHMENT ACCEPT - Received UE IP"
+
+    REMOTE_UE_CORE_IP=""
+    echo "Waiting for remote UE Core IP (timeout: ${timeout}s)..."
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if [ -f "$log_file" ] && grep -q "$marker" "$log_file"; then
+            REMOTE_UE_CORE_IP=$(grep "$marker" "$log_file" | tail -1 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1)
+            echo "Remote UE obtained Core IP: ${REMOTE_UE_CORE_IP} (after ${elapsed}s) - starting ping"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "ERROR: remote UE never obtained a Core IP after ${timeout}s - registration failed (e.g. max RETX on SL-SRB0)"
     return 1
 }
 
@@ -1040,7 +1064,7 @@ sync_config_files() {
 
 cleanup_old_logs() {
     for f in "${softmodem_log_files[@]}"; do
-        rm -f "$HOME/$f"
+        rm -f "/tmp/$f"
     done
     GNOME_WIN_IDX=0
 }
@@ -1049,9 +1073,9 @@ save_softmodem_logs() {
     local test_name=$1
     local ts=$(date +"%Y%m%d_%H%M%S")
     for f in "${softmodem_log_files[@]}"; do
-        if [[ -f "$HOME/$f" ]]; then
+        if [[ -f "/tmp/$f" ]]; then
             local basename=$(basename "$f" .log)
-            mv "$HOME/$f" "$log_dir/${basename}_${test_name}_${ts}.log"
+            mv "/tmp/$f" "$log_dir/${basename}_${test_name}_${ts}.log"
         fi
     done
 }
@@ -1175,8 +1199,8 @@ evaluate_ping_test() {
         local syncref_log=""
     elif [[ $sl_mode -eq 1 ]]; then
         # sl_mode 1: check local first, then remote
-        if [ -f "$HOME/result_nrUE_syncref.log" ]; then
-            local syncref_log="$HOME/result_nrUE_syncref.log"
+        if [ -f "/tmp/result_nrUE_syncref.log" ]; then
+            local syncref_log="/tmp/result_nrUE_syncref.log"
         elif [ -f "$log_dir/result_nrUE_syncref.log" ]; then
             local syncref_log="$log_dir/result_nrUE_syncref.log"
         else
@@ -1184,8 +1208,8 @@ evaluate_ping_test() {
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         # sl_mode 2: check local first, then remote
-        if [ -f "$HOME/result_syncref.log" ]; then
-            local syncref_log="$HOME/result_syncref.log"
+        if [ -f "/tmp/result_syncref.log" ]; then
+            local syncref_log="/tmp/result_syncref.log"
         elif [ -f "$log_dir/result_syncref.log" ]; then
             local syncref_log="$log_dir/result_syncref.log"
         else
@@ -1195,15 +1219,15 @@ evaluate_ping_test() {
 
     if [[ $sl_mode -eq 0 ]]; then
         if [[ $host_name == "local" ]]; then
-            local nrue_log="$HOME/result_nrUE.log"
+            local nrue_log="/tmp/result_nrUE.log"
         else
             local nrue_log="$log_dir/result_nrUE.log"
         fi
         local nrue_log=""
     else
         # For sidelink: check local first, then remote
-        if [ -f "$HOME/result_nearby.log" ]; then
-            local nearby_log="$HOME/result_nearby.log"
+        if [ -f "/tmp/result_nearby.log" ]; then
+            local nearby_log="/tmp/result_nearby.log"
         elif [ -f "$log_dir/result_nearby.log" ]; then
             local nearby_log="$log_dir/result_nearby.log"
         else
@@ -1547,7 +1571,7 @@ evaluate_ping_and_rsrp_test() {
 
     evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode "${test_name}"
 
-    src_file="~/result_syncref.log"; str_to_find='TotalTx 30'; dst_file="~/result_summary.txt"
+    src_file="/tmp/result_syncref.log"; str_to_find='TotalTx 30'; dst_file="/tmp/result_summary.txt"
     test_result=$(tail -n 100 $src_file | grep -m 1 $str_to_find >> $dst_file)
 }
 
@@ -1579,7 +1603,7 @@ run_gNB_cmd() {
                 -O $rel_config --gNBs.[0].min_rxtxtime 6 \
                 -E $sa_flag --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
     fi
-    log_file="$HOME/result_gNB.log"
+    log_file="/tmp/result_gNB.log"
     echo $gNB_cmd; echo
 
     # Save command to commands.txt
@@ -1621,7 +1645,7 @@ run_nrUE_cmd() {
                     -E $sa_flag --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
                     --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
     fi
-    log_file="$HOME/result_nrUE.log"
+    log_file="/tmp/result_nrUE.log"
     echo $nrUE_cmd; echo
 
     # Save command to commands.txt
@@ -1681,7 +1705,7 @@ run_syncref_cmd() {
                             --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
             fi
         fi
-        log_file="$HOME/result_nrUE_syncref.log"
+        log_file="/tmp/result_nrUE_syncref.log"
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
@@ -1695,7 +1719,7 @@ run_syncref_cmd() {
                         $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
-        log_file="$HOME/result_syncref.log"
+        log_file="/tmp/result_syncref.log"
     fi
 
     echo $syncref_cmd; echo;
@@ -1760,7 +1784,7 @@ run_nearby_cmd() {
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
         fi
     fi
-    log_file="$HOME/result_nearby.log"
+    log_file="/tmp/result_nearby.log"
     echo $nearby_cmd; echo
 
     # Save command to commands.txt
@@ -1837,7 +1861,17 @@ slmode1_srap_ping_test() {
         sleep ${sleep_timing[sync_stab_45s_v1]}
     fi
 
-    evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
+    # Gate the ping on remote UE Core registration (SL mode-1 relay). PC5 sync
+    # alone is not enough: the remote UE's oaitun_ue2 keeps its pre-registration
+    # default IP until the PDU Session Establishment Accept arrives via the relay.
+    if wait_for_remote_ue_core_ip 40; then
+        evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
+    else
+        LAST_TEST_RESULT="FAIL"
+        LAST_TX_PACKETS=0
+        LAST_RX_PACKETS=0
+        echo "Skipping ping: remote UE registration did not complete (no Core IP)."
+    fi
 
     # Cleanup all processes (nearby_host_name was cleaned up in the evaluate_ping_test)
     kill_all $syncref_host_name nr-uesoftmodem
@@ -1935,7 +1969,7 @@ update_mcs_runtime() {
     for i in {1..20}; do
         sleep 1
         # Check if nearby UE is receiving PSSCH (indicates sync achieved)
-        if grep -q "PSSCH.*RX ok [1-9]" ~/result_nearby.log 2>/dev/null; then
+        if grep -q "PSSCH.*RX ok [1-9]" /tmp/result_nearby.log 2>/dev/null; then
             echo "  ✓ Sidelink synced after ${i} seconds"
             sync_detected=1
             break
@@ -2068,7 +2102,7 @@ run_gNB_cmd_with_noise() {
              --MACRLCs.[0].ul_harq_round_max 1 \
              $sl_relay_tag"
 
-    log_file="$HOME/result_gNB.log"
+    log_file="/tmp/result_gNB.log"
 
     echo "=== gNB Command (noise=${noise_power}dB, ploss=${ploss}dB, config=${bler_conf_tag}) ===" >> "$log_dir/commands.txt"
     echo "$gNB_cmd" >> "$log_dir/commands.txt"
@@ -2106,7 +2140,7 @@ run_syncref_cmd_with_noise() {
                  --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
                  --relay-type 1 --is-relay-ue 1 --mcs ${mcs} --node-number 2"
 
-    log_file="$HOME/result_nrUE_syncref.log"
+    log_file="/tmp/result_nrUE_syncref.log"
 
     echo "=== Relay UE Command (noise=${noise_power}dB, mcs=${mcs}) ===" >> "$log_dir/commands.txt"
     echo "$syncref_cmd" >> "$log_dir/commands.txt"
@@ -2145,7 +2179,7 @@ run_nearby_cmd_with_noise() {
                 --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
                 --mcs ${mcs} --node-number 3 --relay-type 1"
 
-    log_file="$HOME/result_nearby.log"
+    log_file="/tmp/result_nearby.log"
 
     echo "=== Remote UE Command (noise=${noise_power}dB, mcs=${mcs}) ===" >> "$log_dir/commands.txt"
     echo "$nearby_cmd" >> "$log_dir/commands.txt"

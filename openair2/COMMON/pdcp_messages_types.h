@@ -96,6 +96,7 @@ typedef struct NRRrcDcchDataInd_s {
   uint16_t     rnti;
   uint8_t      module_id;
   uint8_t      gNB_index; // LG: needed in UE
+  uint8_t      intf_type; // nr_intf_type_t: UU(0) for Uu SRB, PC5(1) for SL-SRB
 } NRRrcDcchDataInd;
 
 typedef struct RrcPcchDataReq_s {
