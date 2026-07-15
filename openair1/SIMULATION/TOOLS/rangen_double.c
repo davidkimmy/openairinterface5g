@@ -120,15 +120,23 @@ double __attribute__ ((no_sanitize_address)) gaussdouble(double mean, double var
 */
 // Ziggurat
 static double wn[128], fn[128];
-static uint32_t iz, jz, jsr = 123456789, kn[128];
-static int32_t hz;
+static uint32_t kn[128];
+// The ziggurat mutable state (jsr/hz/iz/jz) is thread-local: gaussZiggurat() is called
+// concurrently from independent chanmod paths (e.g. a mode-1 SL relay applies AWGN on BOTH
+// its Uu and PC5 rfsim devices, on two different threads). With shared state those threads
+// race on and cache-contend jsr/hz/iz every sample, which serialises them and starves the
+// relay's forward path. Per-thread state removes the race and the contention. wn/fn/kn are
+// read-only after tableNor() so they stay shared.
+static __thread uint32_t iz, jz, jsr = 123456789;
+static __thread int32_t hz;
+static __thread bool rng_thread_seeded = false;
 #define SHR3 (jz = jsr, jsr ^= (jsr << 13), jsr ^= (jsr >> 17), jsr ^= (jsr << 5), jz + jsr)
 #define UNI (0.5 + (signed)SHR3 * 0.2328306e-9)
 
 double nfix(void)
 {
   const double r = 3.442620;
-  static double x, y;
+  double x, y;
 
   for (;;) {
     x = hz * wn[iz];
@@ -189,6 +197,15 @@ double __attribute__ ((no_sanitize("address", "undefined"))) gaussZiggurat(doubl
   if (!__builtin_expect(tableNordDone, 1)) {
     fprintf(stderr, "%s(): RNG not initialized, run randominit() first\n", __func__);
     abort();
+  }
+
+  if (!rng_thread_seeded) {
+    // First call on this thread: decorrelate its ziggurat stream from other threads using the
+    // address of this thread-local flag as a per-thread salt (kept non-zero for SHR3).
+    jsr ^= (uint32_t)((uintptr_t)&rng_thread_seeded >> 4) * 2654435761u;
+    if (jsr == 0)
+      jsr = 123456789;
+    rng_thread_seeded = true;
   }
 
   hz = SHR3;
