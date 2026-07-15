@@ -32,6 +32,16 @@ set (OPENAIR_DIR     ${CMAKE_SOURCE_DIR})
 include("cmake_targets/macros.cmake")
 
 ##############################
+### Hardware-dependent options
+##############################
+# Defined EARLY (before any add_library/add_subdirectory) so the add_definitions()
+# in add_list1_option() reaches every target. sim.h uses NB_ANTENNAS_TX/RX at file
+# scope, so any target that includes it must see these -D flags regardless of the
+# order in which targets are created (add_definitions only affects later targets).
+add_list1_option(NB_ANTENNAS_RX "4" "Number of antennas in reception" "1" "2" "4")
+add_list1_option(NB_ANTENNAS_TX "4" "Number of antennas in transmission" "1" "2" "4")
+
+##############################
 ### BLER Instrumentation
 ##############################
 option(ENABLE_BLER_INSTRUMENTATION "Enable BLER/HARQ/LDPC logging for sidelink testing" OFF)
@@ -456,8 +466,8 @@ target_link_libraries(f1ap PRIVATE ngap nr_rrc)
 
 # Hardware dependant options
 ###################################
-add_list1_option(NB_ANTENNAS_RX "4" "Number of antennas in reception" "1" "2" "4")
-add_list1_option(NB_ANTENNAS_TX "4" "Number of antennas in transmission" "1" "2" "4")
+# NB_ANTENNAS_RX / NB_ANTENNAS_TX are now defined earlier (right after the macros
+# include) so their -D reaches every target; see "Hardware-dependent options" above.
 
 set (CONFIG_ROOTDIR ${OPENAIR_DIR}/common/config)
 add_library(CONFIG_LIB
@@ -2515,6 +2525,16 @@ endif()
 make_driver(ue_ip ${OPENAIR2_DIR}/NETWORK_DRIVER/UE_IP ${ue_ip_src})
 
 include(${OPENAIR1_DIR}/PHY/CODING/nrLDPC_decoder/nrLDPC_tools/CMakeLists.txt)
+
+# Ported from develop's top-level CMakeLists. GTest resolves via the system package
+# (libgtest-dev); develop's CPM googletest auto-download fallback is omitted because this
+# branch has no CPM. The "tests" meta-target lets `make tests && ctest` build/run all tests.
+add_boolean_option(ENABLE_TESTS OFF "Activate build of unit tests" OFF)
+if(ENABLE_TESTS)
+  add_custom_target(tests)
+  enable_testing()
+  find_package(GTest REQUIRED)
+endif()
 
 add_subdirectory(common)
 add_subdirectory(doc)

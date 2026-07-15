@@ -1602,6 +1602,14 @@ run_gNB_cmd() {
         gNB_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-softmodem \
                 -O $rel_config --gNBs.[0].min_rxtxtime 6 \
                 -E $sa_flag --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
+    elif [[ $test_type == "vrtsim" ]]; then
+        # vrtsim (shared-memory radio) is local-host only; gNB is the Uu server.
+        # NOTE: sl_relay_tag (sl_mode 1) intentionally omits --ip-demo (dropped after
+        # base commit 3e4e0c196c; the remote UE now registers with the Core).
+        gNB_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-softmodem \
+                -O $config_path --gNBs.[0].min_rxtxtime 6 \
+                $sa_flag --device.name vrtsim --vrtsim.role server --vrtsim.chanmod 0 \
+                --log_config.global_log_level info $sl_relay_tag"
     fi
     log_file="/tmp/result_gNB.log"
     echo $gNB_cmd; echo
@@ -1644,6 +1652,13 @@ run_nrUE_cmd() {
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                     -E $sa_flag --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
                     --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
+    elif [[ $test_type == "vrtsim" ]]; then
+        # vrtsim (shared-memory radio) is local-host only; UE is the Uu client.
+        nrUE_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
+                    ./nr-uesoftmodem \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --ssb 516 --uicc0.imsi 001010000000001 \
+                    $sa_flag --device.name vrtsim --vrtsim.role client --vrtsim.chanmod 0 \
+                    --log_config.global_log_level info"
     fi
     log_file="/tmp/result_nrUE.log"
     echo $nrUE_cmd; echo
@@ -1691,19 +1706,27 @@ run_syncref_cmd() {
                             -O $CONF_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                             -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
-                            --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
+                            --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200,num_recv_frames=64,num_send_frames=64' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200,num_recv_frames=64,num_send_frames=64' \
                             $ext_clock_flag \
-                            --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
+                            --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
             else
                 syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
                             -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
-                            --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200' \
+                            --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200,num_recv_frames=64,num_send_frames=64' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200,num_recv_frames=64,num_send_frames=64' \
                             $ext_clock_flag \
-                            --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $mcs"
+                            --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
             fi
+        elif [[ $test_type == "vrtsim" ]]; then
+            # vrtsim relay/SyncRef (sl_mode 1): Uu client + PC5 client, local host only.
+            syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                        -O $CONF_PATH/sl_sync_ref.conf \
+                        -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                        $sa_flag --sync-ref --node-number 2 --sl-mode 1 \
+                        --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 0 \
+                        --log_config.global_log_level info --relay-type 1 --is-relay-ue 1 $mcs"
         fi
         log_file="/tmp/result_nrUE_syncref.log"
     elif [[ $sl_mode -eq 2 ]]; then
@@ -1718,6 +1741,12 @@ run_syncref_cmd() {
                         -O $CONF_PATH/sl_sync_ref.conf -E $sa_flag --sl-mode 2 --sync-ref \
                         $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+        elif [[ $test_type == "vrtsim" ]]; then
+            # vrtsim SyncRef (sl_mode 2): PC5 server, local host only.
+            syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
+                        $OAI_BUILD_DIR/nr-uesoftmodem \
+                        -O $CONF_PATH/sl_sync_ref.conf --sync-ref --sl-mode 2 $sa_flag \
+                        --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 0 --log_config.global_log_level info $mcs"
         fi
         log_file="/tmp/result_syncref.log"
     fi
@@ -1762,7 +1791,15 @@ run_nearby_cmd() {
                         sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                         -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
                         -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 $ext_clock_flag $mcs \
+                        --usrp-args 'type=b200,num_recv_frames=64,num_send_frames=64' \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
+        elif [[ $test_type == "vrtsim" ]]; then
+            # vrtsim remote UE (sl_mode 1): PC5 server; own IMSI ...002 (registers with Core).
+            nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                        -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
+                        $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
+                        --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 0 \
+                        --log_config.global_log_level info"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
         if [[ $test_type == "rfsim" ]]; then
@@ -1782,6 +1819,11 @@ run_nearby_cmd() {
                         -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf -E $sa_flag --sl-mode 2 \
                         $ext_clock_flag \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+        elif [[ $test_type == "vrtsim" ]]; then
+            # vrtsim Nearby (sl_mode 2): PC5 client, local host only.
+            nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
+                        -O $CONF_PATH/sl_ue1.conf $sa_flag --sl-mode 2 $mcs \
+                        --device.name vrtsim --vrtsim.role_sl client --vrtsim.chanmod 0 --log_config.global_log_level info"
         fi
     fi
     log_file="/tmp/result_nearby.log"
@@ -1834,11 +1876,27 @@ slmode1_srap_ping_test() {
         sync_config_files $nearby_host_name
     fi
 
-    run_gNB_cmd $test_type $sl_mode $gnb_host_name
-    sleep 1
-    run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
-    sleep 1
-    run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+    echo "========== Test: $test_name ==========" >> "$log_dir/commands.txt"
+
+    # vrtsim (shared-memory radio) launch SEQUENCE + timing are critical: bring up the
+    # servers first and give each stage time to settle. gNB (Uu server) -> Remote UE
+    # (PC5 server) -> Relay UE (Uu+PC5 client). The relay must complete Uu registration
+    # and PC5 bring-up so the Remote UE finishes its Core registration (transitioning
+    # from the initial demo IP to its Core-assigned IP) BEFORE the ping runs.
+    if [[ $test_type == "vrtsim" ]]; then
+        run_gNB_cmd $test_type $sl_mode $gnb_host_name
+        sleep 5
+        run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+        sleep 5
+        run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+        sleep 5
+    else
+        run_gNB_cmd $test_type $sl_mode $gnb_host_name
+        sleep 1
+        run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+        sleep 1
+        run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+    fi
 
     local wait_start=$(date +%s)
     wait_for_tun_interface $src_if $nearby_host_name $duration
@@ -1924,6 +1982,21 @@ rfsim_slmode1_srap_ping_test_on_local_host() {
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+vrtsim_slmode1_srap_ping_test_on_local_host() {
+#############################################################
+    # Argumemt(s): duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="vrtsim"
     local gnb_host_name="local"
     local syncref_host_name="local"
     local nearby_host_name="local"
@@ -2318,6 +2391,7 @@ uu_ping_test() {
     local src_if="oaitun_ue1"
     local dest_ip="8.8.8.8"
 
+    echo "========== Test: $test_name ==========" >> "$log_dir/commands.txt"
     run_gNB_cmd $test_type $sl_mode $gnb_host_name
     sleep 1
     run_nrUE_cmd $test_type $mcs $sl_mode $nrue_host_name
@@ -2384,6 +2458,20 @@ rfsim_uu_ping_test_on_local_host() {
     local num_hosts=1
     uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}"
 }
+#############################################################
+vrtsim_uu_ping_test_on_local_host() {
+#############################################################
+    # Argumemt(s): duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="vrtsim"
+    local gnb_host_name="local"
+    local nrue_host_name="local"
+    local num_hosts=1
+    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}"
+}
 
 pc5_ping_test() {
     # Argumemt(s): duration, test_type, mcs, iteration, host_name, test_name
@@ -2414,6 +2502,7 @@ pc5_ping_test() {
         sync_config_files $nearby_host_name
     fi
 
+    echo "========== Test: $test_name ==========" >> "$log_dir/commands.txt"
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
     sleep 1
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
@@ -2494,6 +2583,20 @@ rfsim_pc5_ping_test_on_local_host() {
     local nearby_host_name="local"
     pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
 }
+#############################################################
+vrtsim_pc5_ping_test_on_local_host() {
+#############################################################
+    # Argumemt(s): duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="vrtsim"
+    local num_hosts=1
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
 
 pc5_csi_acquisition_psfch_period_test() {
     # Argumemt(s): csi_acq, psfch_period, duration, test_type, mcs, iteration
@@ -2546,6 +2649,7 @@ pc5_csi_acquisition_psfch_period_test() {
         sync_config_files $nearby_host_name
     fi
 
+    echo "========== Test: ${test_name}_csi${csi_acq}_psfch${period} ==========" >> "$log_dir/commands.txt"
     # For SL mode 2 two-host tests: syncref runs locally, nearby runs remotely
     if [[ $nearby_host_name == "local" ]]; then
         run_syncref_cmd $test_type $mcs $sl_mode "local"
@@ -2720,6 +2824,7 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
         sync_config_files $syncref_host_name
     fi
 
+    echo "========== Test: ${test_name}_csi${csi_acq}_psfch${period} ==========" >> "$log_dir/commands.txt"
     # For SL mode 1 three-host tests: gNB runs locally, syncref and nearby run remotely
     run_gNB_cmd $test_type $sl_mode $gnb_host_name
     sleep 1
@@ -2857,6 +2962,7 @@ pc5_iperf3_test() {
         sync_config_files $nearby_host_name
     fi
 
+    echo "========== Test: $test_name ==========" >> "$log_dir/commands.txt"
     run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
     sleep 1
     run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
@@ -2970,11 +3076,27 @@ slmode1_srap_iperf3_test() {
         sync_config_files $nearby_host_name
     fi
 
-    run_gNB_cmd $test_type $sl_mode $gnb_host_name
-    sleep 1
-    run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
-    sleep 1
-    run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+    echo "========== Test: $test_name ==========" >> "$log_dir/commands.txt"
+
+    # vrtsim (shared-memory radio) launch SEQUENCE + timing are critical: bring up the
+    # servers first and give each stage time to settle. gNB (Uu server) -> Remote UE
+    # (PC5 server) -> Relay UE (Uu+PC5 client). The relay must complete Uu registration
+    # and PC5 bring-up so the Remote UE finishes its Core registration (transitioning
+    # from the initial demo IP to its Core-assigned IP) BEFORE the ping runs.
+    if [[ $test_type == "vrtsim" ]]; then
+        run_gNB_cmd $test_type $sl_mode $gnb_host_name
+        sleep 5
+        run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+        sleep 5
+        run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+        sleep 5
+    else
+        run_gNB_cmd $test_type $sl_mode $gnb_host_name
+        sleep 1
+        run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
+        sleep 1
+        run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
+    fi
 
     local wait_start=$(date +%s)
     wait_for_tun_interface $src_if $nearby_host_name $duration
@@ -3212,6 +3334,12 @@ main() {
             iteration_end_val=${iteration_end:-$num_repeat}
         elif [[ $test_name == rfsim_* ]]; then
             # RFsim tests: use snr_array
+            param_array=("${snr_array[@]}")
+            is_bler=false
+            iteration_start_val=1
+            iteration_end_val=$num_repeat
+        elif [[ $test_name == vrtsim_* ]]; then
+            # vrtsim tests (shared-memory radio, local host): no SNR sweep, run once per iteration
             param_array=("${snr_array[@]}")
             is_bler=false
             iteration_start_val=1

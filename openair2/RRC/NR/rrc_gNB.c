@@ -674,12 +674,21 @@ static void rrc_gNB_generate_RRCSetup(instance_t instance,
 }
 
 //-----------------------------------------------------------------------------
-static int rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id_t module_id, rnti_t rnti, const int CC_id)
+static int rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id_t module_id, rnti_t rnti, const int CC_id,
+                                                                   const uint8_t *masterCellGroup, int masterCellGroup_len)
 //-----------------------------------------------------------------------------
 {
   LOG_I(NR_RRC, "generate RRCSetup for RRCReestablishmentRequest \n");
   rrc_gNB_ue_context_t         *ue_context_pP   = NULL;
   gNB_RRC_INST *rrc_instance_p = RC.nrrrc[module_id];
+
+  /* RRCSetup carries a mandatory masterCellGroup IE. do_RRCSetup() DevAsserts it is
+     non-NULL, so a reestablishment fallback with no DU cellGroup would crash the gNB.
+     Fail the fallback gracefully instead of aborting the whole gNB. */
+  if (masterCellGroup == NULL || masterCellGroup_len <= 0) {
+    LOG_E(NR_RRC, "cannot generate RRCSetup for RRCReestablishmentRequest (RNTI %04x): no masterCellGroup from DU\n", rnti);
+    return -1;
+  }
 
   ue_context_pP = rrc_gNB_create_ue_context(rnti, rrc_instance_p, 0);
 
@@ -689,7 +698,7 @@ static int rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id_t m
   ue_p->xids[xid] = RRC_SETUP_FOR_REESTABLISHMENT;
   NR_SRB_ToAddModList_t *SRBs = createSRBlist(ue_p, true);
 
-  int size = do_RRCSetup(ue_context_pP, buf, xid, NULL, 0, &rrc_instance_p->configuration, SRBs);
+  int size = do_RRCSetup(ue_context_pP, buf, xid, masterCellGroup, masterCellGroup_len, &rrc_instance_p->configuration, SRBs);
   AssertFatal(size > 0, "do_RRCSetup failed\n");
   AssertFatal(size <= 1024, "memory corruption\n");
 
@@ -2183,7 +2192,7 @@ int nr_rrc_gNB_decode_ccch(module_id_t module_id, rnti_t rnti, const uint8_t *bu
                 " NR_RRCReestablishmentRequest ue_Identity.physCellId(%ld) is not equal to current physCellId(%ld), fallback to RRC establishment\n",
                 physCellId,
                 gnb_rrc_inst->carrier.physCellId);
-          xid = rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id, rnti, 0);
+          xid = rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id, rnti, 0, du_to_cu_rrc_container, du_to_cu_rrc_container_len);
           break;
         }
 
@@ -2197,7 +2206,7 @@ int nr_rrc_gNB_decode_ccch(module_id_t module_id, rnti_t rnti, const uint8_t *bu
         if (rrcReestablishmentRequest.ue_Identity.c_RNTI < 0x1 || rrcReestablishmentRequest.ue_Identity.c_RNTI > 0xffef) {
           /* c_RNTI range error should not happen */
           LOG_E(NR_RRC, "NR_RRCReestablishmentRequest c_RNTI range error, fallback to RRC establishment\n");
-          xid = rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id, rnti, 0);
+          xid = rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id, rnti, 0, du_to_cu_rrc_container, du_to_cu_rrc_container_len);
           break;
         }
 
@@ -2207,7 +2216,7 @@ int nr_rrc_gNB_decode_ccch(module_id_t module_id, rnti_t rnti, const uint8_t *bu
         gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
         if (ue_context_p == NULL) {
           LOG_E(NR_RRC, "NR_RRCReestablishmentRequest without UE context, fallback to RRC establishment\n");
-          xid = rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id, c_rnti, 0);
+          xid = rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id, c_rnti, 0, du_to_cu_rrc_container, du_to_cu_rrc_container_len);
           break;
         }
         // c-plane not end

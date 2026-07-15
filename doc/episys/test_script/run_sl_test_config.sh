@@ -157,37 +157,43 @@ uu_basic_tests=(
     rfsim_uu_ping_test_on_local_host
     rfsim_uu_ping_test_on_two_hosts
     usrp_B210_uu_ping_test_on_two_hosts
+    vrtsim_uu_ping_test_on_local_host
 )
 slmode2_basic_tests=(
     rfsim_pc5_ping_test_on_local_host
     rfsim_pc5_ping_test_on_two_hosts
     usrp_B210_pc5_ping_test_on_two_hosts
-)
-slmode2_csi_psfch_tests=( # Each item includes 8 sub-test cases.
-    rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host
-    rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts
-    usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts
-)
-slmode2_iperf3_tests=(
-    rfsim_pc5_iperf3_test_on_local_host
-    rfsim_pc5_iperf3_test_on_two_hosts
-    usrp_B210_pc5_iperf3_test_on_two_hosts
+    vrtsim_pc5_ping_test_on_local_host
 )
 slmode1_basic_tests=(
     rfsim_slmode1_srap_ping_test_on_local_host
     rfsim_slmode1_srap_ping_test_on_three_hosts
     usrp_B210_slmode1_srap_ping_test_on_three_hosts
+    vrtsim_slmode1_srap_ping_test_on_local_host
+)
+
+slmode2_csi_psfch_tests=( # Each item includes 8 sub-test cases.
+    rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host
+    rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts
+    usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts
 )
 slmode1_csi_psfch_tests=( # Each item includes 8 sub-test cases.
     rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host
     rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts
     usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts
 )
+
+slmode2_iperf3_tests=(
+    rfsim_pc5_iperf3_test_on_local_host
+    rfsim_pc5_iperf3_test_on_two_hosts
+    usrp_B210_pc5_iperf3_test_on_two_hosts
+)
 slmode1_iperf3_tests=(
     rfsim_slmode1_srap_iperf3_test_on_local_host
     rfsim_slmode1_srap_iperf3_test_on_three_hosts
     usrp_B210_slmode1_srap_iperf3_test_on_three_hosts
 )
+
 regress_tests=(
     uu_basic_tests
     slmode1_basic_tests
@@ -201,12 +207,13 @@ stress_tests=(
     slmode2_basic_tests[1:2]
 )
 pilot_tests=(
+    uu_basic_tests[2]
+    slmode2_basic_tests[2]
     slmode1_basic_tests[2]
-    #slmode2_basic_tests[2]
-    #slmode1_csi_psfch_tests[1]
-    #slmode2_csi_psfch_tests[2]
-    #slmode1_iperf3_tests[2]
+    #slmode2_csi_psfch_tests[1]
+    #slmode1_csi_psfch_tests[2]
     #slmode2_iperf3_tests[2]
+    #slmode1_iperf3_tests[2]
 )
 
 verbose_config=0  # 0=quiet, 1=show config details before each test

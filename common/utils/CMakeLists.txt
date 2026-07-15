@@ -9,3 +9,6 @@ if(ENABLE_WEBSRV)
 endif()
 
 add_subdirectory(T)
+
+# Shared-memory IQ channel used by the vrtsim radio (vendored from upstream).
+add_subdirectory(shm_iq_channel)

@@ -78,6 +78,9 @@ typedef struct {
   struct complexd **ch;
   ///Sampled frequency response (90 kHz resolution)
   struct complexd **chF;
+  ///Single-precision (sample-spaced) channel impulse response. Backported field used by vrtsim,
+  ///which populates it from ch. size(ch_ps) = (n_tx * n_rx) * channel_length.
+  struct complexf **ch_ps;
   ///Maximum path delay in mus.
   double Td;
   ///Carrier center frequency

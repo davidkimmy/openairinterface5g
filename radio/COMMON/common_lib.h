@@ -59,11 +59,16 @@
 #define MAX_CARDS 8
 
 typedef int64_t openair0_timestamp;
+typedef int64_t openair0_timestamp_t; // develop-native alias
 typedef volatile int64_t openair0_vtimestamp;
 
 
 /*!\brief structure holds the parameters to configure USRP devices*/
 typedef struct openair0_device_t openair0_device;
+// develop-native alias: develop names the typedef openair0_device_t (struct tag openair0_device).
+// This branch's struct tag is openair0_device_t; alias the develop-native typedef name onto it so
+// vrtsim sources vendored verbatim from develop compile without touching the ~31 consumers.
+typedef struct openair0_device_t openair0_device_t;
 
 //#define USRP_GAIN_OFFSET (56.0)  // 86 calibrated for USRP B210 @ 2.6 GHz to get equivalent RS EPRE in OAI to SMBV100 output
 
@@ -196,6 +201,8 @@ typedef struct {
   int mmapped_dma;
   //! offset in samples between TX and RX paths
   int tx_sample_advance;
+  //! TX sample advance requested on the command line (develop-native; used by vrtsim) (Goal-1)
+  int command_line_sample_advance;
   //! samples per packet on the fronthaul interface
   int samples_per_packet;
   //! number of RX channels (=RX antennas)
@@ -531,6 +538,54 @@ struct openair0_device_t {
    * \returns 0 in success
    */
   int (*trx_set_gains_func)(openair0_device *device, openair0_config_t *openair0_cfg);
+
+  // Vendored verbatim from develop's openair0_device so develop-native vrtsim.c (which assigns
+  // these) compiles. No branch code invokes them today; non-vrtsim drivers leave them NULL.
+  /*! \brief Called to send samples to the RF target (beamformed)
+      @param device the hardware to use
+      @param timestamp The timestamp at whicch the first sample MUST be sent
+      @param buff Buffer which holds the samples (3 dimensional)
+      @param nsamps number of samples to be sent
+      @param nb_antennas_tx number of antennas
+      @param num_beams number of beams
+      @param flags flags must be set to true if timestamp parameter needs to be applied
+  */
+  int (*trx_write_beams_func)(openair0_device_t *device,
+                              openair0_timestamp_t timestamp,
+                              void ***buff,
+                              int nsamps,
+                              int nb_antennas_tx,
+                              int num_beams,
+                              int flags);
+
+  /*! \brief Called to receive samples from the RF target (beamformed)
+   * \param nsamps Number of samples. One sample is 2 byte I + 2 byte Q => 4 byte.
+   * \param num_antennas number of antennas from which to receive samples
+   * \param num_beams number of beams from which to receive samples
+   * \returns the number of sample read
+   */
+  int (*trx_read_beams_func)(openair0_device_t *device,
+                             openair0_timestamp_t *ptimestamp,
+                             void ***buff,
+                             int nsamps,
+                             int num_antennas,
+                             int num_beams);
+
+  /*! \brief Set tx/rx beams (beam map)
+   * \param device the hardware to use
+   * \param beam_map the beams to receive
+   * \return 0 on success
+   */
+  int (*trx_set_beams)(openair0_device_t *device, uint64_t beam_map, openair0_timestamp_t timestamp);
+
+  /*! \brief Set tx/rx beams (beam id array)
+   * \param device the hardware to use
+   * \param beams pointer to array of beam ids
+   * \param num_beams number of beams
+   * \return 0 on success
+   */
+  int (*trx_set_beams2)(openair0_device_t *device, int *beams, int num_beams, openair0_timestamp_t timestamp);
+  // ---- end develop-native beamforming callbacks ----
 
   /*! \brief RRU Configuration callback
    * \param idx RU index

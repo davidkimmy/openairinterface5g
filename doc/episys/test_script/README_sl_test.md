@@ -9,7 +9,7 @@ This test framework provides automated validation for OAI 5G NR sidelink feature
 - **CSI acquisition and PSFCH feedback** with parametric testing
 - **U2N relay (SRAP protocol)** for remote UE connectivity
 - **iperf3 bandwidth sweep** for throughput characterization
-- **RF simulator and USRP hardware modes** for flexibility
+- **RF simulator, USRP hardware, and vrtsim shared-memory radio modes** for flexibility
 
 ### Key Features
 - **Array-based test selection** - Simple list of tests to run in order
@@ -17,6 +17,7 @@ This test framework provides automated validation for OAI 5G NR sidelink feature
 - **Multi-host support** - Test across multiple machines with SSH
 - **Automated result tracking** - Summary table with ping and PSSCH statistics
 - **Profile-based configuration** - Quick switch between pilot, regression, and stress testing
+- **Three radio backends** - `rfsim` (socket RF simulator), `usrp` (B210 hardware), and `vrtsim` (shared-memory radio, local host only)
 
 ## Architecture
 
@@ -342,10 +343,12 @@ The config file defines seven test groups, each containing all tests of that cat
 | | 0 | `rfsim_uu_ping_test_on_local_host` |
 | | 1 | `rfsim_uu_ping_test_on_two_hosts` |
 | | 2 | `usrp_B210_uu_ping_test_on_two_hosts` |
+| | 3 | `vrtsim_uu_ping_test_on_local_host` |
 | `slmode2_basic_tests`
 | | 0 | `rfsim_pc5_ping_test_on_local_host` |
 | | 1 | `rfsim_pc5_ping_test_on_two_hosts` |
 | | 2 | `usrp_B210_pc5_ping_test_on_two_hosts` |
+| | 3 | `vrtsim_pc5_ping_test_on_local_host` |
 | `slmode2_csi_psfch_tests`
 | | 0 | `rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host` |
 | | 1 | `rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts` |
@@ -358,6 +361,7 @@ The config file defines seven test groups, each containing all tests of that cat
 | | 0 | `rfsim_slmode1_srap_ping_test_on_local_host` |
 | | 1 | `rfsim_slmode1_srap_ping_test_on_three_hosts` |
 | | 2 | `usrp_B210_slmode1_srap_ping_test_on_three_hosts` |
+| | 3 | `vrtsim_slmode1_srap_ping_test_on_local_host` |
 | `slmode1_iperf3_tests`
 | | 0 | `rfsim_slmode1_srap_iperf3_test_on_local_host` |
 | | 1 | `rfsim_slmode1_srap_iperf3_test_on_three_hosts` |
@@ -520,6 +524,36 @@ Replace `rfsim` prefix with `usrp_B210` for hardware tests:
 **Requirements:**
 - USRP B210 radios on all participating hosts
 - RF attenuator at `http://169.254.10.10/` (controlled via `set_atten`)
+
+### vrtsim Shared-Memory Radio Tests (Local Host)
+
+`vrtsim` is a shared-memory "virtual RF" radio: all nodes run on a **single host** and exchange
+IQ samples through shared memory (`/dev/shm/vrtsim_channel*`) instead of sockets (rfsim) or real
+radios (USRP). It needs no networking between nodes, so there are only `_on_local_host` variants.
+Node roles are selected with `--device.name vrtsim` plus `--vrtsim.role[_sl] server|client`
+(Uu = `role`, PC5 = `role_sl`); `--vrtsim.chanmod 0` uses a clean channel.
+
+#### `vrtsim_uu_ping_test_on_local_host`
+Uu (Mode 0) connectivity test over the shared-memory radio (requires 5G Core).
+- gNB (`--vrtsim.role server`) + UE (`--vrtsim.role client`), both local
+- Pings 8.8.8.8 from UE through gNB and 5G Core
+- **Pass criteria:** ≥60% ping success rate
+
+#### `vrtsim_pc5_ping_test_on_local_host`
+PC5 Mode 2 connectivity test over the shared-memory radio (no gNB / no Core).
+- SyncRef UE (`--vrtsim.role_sl server`) + Nearby UE (`--vrtsim.role_sl client`), both local
+- Pings `oaitun_ue1 → 10.0.0.100` over PC5 sidelink
+- **Pass criteria:** ≥60% ping success rate
+
+#### `vrtsim_slmode1_srap_ping_test_on_local_host`
+U2N relay (Mode 1, SRAP) test over the shared-memory radio (requires 5G Core; both IMSIs
+`001010000000001` and `001010000000002` provisioned).
+- gNB (Uu server) + Remote UE (PC5 server, IMSI `…002`) + Relay UE (Uu+PC5 client, IMSI `…001`)
+- Pings 8.8.8.8 from the Remote UE, relayed PC5 → relay SRAP → gNB → Core → internet
+- **Launch sequence + timing are critical:** nodes start gNB → Remote → Relay with settle
+  delays so the Remote UE finishes its Core registration (and acquires its Core-assigned IP)
+  before the ping. This vrtsim-specific timing is handled automatically in `slmode1_srap_ping_test`.
+- **Pass criteria:** Internet ping from the Remote UE succeeds
 
 ### iperf3 Bandwidth Sweep Tests
 
@@ -694,6 +728,25 @@ Remote: Nearby UE (client, <local_ip>:4148)
 ```
 
 **Key insight:** In Mode 2 two-host tests, syncref always runs locally (RF sim server), nearby runs remotely (RF sim client), and ping runs locally where syncref creates `oaitun_ue1`.
+
+### vrtsim Shared-Memory Radio Architecture
+
+`vrtsim` replaces the rfsim socket transport with a shared-memory channel, so **all nodes run on
+one host** (no per-node IP/port). Each interface picks a role independently:
+
+```
+Mode 0 (Uu):    gNB (role server)  <--shm-->  UE (role client)
+Mode 2 (PC5):   SyncRef (role_sl server)  <--shm-->  Nearby (role_sl client)
+Mode 1 (relay): gNB (role server) + Remote UE (role_sl server)
+                          ^Uu shm^        ^PC5 shm^
+                        Relay UE (role client + role_sl client)
+```
+
+**Key insight:** because there is no socket handshake, the **launch order and inter-launch
+timing matter more than for rfsim**. Bring up the servers first (gNB, then the PC5-server node),
+then the client. For Mode 1 the Relay UE is launched last and given time to complete Uu
+registration and PC5 bring-up, so the Remote UE finishes its Core registration (and moves off its
+initial demo IP onto its Core-assigned IP) before any ping runs.
 
 ### PSSCH Statistics
 

@@ -363,6 +363,10 @@ void init_openair0() {
 
     if (card % 2 == 0) {
       if (usrp_args) openair0_cfg[card].sdr_addrs = usrp_args;
+      // Uu only (even card index): feed the -A command-line timing advance into the radio
+      // config; vrtsim_write() applies it to the TX timestamp. Sidelink/PC5 (odd cards)
+      // does not need a TX sample advance, so it is intentionally left at 0.
+      openair0_cfg[card].command_line_sample_advance = nrUE_params.timing_advance;
     } else {
       if (usrp_args_sl) openair0_cfg[card].sdr_addrs = usrp_args_sl;
     }

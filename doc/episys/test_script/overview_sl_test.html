@@ -22,6 +22,8 @@
   .reveal table { font-size: 0.7em; margin: 0.5em auto; border-collapse: collapse; }
   .reveal th { background: #1a3a5c; color: white; padding: 6px 14px; }
   .reveal td { padding: 5px 14px; border-bottom: 1px solid #ddd; }
+  /* Host-assignment table: keep the Type column (e.g. VRTSIM) on one line */
+  #host-mode-table th:nth-child(2), #host-mode-table td:nth-child(2) { white-space: nowrap; }
   .reveal tr:nth-child(even) { background: #f4f8fc; }
   .reveal code { font-size: 0.8em; background: #f0f4f8; padding: 2px 6px; border-radius: 3px; color: #c7254e; }
   .reveal pre { font-size: 0.55em; background: #1e293b; color: #e2e8f0; padding: 14px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
@@ -55,7 +57,7 @@
       <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">PC5 Mode 1 &amp; 2</span>
       <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">CSI / PSFCH</span>
       <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">U2N Relay (SRAP)</span>
-      <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">RF Sim &amp; USRP</span>
+      <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">RF Sim, VRT Sim &amp; USRP</span>
     </div>
     <p style="font-size: 0.6em; color: #93c5fd; margin-top: 2.5em;">OpenAirInterface &mdash; 2026</p>
   </div>
@@ -85,6 +87,7 @@
         <li><strong>Multi-host support</strong> &mdash; 1, 2, or 3 machines via SSH</li>
         <li><strong>Profile-based config</strong> &mdash; pilot / regress / stress / bler</li>
         <li><strong>Auto result tracking</strong> &mdash; ping + PSSCH statistics</li>
+        <li><strong>Three radio backends</strong> &mdash; <code>rfsim</code> (socket) / <code>usrp</code> (B210 HW) / <code>vrtsim</code> (shared-memory, local host)</li>
       </ul>
     </div>
   </div>
@@ -160,17 +163,20 @@ run_sl_test_config.sh     # Configuration
     </div>
     <div>
       <h3>Host Assignment per Test Mode</h3>
-      <table style="font-size: 0.6em; margin: 0.5em 0;">
+      <table id="host-mode-table" style="font-size: 0.6em; margin: 0.5em 0;">
         <tr><th>SL Mode</th><th>Type</th><th style="text-align:center;">Hosts</th><th>gNB</th><th>SyncRef UE</th><th>Nearby UE</th></tr>
         <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">1</td><td>&mdash;</td><td><code>local</code></td><td><code>local</code></td></tr>
         <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
         <tr><td>Mode 2</td><td>USRP</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 2</td><td>VRTSIM</td><td style="text-align:center;">1</td><td>&mdash;</td><td><code>local</code></td><td><code>local</code></td></tr>
         <tr><td>Mode 1 (SRAP)</td><td>RFSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td><code>local</code></td><td><code>local</code></td></tr>
         <tr><td>Mode 1 (SRAP)</td><td>RFSIM</td><td style="text-align:center;">3</td><td><code>gNB</code>, <code>local</code></td><td><code>relay_ue</code></td><td><code>remote_ue</code></td></tr>
         <tr><td>Mode 1 (SRAP)</td><td>USRP</td><td style="text-align:center;">3</td><td><code>local</code></td><td><code>relay_ue</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>VRTSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td><code>local</code></td><td><code>local</code></td></tr>
         <tr><td>Uu</td><td>RFSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td>&mdash;</td><td><code>local</code> (nrUE)</td></tr>
         <tr><td>Uu</td><td>RFSIM</td><td style="text-align:center;">2</td><td><code>local</code></td><td>&mdash;</td><td><code>nr_ue</code> (nrUE)</td></tr>
         <tr><td>Uu</td><td>USRP</td><td style="text-align:center;">2</td><td><code>local</code></td><td>&mdash;</td><td><code>nr_ue</code> (nrUE)</td></tr>
+        <tr><td>Uu</td><td>VRTSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td>&mdash;</td><td><code>local</code> (nrUE)</td></tr>
       </table>
     </div>
   </div>
@@ -289,6 +295,9 @@ test_specific_mcs["usrp_B210_pc5_ping_test"]="20,24,28"</code></pre>
     <tr><td><code>rfsim_uu_ping_test_on_local_host</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">1</td><td>gNB &harr; UE ping on localhost</td></tr>
     <tr><td><code>rfsim_uu_ping_test_on_two_hosts</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">2</td><td>gNB &harr; UE ping across two machines</td></tr>
     <tr><td><code>usrp_B210_*</code></td><td style="text-align:center;">All</td><td style="text-align:center;">2-3</td><td>USRP hardware variants of above tests</td></tr>
+    <tr><td><code>vrtsim_uu_ping_test_on_local_host</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">1</td><td>gNB &harr; UE ping over shared-memory radio</td></tr>
+    <tr><td><code>vrtsim_pc5_ping_test_on_local_host</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>PC5 ping over shared-memory radio</td></tr>
+    <tr><td><code>vrtsim_slmode1_srap_ping_test_on_local_host</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1</td><td>U2N relay ping (SRAP) over shared-memory radio; launch-order/timing sensitive</td></tr>
   </table>
   <div class="two-col" style="margin-top: 10px;">
     <div class="box-green box">
