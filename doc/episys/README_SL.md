@@ -66,6 +66,7 @@ This implementation extends the **OpenAirInterface (OAI)** codebase with support
 &emsp;&emsp; ◉ Separate PC5 and Uu entities for RLC, SRAP, PDCP layers at Relay UE<br>
 &emsp;&emsp; ◉ USRP Support: SL mode 1 and mode 2 tested successfully on B210 only<br>
 &emsp;&emsp; ◉ Sidelink HARQ Feedback Report to gNB to monitor sidelink communication status<br>
+&emsp;&emsp; ◉ VRTSim shared-memory radio backend: single-host SL mode 1 and mode 2 testing without sockets or RF hardware<br>
 
 ### 3.2 Missing Features or Features Needing Updates
 &emsp; The following features are either missing or require further updates and debugging:
@@ -221,6 +222,12 @@ Based on the received Configured Grant Type 1 configurations, the SL MAC schedul
 
 &emsp; To test IP traffic using `ping` in 5G SL mode 1, the OAI Core Network must first be launched as a prerequisite.<br>
 
+&emsp; In SL mode 1, the Remote UE registers with the 5G Core **through the Relay UE**. Both subscribers must therefore be provisioned in the Core database, and each UE is launched with its own IMSI:<br>
+&emsp;&emsp; ◉ Relay UE (SyncRef UE): `--uicc0.imsi 001010000000001 --node-number 2 --is-relay-ue 1` (runs `--sl-mode 1`)<br>
+&emsp;&emsp; ◉ Remote UE (Nearby UE): `--uicc0.imsi 001010000000002 --node-number 3` (runs `--sl-mode 2`)<br>
+
+&emsp; Because the Remote UE's IP address is assigned by the Core during registration (it is no longer a fixed address), run `ping` bound to the Remote UE's `oaitun_ue2` interface (`ping -I oaitun_ue2 8.8.8.8`) rather than a hardcoded IP.<br>
+
 &emsp; Once the Core Network is running, the gNB, Relay UE (SyncRef UE), and Remote UE (Nearby UE) can be started either on the same machine or on separate machines. The following sections demonstrate how to test 5G SL mode 1 using RF simulator and USRP hardware.
 
 ### 6.4 **RFSim Test:**
@@ -248,7 +255,7 @@ cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
  -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
---sa --sl-mode 1 --sync-ref --rfsim \
+--sa --sl-mode 1 --sync-ref --node-number 2 --rfsim \
 --rfsimulator.serveraddr <MACHINE 1 IP Address> --rfsimulator.serverport 4048 \
 --rfsimulator.serveraddrsl <MACHINE 3 IP Address> --rfsimulator.serverportsl 4148 \
 --relay-type 1 --is-relay-ue 1 2>&1 | tee ~/result_nrUE_syncref.log
@@ -258,7 +265,8 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
---sa --sl-mode 2 --rfsim \
+--uicc0.imsi 001010000000002 \
+--sa --sl-mode 2 --node-number 3 --rfsim \
 --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
 --relay-type 1 2>&1 | tee ~/result_nearby.log
 ```
@@ -321,7 +329,7 @@ cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
  -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
---sa -E --sl-mode 1 --sync-ref \
+--sa -E --sl-mode 1 --sync-ref --node-number 2 \
 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --usrp-args 'serial=<Relay UE B210_Serial_Number in Uu interface>,type=b200' \
 --usrp-args-sl 'serial=<Relay UE B210_Serial_Number in PC5 interface>,type=b200' \
@@ -334,7 +342,7 @@ cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_sync_ref.conf \
  -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
---sa -E --sl-mode 1 --sync-ref \
+--sa -E --sl-mode 1 --sync-ref --node-number 2 \
 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --usrp-args 'serial=340EA03,type=b200' \
 --usrp-args-sl 'serial=340EA3B,type=b200' \
@@ -346,7 +354,8 @@ sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH -E \
 ./nr-uesoftmodem -O ../../../targets/PROJECTS/NR-SIDELINK/CONF/sl_ue1.conf \
---sa -E --sl-mode 2 \
+--uicc0.imsi 001010000000002 \
+--sa -E --sl-mode 2 --node-number 3 \
 --ue-txgain 20 --ue-rxgain 110 --device.name oai_usrpdevif \
 --relay-type 1 2>&1 | tee ~/result_nearby.log
 ```
@@ -356,7 +365,13 @@ Run `ping` command on the Remote UE terminal of Machine 3.
 ping -I oaitun_ue2 8.8.8.8
 ```
 
-### 6.6 **Launching Sidelink Mode 1 Test via Script:**
+### 6.6 **VRTSim Test (Shared-Memory Radio):**
+
+&emsp; VRTSim is a shared-memory "virtual RF" radio in which the gNB, Relay UE, and Remote UE all run on a **single host** and exchange IQ samples through shared memory instead of RFSim sockets or USRP hardware. It is built by default (`OAI_VRTSIM=ON`) along with the standard `-w SIMU` build, so no extra build flag is required. Node roles are selected on the command line with `--device.name vrtsim` and `--vrtsim.role[_sl] server|client` (Uu uses `role`, PC5 uses `role_sl`), and `--vrtsim.chanmod 0` selects a clean channel.
+
+&emsp; Because there is no socket handshake, the **launch order and inter-launch timing matter more than for RFSim**: bring up the gNB and the Remote UE (PC5 server) first, then launch the Relay UE last and give it time to complete Uu registration and PC5 bring-up so the Remote UE finishes its Core registration (and acquires its Core-assigned IP) before the ping. This timing is handled automatically by the test script. Running the SL mode 1 VRTSim test is easiest via the test script (see the [README_sl_test.md](./test_script/README_sl_test.md), test `vrtsim_slmode1_srap_ping_test_on_local_host`).
+
+### 6.7 **Launching Sidelink Mode 1 Test via Script:**
 
 &emsp; To launch the test via script, navigate to the test script directory as follows:
 ```
@@ -369,7 +384,7 @@ cd ~/openairinterface5g/doc/episys/test_script
 ```
 After test was done, the summary will be displayed. For the detail, navigate to the `latest` folder and check the files created in the `latest` folder.
 
-### 6.7 **Performance Test using Iperf3:**
+### 6.8 **Performance Test using Iperf3:**
 
 iperf3 is a command-line tool used to measure the maximum achievable bandwidth on IP networks.
 If iperf3 is not available in your system, install it via `sudo apt update && sudo apt install iperf3`.
@@ -379,9 +394,11 @@ git clone https://github.com/esnet/iperf.git && \
 cd iperf && git checkout 3.16 && ./bootstrap.sh && ./configure && make && make install
 ```
 
-#### 6.7.1  Remote UE to UPF
+> **Note:** In SL mode 1 the Remote UE's IP address is assigned by the 5G Core during registration, so it is not a fixed value. The `10.0.0.100` used in the examples below is illustrative only — look up the actual address with `ip -4 addr show oaitun_ue2` on the Remote UE, or bind by interface name (`--bind-dev oaitun_ue2`) instead of a hardcoded IP.
 
-##### 6.7.1.1  Launching iperf3 server
+#### 6.8.1  Remote UE to UPF
+
+##### 6.8.1.1  Launching iperf3 server
 
 Select one between two options.
 
@@ -410,7 +427,7 @@ For example,
 docker exec -it oai-upf bash -c 'iperf3 -s -B 192.168.70.134 -p 5001 -i 1' | tee iperf_output.log
 ```
 
-##### 6.7.1.2  Launching iperf3 client
+##### 6.8.1.2  Launching iperf3 client
 
 On the Remote UE, use the following command to run iperf3 client:
 ```
@@ -422,9 +439,9 @@ For example,
 iperf3 -u -c 192.168.70.134 --bind-dev oaitun_ue2 -p 5001 -i 1 -b 1M
 ```
 
-#### 6.7.2  UPF to Remote UE
+#### 6.8.2  UPF to Remote UE
 
-##### 6.7.2.1  Launching iperf3 server
+##### 6.8.2.1  Launching iperf3 server
 
 On the Remote UE, use the following command to run iperf3 server:
 ```
@@ -436,7 +453,7 @@ For example,
 iperf3 -s --bind-dev oaitun_ue2 -p 5001 -i 1
 ```
 
-##### 6.7.2.2  Launching iperf3 client
+##### 6.8.2.2  Launching iperf3 client
 
 Select one between the following two options.
 
@@ -465,11 +482,11 @@ For example,
 docker exec -it oai-upf bash -c 'iperf3 -u -c 10.0.0.100 -B 192.168.70.134 -p 5001 -i 1 -b 1M' | tee iperf_output.log
 ```
 
-### 6.8 **Running Video Stream:**
+### 6.9 **Running Video Stream:**
 
-In the following, we assume that UPF IP address = 192.168.70.134 and Remote UE IP address (`oaitun_ue2`) = 10.0.0.100.
+In the following, we assume that UPF IP address = 192.168.70.134 and Remote UE IP address (`oaitun_ue2`) = 10.0.0.100. The Remote UE address is assigned by the 5G Core during registration and is not fixed, so `10.0.0.100` is illustrative — check the actual value with `ip -4 addr show oaitun_ue2` (the transmitter commands below already resolve it dynamically via `oaitun_ue2`).
 
-#### 6.8.1 Receiver (UPF in Core Network)
+#### 6.9.1 Receiver (UPF in Core Network)
 
 Apply the following environment setting for video.
 ```
@@ -503,7 +520,7 @@ After video streaming is done, apply the following.
 xhost -local:docker
 ```
 
-#### 6.8.2 Transmitter (Remote UE)
+#### 6.9.2 Transmitter (Remote UE)
 
 In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
 There are two options for streaming on the transmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
@@ -706,7 +723,13 @@ Run `ping` command on the terminal of Machine 1.
 ping -I oaitun_ue1 10.0.0.100
 ```
 
-### 7.3 **Launching Sidelink Mode 2 Test via Script:**
+### 7.3 **VRTSim Test (Shared-Memory Radio):**
+
+&emsp; For SL mode 2, VRTSim runs the SyncRef UE and the Nearby UE on a **single host**, exchanging IQ samples through shared memory instead of RFSim sockets or USRP hardware. It is built by default (`OAI_VRTSIM=ON`) with the standard `-w SIMU` build, so no extra build flag is required. Both UEs select the shared-memory backend with `--device.name vrtsim`; one runs `--vrtsim.role_sl server` (SyncRef UE) and the other `--vrtsim.role_sl client` (Nearby UE), with `--vrtsim.chanmod 0` for a clean channel.
+
+&emsp; As with the SL mode 1 case, there is no socket handshake, so **launch order and timing matter**: start the SyncRef UE (PC5 server) first, then the Nearby UE (PC5 client). Running the SL mode 2 VRTSim test is easiest via the test script (see the [README_sl_test.md](./test_script/README_sl_test.md), test `vrtsim_pc5_ping_test_on_local_host`).
+
+### 7.4 **Launching Sidelink Mode 2 Test via Script:**
 
 &emsp; To launch the test via script, navigate to the test script directory as follows:
 ```
@@ -719,7 +742,7 @@ cd ~/openairinterface5g/doc/episys/test_script
 ```
 After test was done, the summary will be displayed. For the detail, navigate to the `latest` folder and check the files created in the `latest` folder.
 
-### 7.4 **Performance Test using Iperf3:**
+### 7.5 **Performance Test using Iperf3:**
 
 iperf3 is a command-line tool used to measure the maximum achievable bandwidth on IP networks.
 If iperf3 is not available in your system, install it via `sudo apt update && sudo apt install iperf3`.
@@ -743,9 +766,9 @@ ifconfig oaitun_ue2 | awk '/inet / {print $2}' | sed 's/addr://'
 
 In the following, we assume that SyncRef UE IP address = 10.0.0.1 and Nearby UE IP address = 10.0.0.100.
 
-#### 7.4.1  Nearby UE to SyncRef UE
+#### 7.5.1  Nearby UE to SyncRef UE
 
-##### 7.4.1.1  Launching iperf3 server
+##### 7.5.1.1  Launching iperf3 server
 
 On the SyncRef UE, use the following command to run iperf3 server:
 ```
@@ -757,7 +780,7 @@ For example,
 iperf3 -s -B 10.0.0.1 -p 5001 -i 1
 ```
 
-##### 7.4.1.2  Launching iperf3 client
+##### 7.5.1.2  Launching iperf3 client
 
 On the Nearby UE, use the following command to run iperf3 client:
 ```
@@ -769,9 +792,9 @@ For example,
 iperf3 -u -c 10.0.0.1 -B 10.0.0.100 -p 5001 -i 1 -b 1M
 ```
 
-#### 7.4.2  SyncRef UE to Nearby UE
+#### 7.5.2  SyncRef UE to Nearby UE
 
-##### 7.4.2.1  Launching iperf3 server
+##### 7.5.2.1  Launching iperf3 server
 
 On the Nearby UE, use the following command to run iperf3 server:
 ```
@@ -783,7 +806,7 @@ For example,
 iperf3 -s -B 10.0.0.100 -p 5001 -i 1
 ```
 
-##### 7.4.2.2  Launching iperf3 client
+##### 7.5.2.2  Launching iperf3 client
 
 On the SyncRef UE, use the following command to run iperf3 client:
 ```
@@ -795,17 +818,17 @@ For example,
 iperf3 -u -c 10.0.0.100 -B 10.0.0.1 -p 5001 -i 1 -b 1M
 ```
 
-### 7.5 **Running Video Stream:**
+### 7.6 **Running Video Stream:**
 
 We assume that SyncRef UE IP address (`oaitun_ue1`) = 10.0.0.1 and Nearby UE IP address (`oaitun_ue2`) = 10.0.0.100.
 
-#### 7.5.1 Receiver (SyncRef UE)
+#### 7.6.1 Receiver (SyncRef UE)
 
 ```
 ffplay -flags low_delay -i udp://10.0.0.1:1234
 ```
 
-#### 7.5.2 Transmitter (Nearby UE)
+#### 7.6.2 Transmitter (Nearby UE)
 
 In the following, we assume that the file to transmit is located at ~/Videos/file_name.mp4.
 There are two options for streaming on the transmitter side. One is video streaming using video file and the other is camera streaming. Select one between two options. In this section, we assume that the file to transmit is located at ~/Videos/file_name.mp4.

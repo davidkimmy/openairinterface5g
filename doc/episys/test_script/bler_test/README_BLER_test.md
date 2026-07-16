@@ -6,7 +6,11 @@ Comprehensive guide for automated Block Error Rate (BLER) performance characteri
 
 The BLER testing framework provides automated performance characterization across the full MCS range (0-28) and SNR sweep (-12 to 4 dB) using **RFSim (RF Simulator)**. It supports both local execution and distributed parallel testing across multiple machines for faster completion.
 
-> **Note**: This framework is designed for **RFSim testing** with configurable noise injection.
+The BLER test runs over the **SL Mode 1 U2N relay** topology (gNB + Relay UE + Remote UE), so it exercises both the PC5 sidelink and the Uu interface. Each iteration restarts the 5G Core and brings up the three nodes in order (gNB → Remote UE → Relay UE); the Remote UE then **registers with the 5G Core through the Relay UE** before the ping runs. Because the Remote UE's IP is assigned by the Core during registration (it is no longer a fixed address), the BLER ping binds to the Remote UE's `oaitun_ue2` interface (`ping -I oaitun_ue2 8.8.8.8`) rather than a hardcoded IP.
+
+> **Note**: This framework is designed for **RFSim testing** with configurable noise injection. It relies on the rfsimulator channel model to inject noise power, so there is **no VRTSim or USRP BLER variant** — the only BLER test is `rfsim_slmode1_bler_test_on_local_host`. Use the VRTSim shared-memory backend for the functional PC5/relay tests documented in [README_sl_test.md](../README_sl_test.md), not for BLER characterization.
+
+> **Note**: SL Mode 1 requires the OAI 5G Core Network and Remote UE registration. Both the Relay UE IMSI (`001010000000001`, launched with `--node-number 2`) and the Remote UE IMSI (`001010000000002`, launched with `--node-number 3`) must be provisioned in the Core. The test restarts the Core automatically at the start of each iteration.
 
 > **Note**: We assume that the test script files are located under ~/ci_script folder specified in the alternative way in the [README_sl_test.md](../README_sl_test.md).
 
@@ -19,6 +23,21 @@ The BLER testing framework provides automated performance characterization acros
 - Comprehensive logging: MAC BLER, LDPC iterations, HARQ rounds
 - Automated data collection, processing, and plotting
 - Multi-perspective analysis: UE RX and Syncref RX
+
+## Prerequisites: 5G Core Network and Remote UE Registration
+
+Because the BLER test runs over the SL Mode 1 U2N relay path, the OAI 5G Core Network must be available on each machine that runs tests. The test restarts the Core at the start of every iteration, so verify it comes up cleanly beforehand:
+
+```bash
+# Verify the 5G Core containers are present and can start
+docker ps -a | grep oai-
+```
+
+Both subscribers must be provisioned in the Core database:
+- Relay UE IMSI: `001010000000001` (launched with `--node-number 2`)
+- Remote UE IMSI: `001010000000002` (launched with `--node-number 3`)
+
+If the Remote UE cannot register, no `oaitun_ue2` interface is created and every ping point fails.
 
 ## Prerequisites: Build with BLER Instrumentation
 
@@ -162,8 +181,9 @@ Most users should keep `use_extended_delays=0` (default). Only enable if you exp
 Comprehensive BLER characterization on a single machine using **RFSim (RF Simulator)** with noise injection.
 
 - **Test method**: RFSim with configurable noise power injection
-- Runs on local machine only (no physical hardware required)
-- Full MCS range: 0-28 (29 values)
+- **Topology**: SL Mode 1 U2N relay — gNB + Relay UE (`001010000000001`, `--node-number 2`) + Remote UE (`001010000000002`, `--node-number 3`), all on the local host (requires the OAI 5G Core Network)
+- **Per-iteration flow**: restart 5G Core → launch gNB → Remote UE → Relay UE → Remote UE registers with the Core through the Relay UE → wait for `oaitun_ue2` → ping `8.8.8.8` from the Remote UE (`ping -I oaitun_ue2`)
+- Full MCS range: 0-28 (29 values); the MCS applies to the Uu interface (set in the gNB config each iteration)
 - Noise power sweep: -12 to 4 dB (17 values)
 - Configurable iterations (default: 12)
 - **Total tests:** 29 MCS × 17 noise × 12 iterations = 5,916 tests
@@ -175,7 +195,7 @@ Comprehensive BLER characterization on a single machine using **RFSim (RF Simula
   - GNB_DL_SUMMARY: gNB downlink BLER, HARQ rounds (Uu DL)
   - GNB_UL_HARQ: gNB uplink BLER, HARQ ACK/NACK rounds (Uu UL)
   - UU_RX_SUMMARY: Relay UE downlink BLER (Uu DL from UE perspective)
-- **Pass criteria:** Completes full sweep, generates CSV outputs
+- **Pass criteria:** Remote UE registers and completes the full sweep, generating CSV outputs (a ping point passes when at least one packet returns through the relay)
 
 ## Running BLER Tests Locally
 

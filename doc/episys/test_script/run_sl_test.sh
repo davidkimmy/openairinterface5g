@@ -1358,10 +1358,18 @@ run_iperf3_client() {
     local iperf3_duration=${6:-10}
     local log_file=$7
 
-    local cmd="iperf3 -u -c $server_ip -B $bind_ip -p $port -i 1 -b $bandwidth -t $iperf3_duration"
+    # A bind value that is not an IPv4 address is treated as an interface name (e.g. oaitun_ue2),
+    # which iperf3 binds with --bind-dev instead of -B. Used by the SL Mode 1 relay case where the
+    # Remote UE IP changes after core re-registration.
+    local bind_opt="-B $bind_ip"
+    if ! [[ "$bind_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        bind_opt="--bind-dev $bind_ip"
+    fi
+
+    local cmd="iperf3 -u -c $server_ip $bind_opt -p $port -i 1 -b $bandwidth -t $iperf3_duration"
 
     if [[ "$host_name" == "upf_docker" ]]; then
-        cmd="docker exec oai-upf bash -c 'iperf3 -u -c $server_ip -B $bind_ip -p $port -i 1 -b $bandwidth -t $iperf3_duration'"
+        cmd="docker exec oai-upf bash -c 'iperf3 -u -c $server_ip $bind_opt -p $port -i 1 -b $bandwidth -t $iperf3_duration'"
     elif [[ "$host_name" == "$REMOTE_UE_HOST" || "$host_name" == "remote_ue" ]]; then
         # For remote_ue with policy routing, bind to device instead of IP
         cmd="iperf3 -u -c $server_ip --bind-dev oaitun_ue2 -p $port -i 1 -b $bandwidth -t $iperf3_duration"
@@ -2754,6 +2762,22 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     local num_hosts=1
     pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
 }
+#############################################################
+vrtsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
+#############################################################
+    # Argumemt(s): csi_acq, psfch_period, duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
+    [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
+    [[ $# -ge 3 ]] && duration=$3
+    [[ $# -ge 4 ]] && mcs=$4
+    [[ $# -ge 5 ]] && iteration=$5
+    local test_type="vrtsim"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
 
 slmode1_srap_csi_acquisition_psfch_period_test() {
     # Argumemt(s): csi_acq, psfch_period, duration, test_type, mcs, iteration
@@ -2898,6 +2922,23 @@ rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
     slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
 }
 #############################################################
+vrtsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
+#############################################################
+    # Argumemt(s): csi_acq, psfch_period, duration, mcs, iteration
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
+    [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
+    [[ $# -ge 3 ]] && duration=$3
+    [[ $# -ge 4 ]] && mcs=$4
+    [[ $# -ge 5 ]] && iteration=$5
+    local test_type="vrtsim"
+    local gnb_host_name="local"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
 rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
 #############################################################
     # Argumemt(s): csi_acq, psfch_period, duration, mcs, iteration
@@ -3015,6 +3056,19 @@ rfsim_pc5_iperf3_test_on_local_host() {
     pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
 }
 #############################################################
+vrtsim_pc5_iperf3_test_on_local_host() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="vrtsim"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
 rfsim_pc5_iperf3_test_on_two_hosts() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
@@ -3063,7 +3117,10 @@ slmode1_srap_iperf3_test() {
     local src_if="oaitun_ue2"
     local dest_ip="8.8.8.8"
     local server_ip="192.168.70.134"
-    local client_ip="10.0.0.100"
+    # SL Mode 1 relay: the Remote UE re-registers with the core and its IP changes (no longer the
+    # fixed 10.0.0.100). Bind the iperf3 client and the pre-iperf3 ping to the interface name
+    # instead of a stale IP; the runners detect a non-IP bind and use -I / --bind-dev.
+    local client_ip="oaitun_ue2"
 
     pre1='docker ps | grep oai-upf | wc -l'
     act1='echo "core network is required !!!"; cd ~/oai-cn5g; systemctl start docker.service; docker compose up -d; sleep 2'
@@ -3157,6 +3214,20 @@ rfsim_slmode1_srap_iperf3_test_on_local_host() {
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+#############################################################
+vrtsim_slmode1_srap_iperf3_test_on_local_host() {
+#############################################################
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    local test_type="vrtsim"
     local gnb_host_name="local"
     local syncref_host_name="local"
     local nearby_host_name="local"
