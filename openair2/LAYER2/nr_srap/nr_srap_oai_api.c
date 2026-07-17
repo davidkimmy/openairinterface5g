@@ -37,12 +37,20 @@ static void *tx_srap_rlc_pc5_data_req_thread(void *_)
     i = tx_srap_pc5_q.start;
     if (pthread_mutex_unlock(&tx_srap_pc5_q.m) != 0) abort();
     LOG_D(NR_SRAP, "Pass data from SRAP tx_srap_pc5_q to RLC%s %d\n", __FUNCTION__, __LINE__);
-    // develop SL RLC TX: address ue->sl_drb[] by local src_id (carried in ctxt rntiMaybeUEid)
-    nr_rlc_data_req_sl(tx_srap_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
-                       tx_srap_pc5_q.q[i].rb_idP,
-                       tx_srap_pc5_q.q[i].muiP,
-                       tx_srap_pc5_q.q[i].sdu_sizeP,
-                       tx_srap_pc5_q.q[i].sdu_pP);
+    // develop SL RLC TX: address ue->sl_drb[]/sl_srb[] by local src_id (carried in ctxt rntiMaybeUEid).
+    // SL mode-1 U2N relay control plane: SRB SDUs go to the SL-SRB RLC, user data to the SL-DRB RLC.
+    if (tx_srap_pc5_q.q[i].srb_flagP)
+      nr_rlc_data_req_sl_srb(tx_srap_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
+                             tx_srap_pc5_q.q[i].rb_idP,
+                             tx_srap_pc5_q.q[i].muiP,
+                             tx_srap_pc5_q.q[i].sdu_sizeP,
+                             tx_srap_pc5_q.q[i].sdu_pP);
+    else
+      nr_rlc_data_req_sl(tx_srap_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
+                         tx_srap_pc5_q.q[i].rb_idP,
+                         tx_srap_pc5_q.q[i].muiP,
+                         tx_srap_pc5_q.q[i].sdu_sizeP,
+                         tx_srap_pc5_q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&tx_srap_pc5_q.m) != 0) abort();
 
@@ -98,12 +106,19 @@ static void *fwd_srap_to_pc5_data_req_thread(void *_)
     i = fwd_srap_to_pc5_q.start;
     if (pthread_mutex_unlock(&fwd_srap_to_pc5_q.m) != 0) abort();
     LOG_D(NR_SRAP, "Pass data from SRAP fwd_srap_to_pc5_q to RLC%s %d\n", __FUNCTION__, __LINE__);
-    // develop SL RLC TX (relay forward -> PC5): address ue->sl_drb[] by src_id (ctxt rntiMaybeUEid)
-    nr_rlc_data_req_sl(fwd_srap_to_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
-                       fwd_srap_to_pc5_q.q[i].rb_idP,
-                       fwd_srap_to_pc5_q.q[i].muiP,
-                       fwd_srap_to_pc5_q.q[i].sdu_sizeP,
-                       fwd_srap_to_pc5_q.q[i].sdu_pP);
+    // develop SL RLC TX (relay forward -> PC5): SRB SDUs -> SL-SRB RLC, user data -> SL-DRB RLC.
+    if (fwd_srap_to_pc5_q.q[i].srb_flagP)
+      nr_rlc_data_req_sl_srb(fwd_srap_to_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
+                             fwd_srap_to_pc5_q.q[i].rb_idP,
+                             fwd_srap_to_pc5_q.q[i].muiP,
+                             fwd_srap_to_pc5_q.q[i].sdu_sizeP,
+                             fwd_srap_to_pc5_q.q[i].sdu_pP);
+    else
+      nr_rlc_data_req_sl(fwd_srap_to_pc5_q.q[i].ctxt_pP.rntiMaybeUEid,
+                         fwd_srap_to_pc5_q.q[i].rb_idP,
+                         fwd_srap_to_pc5_q.q[i].muiP,
+                         fwd_srap_to_pc5_q.q[i].sdu_sizeP,
+                         fwd_srap_to_pc5_q.q[i].sdu_pP);
 
     if (pthread_mutex_lock(&fwd_srap_to_pc5_q.m) != 0) abort();
 
@@ -638,12 +653,36 @@ bool srap_data_ind(protocol_ctxt_t *const ctxt_pP,
   return true;
 }
 
+/* SL mode-1 U2N relay control-plane hooks into RRC. Weak defaults so this shared-L2 file links in BOTH the
+ * gNB binary (which provides the strong nr_rrc_gNB_process_srap_message) and the UE binary (strong
+ * nr_rrc_ue_srap_dl_deliver). bearer_id: 0 = SL-SRB0/CCCH (RRCSetupRequest/RRCSetup), 1 = SL-SRB1/DCCH. */
+__attribute__((weak)) void nr_rrc_gNB_process_srap_message(int module_id, uint32_t relay_rnti, int bearer_id, uint8_t remote_ue_id, uint8_t *buf, int size)
+{ (void)module_id; (void)relay_rnti; (void)bearer_id; (void)remote_ue_id; (void)buf; (void)size; }
+__attribute__((weak)) void nr_rrc_ue_srap_dl_deliver(int ue_id, int bearer_id, uint8_t *buf, int size)
+{ (void)ue_id; (void)bearer_id; (void)buf; (void)size; }
+/* Resolve a relayed Remote UE's gNB PDCP/RRC ue-id (its own DU-less context) from the relay identifier +
+ * SRAP remote_ue_id, so relayed USER-PLANE is delivered to the REMOTE's context (its own PDU session/N3
+ * tunnel) rather than the relay's. Strong impl in rrc_gNB.c (find_remote_ue_context). -1 if not found. */
+__attribute__((weak)) int nr_rrc_gNB_get_remote_ue_id(uint32_t relay_rnti, uint8_t remote_ue_id)
+{ (void)relay_rnti; (void)remote_ue_id; return -1; }
+
 void srap_deliver_sdu_drb(const protocol_ctxt_t *const  ctxt_pP,
                           void *_ue, nr_srap_entity_t *entity,
                           char *buf, int size,
                           const srb_flag_t srb_flagP,
                           const MBMS_flag_t MBMS_flagP,
                           const rb_id_t rb_id) {
+
+  // SL mode-1 U2N relay control plane: an SRB SDU relayed over SRAP goes to RRC, NOT to PDCP/DRB. At the gNB
+  // (UL) process the relayed Remote-UE signalling (create context / decode); at the remote UE (DL) hand the
+  // gNB's RRC (RRCSetup/SecurityMode/Reconfig/NAS) to the UE RRC. Routed by bearer id (0=CCCH, 1=DCCH).
+  if (srb_flagP) {
+    if (ctxt_pP->enb_flag)
+      nr_rrc_gNB_process_srap_message(0, (uint32_t)ctxt_pP->rntiMaybeUEid, (int)rb_id, ctxt_pP->remote_ue_id, (uint8_t *)buf, size);
+    else
+      nr_rrc_ue_srap_dl_deliver((int)ctxt_pP->rntiMaybeUEid, (int)rb_id, (uint8_t *)buf, size);
+    return;
+  }
 
   // develop nr_pdcp_data_ind takes a raw malloc16 buffer (takes ownership), not a mem_block_t.
   uint8_t *memblock = malloc16(size);
@@ -662,7 +701,20 @@ void srap_deliver_sdu_drb(const protocol_ctxt_t *const  ctxt_pP,
    * At the remote UE (DL destination): deliver to its own SL DRB (rb_id), which develop provisions at
    *   DRB 1 (no relay-specific offset on the UE side). */
   rb_id_t dst_rb_id = ctxt_pP->enb_flag ? rb_id + 1 : rb_id;
-  if (!nr_pdcp_data_ind(ctxt_pP, srb_flagP, dst_rb_id, size, memblock)) {
+  protocol_ctxt_t ctxt = *ctxt_pP;
+  /* gNB UL: the relayed data arrived on the RELAY's Uu RLC, so ctxt->rntiMaybeUEid is the relay's ue-id and
+   * the packet would egress the RELAY's PDU session/N3 tunnel. The Remote UE has its OWN core context + IP
+   * (real registration), so re-key the delivery to the Remote UE's gNB context so its user plane egresses the
+   * REMOTE's tunnel (the UPF matches the inner source IP to the remote's session). */
+  if (ctxt_pP->enb_flag) {
+    int remote_ue = nr_rrc_gNB_get_remote_ue_id((uint32_t)ctxt_pP->rntiMaybeUEid, ctxt_pP->remote_ue_id);
+    if (remote_ue >= 0) {
+      LOG_D(NR_SRAP, "gNB relayed UL: re-keying DRB%ld delivery from relay ue %ld to remote ue %d\n",
+            dst_rb_id, ctxt_pP->rntiMaybeUEid, remote_ue);
+      ctxt.rntiMaybeUEid = remote_ue;
+    }
+  }
+  if (!nr_pdcp_data_ind(&ctxt, srb_flagP, dst_rb_id, size, memblock)) {
     LOG_E(NR_SRAP, "%s:%d:%s: ERROR: nr_pdcp_data_ind failed (rb_id %ld)\n", __FILE__, __LINE__, __FUNCTION__, dst_rb_id);
     /* what to do in case of failure? for the moment: nothing */
   }
@@ -736,10 +788,14 @@ bool nr_srap_data_req_srb(protocol_ctxt_t *ctxt,
       srap_entity = nr_srap_get_entity(m, NR_SRAP_PC5);
     }
     if ((srap_entity != NULL)) {
+      /* rb_id is the Remote UE's SRAP header bearer (0=CCCH/SL-SRB0, 1=DCCH/SL-SRB1). The RLC transport
+       * differs from the header bearer for control plane: over Uu (gNB->relay) send on the relay's SRB1;
+       * over PC5 (remote->relay) send on the matching remote SL-SRB. Mirror of recv_pdu's fwd_rb_id rule. */
+      rb_id_t transport_rb_id = (intf_type == UU) ? 1 : rb_id;
       srap_entity->process_sdu(sdu_buffer, sdu_buffer_size, relay_type, rb_id, pdu_buf,
                               (relay_type == U2N) ? sizeof(u2n_header) : sizeof(u2u_header),
                               (relay_type == U2N) ? (void*)&u2n_header : (void*)&u2u_header);
-      deliver_pdu_cb(ctxt, rb_id, pdu_buf, srap_pdu_size, sdu_id, intf_type);
+      deliver_pdu_cb(ctxt, transport_rb_id, pdu_buf, srap_pdu_size, sdu_id, intf_type);
       return true;
    }
   return false;

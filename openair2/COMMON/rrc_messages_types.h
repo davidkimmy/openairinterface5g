@@ -89,6 +89,8 @@
 
 #define NR_RRC_RLC_MAXRTX(mSGpTR) (mSGpTR)->ittiMsg.nr_rlc_maxrtx_indication
 
+#define NR_RRC_SETUP_REQ(mSGpTR)  (mSGpTR)->ittiMsg.nr_rrc_setup_request
+
 typedef struct RrcStateInd_s {
   Rrc_State_t state;
   Rrc_Sub_State_t sub_state;
@@ -429,6 +431,13 @@ typedef struct rlc_sdu_indication_s {
 typedef struct {
   int ue_id;
 } RlcMaxRtxIndication;
+
+// SL mode-1 U2N relay: Remote-UE RRC-setup trigger (see NR_RRC_SETUP_REQ in rrc_messages_def.h).
+typedef struct NRRrcSetup_Req_s {
+  uint32_t frame;
+  uint8_t  slot;
+  uint8_t  gnb_id;
+} NRRrcSetup_Req_t;
 
 typedef struct {
   bool is_srb;

@@ -77,6 +77,7 @@ typedef struct NRRrcDcchDataInd_s {
   uint16_t rnti;
   uint8_t module_id;
   uint8_t gNB_index; // LG: needed in UE
+  uint8_t intf_type; // SL mode-1 relay: source interface of this DCCH SDU — nr_intf_type_t UU(0)=Uu SRB, PC5(1)=SL-SRB
   /* 'msg_integrity' is needed for RRC to check integrity of the PDCP SDU */
   nr_pdcp_integrity_data_t msg_integrity;
 } NRRrcDcchDataInd;

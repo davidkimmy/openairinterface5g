@@ -9,6 +9,7 @@ typedef uint32_t channel_t;
 #ifndef _L2_INTERFACE_UE_H_
 #define _L2_INTERFACE_UE_H_
 void nr_mac_rrc_sync_ind(const module_id_t module_id, const frame_t frame, const bool in_sync);
+void nr_mac_rrc_setup_req_ue(const module_id_t module_id, const frame_t frame, const int slot);
 void nr_mac_rrc_data_ind_ue(const module_id_t module_id,
                             const uint8_t gNB_index,
                             const int hfn,

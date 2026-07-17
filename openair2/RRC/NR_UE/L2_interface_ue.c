@@ -32,6 +32,17 @@ void nr_mac_rrc_sync_ind(const module_id_t module_id, const frame_t frame, const
   itti_send_msg_to_task(TASK_RRC_NRUE, GNB_MODULE_ID_TO_INSTANCE(module_id), message_p);
 }
 
+// SL mode-1 U2N relay: MAC tells RRC the Remote UE has PC5-synced, so RRC starts its RRC connection
+// (RRCSetupRequest over the relay). Mirrors nr_mac_rrc_sync_ind's ITTI idiom.
+void nr_mac_rrc_setup_req_ue(const module_id_t module_id, const frame_t frame, const int slot)
+{
+  MessageDef *message_p = itti_alloc_new_message(TASK_MAC_UE, 0, NR_RRC_SETUP_REQ);
+  NR_RRC_SETUP_REQ(message_p).frame = frame;
+  NR_RRC_SETUP_REQ(message_p).slot = slot;
+  NR_RRC_SETUP_REQ(message_p).gnb_id = 0;
+  itti_send_msg_to_task(TASK_RRC_NRUE, GNB_MODULE_ID_TO_INSTANCE(module_id), message_p);
+}
+
 void nr_mac_rrc_data_ind_ue(const module_id_t module_id,
                             const uint8_t gNB_index,
                             const int hfn,

@@ -70,3 +70,7 @@ MESSAGE_DEF(NAS_PDU_SESSION_REQ, MESSAGE_PRIORITY_MED, nas_pdu_session_req_t, na
 
 // UE: RLC -> RRC messages
 MESSAGE_DEF(NR_RRC_RLC_MAXRTX,          MESSAGE_PRIORITY_MED,       RlcMaxRtxIndication,        nr_rlc_maxrtx_indication)
+
+// UE (SL mode-1 U2N relay): the Remote UE, once PC5-synced, triggers RRCSetupRequest towards the gNB
+// over the relay (control-plane relay path). Fired by MAC on first SL-BCH sync.
+MESSAGE_DEF(NR_RRC_SETUP_REQ,           MESSAGE_PRIORITY_MED,       NRRrcSetup_Req_t,           nr_rrc_setup_request)

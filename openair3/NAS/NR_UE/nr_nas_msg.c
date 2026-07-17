@@ -780,6 +780,26 @@ static void derive_ue_keys(uint8_t *buf, nr_ue_nas_t *nas)
   uint8_t ck[16], ik[16];
   f2345(nas->uicc->key, rand, resTemp, ck, ik, ak, nas->uicc->opc);
 
+  /* SL mode-1 U2N relay: the Remote UE registers over PC5 and never decodes SIB1 over Uu, so
+   * nr_rrc_process_sib1() (the only place that sets nas->sn_id) never runs for it. Without a serving
+   * network name, servingNetworkName() would dereference a NULL plmn_id and crash. Derive the serving
+   * PLMN from the UE's own USIM IMSI (single-PLMN relay scenario, same core as the relay) so the RES and
+   * key derivations match what the AMF computes. */
+  if (nas->sn_id == NULL) {
+    plmn_id_t *p = calloc_or_fail(1, sizeof(*p));
+    char mccStr[4] = {0};
+    memcpy(mccStr, nas->uicc->imsiStr, 3);
+    p->mcc = atoi(mccStr);
+    const int mnclen = nas->uicc->nmc_size > 0 ? nas->uicc->nmc_size : 2;
+    char mncStr[4] = {0};
+    memcpy(mncStr, nas->uicc->imsiStr + 3, mnclen);
+    p->mnc = atoi(mncStr);
+    p->mnc_digit_length = mnclen;
+    nas->sn_id = p;
+    LOG_W(NAS, "[UE %ld] sn_id was NULL (relay Remote UE, no SIB1 over Uu); derived serving PLMN mcc=%03d mnc=%0*d from IMSI\n",
+          nas->UE_id, p->mcc, mnclen, p->mnc);
+  }
+
   transferRES(ck, ik, resTemp, rand, output, nas->sn_id);
 
   for (int index = 0; index < 6; index++) {

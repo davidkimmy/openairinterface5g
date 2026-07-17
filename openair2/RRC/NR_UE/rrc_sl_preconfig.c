@@ -625,6 +625,40 @@ static void read_sl_ueinfo(ueinfo_t *ueinfo)
   config_get(config_get_if(), SL_UEINFOPARAMS, sizeofArray(SL_UEINFOPARAMS), aprefix);
 }
 
+/* Build an AM SL-RLC bearer config for a SL-SRB (mode-1 U2N relay control-plane). Ported from
+ * episys/sl-mode1-relay. Standard NR-SRB AM params; srb_id kept for symmetry/future per-SRB tuning. */
+static NR_SL_RLC_BearerConfig_r16_t *get_SRB_RLC_BearerConfig_sl(long priority,
+                                                                e_NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16 bucketSizeDuration,
+                                                                uint8_t srb_id)
+{
+  (void)srb_id;
+  NR_SL_RLC_BearerConfig_r16_t *sl_RLC_BearerConfig = CALLOC(1, sizeof(NR_SL_RLC_BearerConfig_r16_t));
+  sl_RLC_BearerConfig->sl_RLC_Config_r16 = CALLOC(1, sizeof(NR_SL_RLC_Config_r16_t));
+  NR_SL_RLC_Config_r16_t *sl_rlc_Config = sl_RLC_BearerConfig->sl_RLC_Config_r16;
+  sl_rlc_Config->present = NR_SL_RLC_Config_r16_PR_sl_AM_RLC_r16;
+  sl_rlc_Config->choice.sl_AM_RLC_r16 = CALLOC(1, sizeof(struct NR_SL_RLC_Config_r16__sl_AM_RLC_r16));
+  sl_rlc_Config->choice.sl_AM_RLC_r16->sl_SN_FieldLengthAM_r16 = CALLOC(1, sizeof(NR_SN_FieldLengthAM_t));
+  *sl_rlc_Config->choice.sl_AM_RLC_r16->sl_SN_FieldLengthAM_r16 = NR_SN_FieldLengthAM_size12;
+  sl_rlc_Config->choice.sl_AM_RLC_r16->sl_T_PollRetransmit_r16 = NR_T_PollRetransmit_ms45;
+  sl_rlc_Config->choice.sl_AM_RLC_r16->sl_PollPDU_r16 = NR_PollPDU_infinity;
+  sl_rlc_Config->choice.sl_AM_RLC_r16->sl_PollByte_r16 = NR_PollByte_infinity;
+  sl_rlc_Config->choice.sl_AM_RLC_r16->sl_MaxRetxThreshold_r16 = NR_UL_AM_RLC__maxRetxThreshold_t8;
+
+  sl_RLC_BearerConfig->sl_MAC_LogicalChannelConfig_r16 = CALLOC(1, sizeof(NR_SL_LogicalChannelConfig_r16_t));
+  NR_SL_LogicalChannelConfig_r16_t *logicalChannelConfig = sl_RLC_BearerConfig->sl_MAC_LogicalChannelConfig_r16;
+  logicalChannelConfig->sl_Priority_r16 = priority;
+  logicalChannelConfig->sl_PrioritisedBitRate_r16 = NR_SL_LogicalChannelConfig_r16__sl_PrioritisedBitRate_r16_kBps128;
+  logicalChannelConfig->sl_BucketSizeDuration_r16 = bucketSizeDuration;
+  logicalChannelConfig->sl_LogicalChannelGroup_r16 = CALLOC(1, sizeof(long));
+  *logicalChannelConfig->sl_LogicalChannelGroup_r16 = 0;
+  logicalChannelConfig->sl_SchedulingRequestId_r16 = CALLOC(1, sizeof(NR_SchedulingRequestId_t));
+  *logicalChannelConfig->sl_SchedulingRequestId_r16 = 0;
+  logicalChannelConfig->sl_LogicalChannelSR_DelayTimerApplied_r16 = CALLOC(1, sizeof(BOOLEAN_t));
+  *logicalChannelConfig->sl_LogicalChannelSR_DelayTimerApplied_r16 = false;
+
+  return sl_RLC_BearerConfig;
+}
+
 void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
                                               sl_sync_source_enum_t sync_source)
 {
@@ -663,10 +697,26 @@ void rrc_ue_process_sidelink_Preconfiguration(NR_UE_RRC_INST_t *rrc_inst,
       if (get_softmodem_params()->sl_mode == 2) {
         for (int i = 0; i < slp->sl_RadioBearerPreConfigList_r16->list.count; i++)
           add_drb_sl(ueinfo.srcid, slp->sl_RadioBearerPreConfigList_r16->list.array[i], 0, 0, NULL, NULL);
+        // SL mode-1 U2N relay REMOTE UE runs sl-mode 2 (+relay_type 1): it ALSO needs SL-SRB0/SRB1 so its
+        // RRC (RRCSetupRequest/Setup + DCCH) can be relayed over PC5 for real core registration.
+        if (get_softmodem_params()->relay_type == 1) {
+          uint8_t srb_prio = 1;
+          nr_rlc_add_srb_sl(ueinfo.srcid, 0, get_SRB_RLC_BearerConfig_sl(srb_prio, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 0));
+          nr_rlc_add_srb_sl(ueinfo.srcid, 1, get_SRB_RLC_BearerConfig_sl(srb_prio, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 1));
+          LOG_I(NR_RRC, "SL relay remote UE (mode-2): created SL-SRB0/SRB1 for RRC relay (srcid 0x%x)\n", ueinfo.srcid);
+        }
       } else {
         // mode-1 relay: create the PC5 SRAP entity directly (add_drb_sl, which normally creates it, is
         // skipped here to avoid the SL-vs-Uu drb[] collision).
         add_srap_entity(ueinfo.srcid);
+        // mode-1 U2N relay control plane: SL-SRB0 (CCCH, RRCSetupRequest/Setup) + SL-SRB1 (DCCH). Both
+        // relay UE and remote UE create these so RRC signalling can be relayed over PC5 (see increment C).
+        if (get_softmodem_params()->relay_type == 1) {
+          uint8_t srb_prio = 1;
+          nr_rlc_add_srb_sl(ueinfo.srcid, 0, get_SRB_RLC_BearerConfig_sl(srb_prio, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 0));
+          nr_rlc_add_srb_sl(ueinfo.srcid, 1, get_SRB_RLC_BearerConfig_sl(srb_prio, NR_SL_LogicalChannelConfig_r16__sl_BucketSizeDuration_r16_ms5, 1));
+          LOG_I(NR_RRC, "SL mode-1 relay: created SL-SRB0/SRB1 for RRC relay (srcid 0x%x)\n", ueinfo.srcid);
+        }
       }
       for (int i = 0; i < slp->sl_RLC_BearerPreConfigList_r16->list.count; i++)
         nr_rlc_add_drb_sl(ueinfo.srcid, 1, slp->sl_RLC_BearerPreConfigList_r16->list.array[i]);

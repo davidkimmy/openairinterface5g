@@ -239,6 +239,7 @@ typedef struct protocol_ctxt_s {
   sub_frame_t subframe; /*!< \brief  LTE sub frame number.*/
   eNB_index_t eNB_index; /*!< \brief  valid for UE indicating the index of connected eNB(s)      */
   bool brOption;
+  uint8_t remote_ue_id; /*!< \brief  SL mode-1 L2 relay: Remote UE ID when routing via the Relay UE (0 = not relayed) */
 } protocol_ctxt_t;
 
 /// suppress compiler warning for unused arguments

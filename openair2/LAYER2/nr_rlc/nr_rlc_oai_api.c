@@ -6,6 +6,7 @@
 #include "rlc.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
 #include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_header.h" // SRAP header field masks (D/C, reserved, bearer id)
 
 /* from nr rlc module */
 #include "nr_rlc_asn1_utils.h"
@@ -441,6 +442,20 @@ static void deliver_sdu(void *_ue, nr_rlc_entity_t *entity, char *buf, int size)
     }
   }
 
+  /* maybe a sidelink (PC5) SRB? (SL mode-1 U2N relay control plane: SL-SRB0=CCCH, SL-SRB1..3=DCCH) */
+  if (entity == ue->sl_srb0) {
+    is_srb = 1;
+    rb_id = 0;
+    goto rb_found;
+  }
+  for (i = 0; i < sizeofArray(ue->sl_srb); i++) {
+    if (entity == ue->sl_srb[i]) {
+      is_srb = 1;
+      rb_id = i + 1;
+      goto rb_found;
+    }
+  }
+
   LOG_E(RLC, "Fatal, no RB found for ue %d\n", ue->ue_id);
   exit(1);
 
@@ -510,12 +525,22 @@ rb_found:
     exit(1);
   }
   memcpy(memblock, buf, size);
-  /* SRAP RX hook (mode-1 relay/gNB): a relayed DRB PDU carries a SRAP header — detect it by the
-   * remote-UE id in octet 1 and the bearer id in the low 5 bits of octet 0 (TS 38.351). If present,
-   * hand to SRAP (which forwards to the opposite interface / strips the header up to PDCP); else PDCP. */
-  bool srap_enabled = (get_softmodem_params()->relay_type > 0) && !is_srb
-                      && ((uint8_t)buf[1] == get_softmodem_params()->remote_ue_id)
-                      && (((int)(buf[0] & 0x1F)) == rb_id);
+  /* SRAP RX hook (mode-1 relay/gNB): a relayed PDU carries a SRAP header (TS 38.351) -> hand to SRAP (which
+   * forwards to the opposite interface at the relay / strips the header up to RRC-or-PDCP at the endpoint);
+   * everything else -> PDCP. Two detection cases:
+   *  - DRB user data: develop scheme, SRAP-header bearer == the RLC transport rb_id (octet2 = remote_ue_id).
+   *  - SRB control (RRCSetupRequest/Setup + DCCH): the transport bearer is FIXED (relay Uu SRB1, or the
+   *    remote's SL-SRB on PC5) and differs from the SRAP-header bearer, so detect via D/C=1 + reserved-clear
+   *    + bearer<=2 + remote_ue_id range (mirrors episys deliver_sdu_srap_u2n; distinguishes relayed SRAP from
+   *    the relay's OWN PDCP-ciphered SRB1 traffic). */
+  uint8_t s0 = (uint8_t)buf[0], s1 = (uint8_t)buf[1];
+  uint8_t rid = get_softmodem_params()->remote_ue_id;
+  bool srap_drb = !is_srb && (s1 == rid) && (((int)(s0 & SRAP_HDR_BEARER_ID_MASK)) == rb_id);
+  bool srap_srb = is_srb && (entity->intf_type == PC5 || rb_id == 1)
+                  && ((s0 & SRAP_HDR_DC_MASK) != 0) && ((s0 & SRAP_HDR_RESERVED_MASK) == 0)
+                  && ((s0 & SRAP_HDR_BEARER_ID_MASK) <= 2)
+                  && (s1 >= SRAP_REMOTE_UE_ID_MIN) && (s1 <= SRAP_REMOTE_UE_ID_MAX);
+  bool srap_enabled = (get_softmodem_params()->relay_type > 0) && (size >= 2) && (srap_drb || srap_srb);
   if (srap_enabled) {
     LOG_D(RLC, "Deliver from RLC to SRAP for rb_id %d intf %d\n", rb_id, entity->intf_type);
     if (!srap_data_ind(&ctx, is_srb, 0, rb_id, size, memblock, NULL, NULL, entity->intf_type)) {
@@ -995,6 +1020,82 @@ rlc_op_status_t nr_rlc_data_req_sl(int src_id, int drb_id, mui_t muiP, sdu_size_
   return RLC_OP_STATUS_OK;
 }
 
+/* ---- Sidelink (PC5) SL-SRB (signalling) MAC<->RLC accessors (SL mode-1 U2N relay control plane) ----
+ * Mirror of the SL-DRB accessors above, but target ue->sl_srb0 (SRB0/CCCH, carries RRCSetupRequest/Setup)
+ * and ue->sl_srb[srb_id-1] (SRB1..3/DCCH). These relay the Remote UE's RRC signalling over PC5. */
+static nr_rlc_entity_t *get_sl_srb_entity(nr_rlc_ue_t *ue, int srb_id)
+{
+  if (ue == NULL)
+    return NULL;
+  if (srb_id == 0)
+    return ue->sl_srb0;
+  if (srb_id >= 1 && srb_id <= 3)
+    return ue->sl_srb[srb_id - 1];
+  return NULL;
+}
+
+mac_rlc_status_resp_t nr_mac_rlc_status_ind_sl_srb(int src_id, int srb_id, frame_t frame)
+{
+  (void)frame;
+  mac_rlc_status_resp_t ret = {0};
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = get_sl_srb_entity(ue, srb_id);
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    nr_rlc_entity_buffer_status_t bs = rb->buffer_status(rb, 1000 * 1000);
+    ret.bytes_in_buffer = bs.status_size + bs.retx_size + bs.tx_size;
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  return ret;
+}
+
+tbs_size_t nr_mac_rlc_data_req_sl_srb(int src_id, int srb_id, tb_size_t tb_size, char *buffer)
+{
+  int ret = 0;
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = get_sl_srb_entity(ue, srb_id);
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    ret = rb->generate_pdu(rb, buffer, tb_size);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  return ret;
+}
+
+void nr_mac_rlc_data_ind_sl_srb(int src_id, int srb_id, char *buf, int len)
+{
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = get_sl_srb_entity(ue, srb_id);
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    rb->recv_pdu(rb, buf, len);
+  } else {
+    LOG_W(RLC, "SL RX: no sl_srb %d for src_id 0x%x\n", srb_id, src_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+}
+
+/* PDCP/SRAP->RLC TX buffer-fill for SL-SRBs (later pulled by the SL scheduler via nr_mac_rlc_data_req_sl_srb). */
+rlc_op_status_t nr_rlc_data_req_sl_srb(int src_id, int srb_id, mui_t muiP, sdu_size_t sdu_sizeP, uint8_t *sdu_pP)
+{
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, src_id);
+  nr_rlc_entity_t *rb = get_sl_srb_entity(ue, srb_id);
+  if (rb != NULL) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    rb->recv_sdu(rb, (char *)sdu_pP, sdu_sizeP, muiP);
+    LOG_D(RLC, "SL TX: buffered %d bytes into sl_srb %d for src_id 0x%x\n", sdu_sizeP, srb_id, src_id);
+  } else {
+    LOG_E(RLC, "SL TX: SDU sent to unknown sl_srb %d for src_id 0x%x\n", srb_id, src_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+  free(sdu_pP);
+  return RLC_OP_STATUS_OK;
+}
+
 /* ---- Sidelink (PC5) SL-DRB setup (episys SL data-plane port onto develop) ----
  * Mirror of add_drb_am/um for the sidelink NR_SL_RLC_BearerConfig_r16. Adapted to develop's
  * entity-creation API: develop's new_nr_rlc_entity_am/um take no intf_type arg, so we set
@@ -1086,31 +1187,33 @@ void nr_rlc_add_drb_sl(int srcid, int drb_id, const NR_SL_RLC_BearerConfig_r16_t
 /* Sidelink (PC5) SL-SRB (signalling) setup. Uses standard NR SRB AM params (as episys). */
 void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t *rlc_BearerConfig)
 {
-  nr_rlc_entity_t *nr_rlc_am;
   nr_rlc_ue_t *ue;
   struct NR_SL_LogicalChannelConfig_r16 *l = rlc_BearerConfig->sl_MAC_LogicalChannelConfig_r16;
 
-  AssertFatal(srb_id >= 1 && srb_id <= 3, "bad SL srb id %d\n", srb_id);
+  AssertFatal(srb_id >= 0 && srb_id <= 3, "bad SL srb id %d\n", srb_id); // 0 = SL-SRB0 (CCCH), 1..3 = SL-SRB (DCCH)
   int logical_channel_group = *l->sl_LogicalChannelGroup_r16;
   if (logical_channel_group != 0)
     LOG_E(RLC, "%s:%d:%s: unexpected SL SRB LCG %d\n", __FILE__, __LINE__, __FUNCTION__, logical_channel_group);
 
-  /* hardcode standard NR SRB AM params (matches episys) */
-  int t_poll_retransmit = 45, t_reassembly = 35, t_status_prohibit = 0;
-  int poll_pdu = -1, poll_byte = -1, max_retx_threshold = 8, sn_field_length = 12;
+  /* SL-SRB is RLC UM (matches get_SRB_RLC_BearerConfig_sl and the working SL-DRB). AM was wrong for the U2N
+   * relay: an AM entity runs ARQ (STATUS PDUs / polling / retransmit) which fights the relay's pure-forwarding
+   * role — the relay endlessly ACKs the remote's PDUs, TXing tiny STATUS PDUs that starve/stall the SL TX
+   * scheduler (both rfsim and vrtsim froze on the first SL-SRB PSSCH TX). UM (fire-and-forget, no feedback)
+   * is correct: reliability for the relayed RRC is end-to-end over the gNB<->remote PDCP, and PC5 is broadcast.
+   * sl_SN_FieldLengthUM size6 per get_SRB_RLC_BearerConfig_sl. */
+  int t_reassembly = 35, sn_field_length = 6;
 
   nr_rlc_manager_lock(nr_rlc_ue_manager);
   ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rnti);
-  if (ue->sl_srb[srb_id - 1] != NULL) {
+  nr_rlc_entity_t *existing = (srb_id == 0) ? ue->sl_srb0 : ue->sl_srb[srb_id - 1];
+  if (existing != NULL) {
     LOG_W(RLC, "SL SRB %d already exists for RNTI %04x, do nothing\n", srb_id, rnti);
   } else {
-    nr_rlc_am = new_nr_rlc_entity_am(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE,
-                                     deliver_sdu, ue, successful_delivery, ue, max_retx_reached, ue,
-                                     t_poll_retransmit, t_reassembly, t_status_prohibit,
-                                     poll_pdu, poll_byte, max_retx_threshold, sn_field_length);
-    nr_rlc_am->intf_type = PC5;
-    nr_rlc_ue_add_srb_rlc_entity(ue, srb_id, nr_rlc_am);
-    LOG_I(RLC, "added SL SRB %d to UE with RNTI 0x%x\n", srb_id, rnti);
+    nr_rlc_entity_t *nr_rlc_um = new_nr_rlc_entity_um(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE,
+                                                      deliver_sdu, ue, t_reassembly, sn_field_length);
+    nr_rlc_um->intf_type = PC5;
+    nr_rlc_ue_add_srb_rlc_entity(ue, srb_id, nr_rlc_um);
+    LOG_I(RLC, "added SL SRB %d (UM) to UE with RNTI 0x%x\n", srb_id, rnti);
   }
   nr_rlc_manager_unlock(nr_rlc_ue_manager);
 }

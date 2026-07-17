@@ -575,10 +575,26 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       } else {
         uint32_t tb = pdu->tb_size > SL_NR_MAX_SLSCH_PAYLOAD_BYTES ? SL_NR_MAX_SLSCH_PAYLOAD_BYTES : pdu->tb_size;
         uint32_t room = (tb > SL_SCH_SUBHEADER_LEN) ? tb - SL_SCH_SUBHEADER_LEN : 0;
-        len = nr_mac_rlc_data_req_sl(mac->src_id, SL_F1_DRB_ID, room, (char *)pdu->slsch_payload + SL_SCH_SUBHEADER_LEN);
+        char *sdu_dst = (char *)pdu->slsch_payload + SL_SCH_SUBHEADER_LEN;
+        uint8_t lcid = SL_SCH_LCID_DRB1;
+        // mode-1 U2N relay: control-plane SL-SRBs take priority over user data (SRB0 CCCH > SRB1 DCCH > DRB).
+        if (get_softmodem_params()->relay_type == 1 && room > 0) {
+          if (nr_mac_rlc_status_ind_sl_srb(mac->src_id, 0, sl_ind->frame_tx).bytes_in_buffer > 0) {
+            len = nr_mac_rlc_data_req_sl_srb(mac->src_id, 0, room, sdu_dst);
+            lcid = SL_SCH_LCID_SRB0;
+            LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG pull SRB0 room=%d -> len=%d\n", ue_id, sl_ind->frame_tx, sl_ind->slot_tx, room, (int)len);
+          } else if (nr_mac_rlc_status_ind_sl_srb(mac->src_id, 1, sl_ind->frame_tx).bytes_in_buffer > 0) {
+            len = nr_mac_rlc_data_req_sl_srb(mac->src_id, 1, room, sdu_dst);
+            lcid = SL_SCH_LCID_SRB1;
+            LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG pull SRB1 room=%d -> len=%d\n", ue_id, sl_ind->frame_tx, sl_ind->slot_tx, room, (int)len);
+          }
+        }
+        if (len == 0)
+          len = nr_mac_rlc_data_req_sl(mac->src_id, SL_F1_DRB_ID, room, sdu_dst);
         if (len > 0) {
-          pdu->slsch_payload[0] = ((uint32_t)len >> 8) & 0xff;
-          pdu->slsch_payload[1] = (uint32_t)len & 0xff;
+          pdu->slsch_payload[0] = lcid;
+          pdu->slsch_payload[1] = ((uint32_t)len >> 8) & 0xff;
+          pdu->slsch_payload[2] = (uint32_t)len & 0xff;
           pdu->slsch_payload_len = (uint32_t)len + SL_SCH_SUBHEADER_LEN;
           // Buffer the TB (with subheader) for a possible HARQ retransmission on NACK.
           if (htx) {
@@ -587,7 +603,15 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
             htx->tb_size = cp;
           }
         } else {
-          pdu->slsch_payload_len = 0;
+          // Filler transmission (no data this turn, but the mode-1 relay/remote MUST transmit every one of
+          // its half-duplex turns to keep the shared PC5 channel's one-writer-per-slot lock-step alive). Emit
+          // a CLEAN SL-SCH subheader with length 0 so the peer's RX ignores it (NR_IF_Module requires sdu_len
+          // > 0). Must NOT leave the stale payload from a previous TX in the buffer: the PHY fills the whole
+          // TB from slsch_payload, so a stale subheader would make the peer re-decode e.g. a duplicate RRCSetup.
+          pdu->slsch_payload[0] = 0;
+          pdu->slsch_payload[1] = 0;
+          pdu->slsch_payload[2] = 0;
+          pdu->slsch_payload_len = SL_SCH_SUBHEADER_LEN;
         }
       }
       tx_config.number_pdus = 1;
@@ -660,10 +684,30 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
       // (Bidirectional/half-duplex refinement + sensing are follow-ups.)
       if (!tti_action && mac->sl_tx_res_pool && sl_mac->sl_bwp_generic) {
         mac_rlc_status_resp_t st = nr_mac_rlc_status_ind_sl(mac->src_id, SL_F1_DRB_ID, frame);
-        tti_action = (st.bytes_in_buffer > 0) ? SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH : SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+        int tx_bytes = st.bytes_in_buffer;
+        // For a relay/remote (relay_type==1) the control plane rides SL-SRB0/SRB1 (RRCSetup, RRC replies,
+        // NAS) which are pulled ahead of the DRB in sl_schedule_tx_actions. The DRB may be idle while an SRB
+        // has data (e.g. relay forwarding RRCSetup to a not-yet-registered remote), so the TX/RX arbitration
+        // must consider the SRBs too — otherwise the slot is marked RX and the buffered SRB is never sent.
+        int srb0b = 0, srb1b = 0;
+        if (get_softmodem_params()->relay_type == 1) {
+          srb0b = nr_mac_rlc_status_ind_sl_srb(mac->src_id, 0, frame).bytes_in_buffer;
+          srb1b = nr_mac_rlc_status_ind_sl_srb(mac->src_id, 1, frame).bytes_in_buffer;
+          if (tx_bytes == 0)
+            tx_bytes = srb0b + srb1b;
+        }
+        // FULL-DUPLEX (matches episci): the PC5 links are separate per-direction channels (vrtsim has distinct
+        // client_tx / server_tx channel models; rfsim uses separate sockets), so the relay and the remote may
+        // transmit in the SAME slot without collision — no half-duplex turn partition. Transmit a real
+        // PSCCH/PSSCH whenever this node has data (DRB or, for the mode-1 relay, SL-SRB control plane). The RU
+        // loop (nr-ue.c) keeps the sim channel's lock-step by writing every slot (zeros when there is no TX).
+        if (get_softmodem_params()->relay_type == 1 && (srb0b > 0 || srb1b > 0))
+          LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG gate src_id=0x%x drb=%d srb0=%d srb1=%d -> tx_bytes=%d\n",
+                ue_id, frame, slot, mac->src_id, st.bytes_in_buffer, srb0b, srb1b, tx_bytes);
+        tti_action = (tx_bytes > 0) ? SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH : SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
         sl_mac->future_ttis[slot].sl_action = tti_action;
         LOG_D(NR_MAC, "[UE%d] %d:%d SL-SCHED data-plane: status_ind_sl(src_id=0x%x drb=%d)=%d bytes -> action %d\n",
-              ue_id, frame, slot, mac->src_id, SL_F1_DRB_ID, st.bytes_in_buffer, tti_action);
+              ue_id, frame, slot, mac->src_id, SL_F1_DRB_ID, tx_bytes, tti_action);
       } else if (!tti_action) {
         static int warned = 0;
         if (!warned) { warned = 1;

@@ -154,12 +154,14 @@ void nr_rlc_ue_add_srb_rlc_entity(nr_rlc_ue_t *ue, int srb_id, nr_rlc_entity_t *
 
   /* special case: srb0 */
   if (srb_id == 0) {
-    if (ue->srb0 != NULL) {
-      LOG_E(RLC, "fatal, srb0 already present\n");
+    /* sidelink (PC5) SRB0 lives in its own slot, distinct from the Uu SRB0 (SL mode-1 U2N relay CP) */
+    nr_rlc_entity_t **slot = (entity->intf_type == PC5) ? &ue->sl_srb0 : &ue->srb0;
+    if (*slot != NULL) {
+      LOG_E(RLC, "fatal, %ssrb0 already present\n", entity->intf_type == PC5 ? "sl_" : "");
       exit(1);
     }
 
-    ue->srb0 = entity;
+    *slot = entity;
 
     return;
   }

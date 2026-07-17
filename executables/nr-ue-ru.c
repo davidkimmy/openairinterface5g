@@ -562,6 +562,15 @@ int nrue_ru_write_sl(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, void **
   return dev->trx_write_func(dev, timestamp + dev->firstTS, buff, nsamps, num_antennas, flags);
 }
 
+/* True when the PC5/SL device is a shared-memory simulator (rfsim OR vrtsim — both set device->type =
+ * RFSIMULATOR), i.e. a lock-step channel where the peer's read waits for THIS side to write every slot's
+ * samples. Such devices MUST be written every SL slot (even RX-only slots -> zeros) or the peer's read
+ * stalls until timeout. Real radios (USRP_*_DEV) must NOT transmit on RX slots, so they only write on TX. */
+bool nrue_ru_sl_is_sim(PHY_VARS_NR_UE *UE)
+{
+  return openair0_dev[UE->rf_map_sl.card].type == RFSIMULATOR;
+}
+
 typedef int (*nrue_ru_write_t)(PHY_VARS_NR_UE *UE, openair0_timestamp_t timestamp, void **txp, int nsamps, int nbAnt, int flags);
 int openair0_write_reorder_common(nrue_ru_write_t nrue_ru_write,
                                   PHY_VARS_NR_UE *UE,

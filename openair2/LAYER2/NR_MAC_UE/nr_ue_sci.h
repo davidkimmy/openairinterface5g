@@ -38,7 +38,13 @@
  * PSSCH TB. SRC/DST/LCID are already conveyed in SCI-2, so for the single-DRB F1 path only the SDU length is
  * needed — it lets the RX strip the transport-block padding and deliver the exact RLC PDU (vs the whole padded
  * TB). TX (sl_schedule_tx_actions) writes it; RX (NR_IF_Module SLSCH case) reads+strips it. */
-#define SL_SCH_SUBHEADER_LEN 2
+/* SL-SCH subheader = [LCID][len_hi][len_lo]. One bearer per PSSCH (no MAC multiplexing yet); the LCID lets
+ * the RX route to the right SL bearer. LCID 4 = SL-DRB1 (user data); 0/1 = SL-SRB0/SRB1 (mode-1 U2N relay
+ * control plane, RRCSetupRequest/Setup and DCCH). Scheduler priority: SRB0 > SRB1 > DRB. */
+#define SL_SCH_SUBHEADER_LEN 3
+#define SL_SCH_LCID_SRB0 0
+#define SL_SCH_LCID_SRB1 1
+#define SL_SCH_LCID_DRB1 4
 
 typedef enum {
   NR_SL_SCI_FORMAT_1A = 0,

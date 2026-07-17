@@ -466,12 +466,29 @@ static void deliver_pdu_drb_sl(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
   enqueue_rlc_data_req(&ctxt, 0, rb_id, sdu_id, 0, size, memblock, true);
 }
 
+/* Strong override in rrc_gNB.c: if ue_id is a DU-less relay Remote UE, return its serving relay's Uu RLC key
+ * (real RNTI) + SRAP remote_ue_id, so the remote's DL user-plane is sent over SRAP (gNB->Relay Uu ->
+ * Relay->Remote PC5) instead of a Uu air-interface RLC the remote does not have. */
+__attribute__((weak)) bool nr_rrc_gNB_remote_ue_dl_info(ue_id_t ue_id, uint32_t *relay_rnti, uint8_t *remote_ue_id)
+{ (void)ue_id; (void)relay_rnti; (void)remote_ue_id; return false; }
+
 static void deliver_pdu_drb_gnb(void *deliver_pdu_data, ue_id_t ue_id, int rb_id,
                                 char *buf, int size, int sdu_id)
 {
   DevAssert(deliver_pdu_data == NULL);
   f1_ue_data_t ue_data = cu_get_f1_ue_data(ue_id);
   protocol_ctxt_t ctxt = { .enb_flag = 1, .rntiMaybeUEid = ue_data.secondary_ue };
+
+  /* SL mode-1 U2N relay: DL for a Remote UE (its own DU-less context) has no Uu air interface — route it over
+   * SRAP toward the serving relay regardless of the DRB id (the remote's real PDU-session DRB is DRB 1). */
+  uint32_t relay_rnti = 0;
+  uint8_t r_ue_id = 0;
+  if (get_softmodem_params()->relay_type > 0 && nr_rrc_gNB_remote_ue_dl_info(ue_id, &relay_rnti, &r_ue_id)) {
+    protocol_ctxt_t rctxt = { .enb_flag = 1, .rntiMaybeUEid = relay_rnti, .remote_ue_id = r_ue_id };
+    LOG_D(PDCP, "%s(): gNB Remote-UE DL drb %d -> SRAP(UU) via relay %u size %d\n", __func__, rb_id, relay_rnti, size);
+    nr_srap_data_req_drb(&rctxt, 1 /* relay Uu transport + remote SL-DRB1 */, sdu_id, size, buf, UU);
+    return;
+  }
 
   if (NODE_IS_CU(node_type)) {
     LOG_D(PDCP, "%s() (drb %d) sending message to gtp size %d\n", __func__, rb_id, size);

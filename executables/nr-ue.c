@@ -1364,7 +1364,12 @@ void *UE_thread_sl(void *arg)
         sl_tx_action = true;
       }
     }
-    if (sl_tx_action || IS_SOFTMODEM_RFSIM)
+    // FULL-DUPLEX sim SL (matches episci): each node writes its OWN per-direction TX channel every slot — a
+    // real PSSCH when sl_tx_action, otherwise a cheap zero filler (txp is already zeroed) — so the peer's read
+    // never stalls (the SL-client relay's 2s vrtsim read-timeout). rfsim + vrtsim both use separate per-
+    // direction channels, so writing every slot never collides with the peer's simultaneous TX (no half-duplex
+    // turn partition needed). Real radios (USRP) transmit only on a real TX.
+    if (sl_tx_action || nrue_ru_sl_is_sim(UE))
       nrue_ru_write_sl(UE, writeTimestamp, (void **)txp, writeBlockSize, fp->nb_antennas_tx,
                        sl_tx_action ? TX_BURST_START_AND_END : TX_BURST_INVALID);
     for (int i = 0; i < fp->nb_antennas_tx; i++)

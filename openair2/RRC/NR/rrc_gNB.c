@@ -84,6 +84,7 @@
 #include "openair2/F1AP/lib/f1ap_positioning.h"
 #include "openair3/NRPPA/nrppa_gNB_location_information_transfer.h"
 #include "openair3/NRPPA/nrppa_gNB_measurement_information_transfer.h"
+#include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h" // SL mode-1 U2N relay: remote-UE RRC over PC5 SL-SRB (SRAP)
 
 #ifdef E2_AGENT
 #include "openair2/E2AP/RAN_FUNCTION/O-RAN/ran_func_rc_extern.h"
@@ -304,6 +305,30 @@ static void rrc_deliver_dl_rrc_message(void *deliver_pdu_data, ue_id_t ue_id, in
   data->rrc->mac_rrc.dl_rrc_message_transfer(data->assoc_id, data->dl_rrc);
 }
 
+// SL mode-1 U2N relay: PDCP-ciphered DL DCCH for a Remote UE is delivered over SRAP (gNB->Relay Uu, then
+// Relay->Remote PC5) instead of F1AP. ue_id is the Remote UE's CU id; look up its relay RNTI + remote_ue_id.
+static void rrc_deliver_dl_rrc_message_sl(void *deliver_pdu_data, ue_id_t ue_id, int srb_id, char *buf, int size, int sdu_id)
+{
+  UNUSED(sdu_id);
+  deliver_dl_rrc_message_data_t *data = (deliver_dl_rrc_message_data_t *)deliver_pdu_data;
+  rrc_gNB_ue_context_t *ue_ctx = rrc_gNB_get_ue_context((gNB_RRC_INST *)data->rrc, ue_id);
+  if (ue_ctx == NULL) {
+    LOG_E(NR_RRC, "[gNB] SL DL DCCH: no context for CU UE id %lu\n", (unsigned long)ue_id);
+    return;
+  }
+  gNB_RRC_UE_t *ue_p = &ue_ctx->ue_context;
+  static uint32_t sl_dl_dcch_mui = 0;
+  protocol_ctxt_t ctxt = {0};
+  ctxt.enb_flag = 1;
+  // Uu leg transport (gNB -> Relay UE): the Uu RLC is keyed by the relay's RNTI, but relay_ue_rnti stores
+  // the relay's CU UE id (used to match incoming SRAP). Resolve CU id -> RNTI via the relay's RRC context.
+  rrc_gNB_ue_context_t *relay_ctx = rrc_gNB_get_ue_context((gNB_RRC_INST *)data->rrc, ue_p->relay_ue_rnti);
+  ctxt.rntiMaybeUEid = relay_ctx ? relay_ctx->ue_context.rnti : ue_p->relay_ue_rnti;
+  ctxt.remote_ue_id = ue_p->remote_ue_id;
+  nr_srap_data_req_srb(&ctxt, 1 /*SL-SRB1/DCCH*/, size, buf, srap_deliver_pdu_srb, sl_dl_dcch_mui++, UU);
+  LOG_I(NR_RRC, "[gNB] DL DCCH %d B -> Remote UE %d via SRAP (srb %d, relay %04x)\n", size, ue_p->remote_ue_id, srb_id, ue_p->relay_ue_rnti);
+}
+
 static void nr_rrc_transfer_protected_rrc_message(const gNB_RRC_INST *rrc,
                                                   const gNB_RRC_UE_t *ue_p,
                                                   uint8_t srb_id,
@@ -312,6 +337,17 @@ static void nr_rrc_transfer_protected_rrc_message(const gNB_RRC_INST *rrc,
                                                   int size)
 {
   DevAssert(size > 0);
+  // SL mode-1 U2N relay: a Remote UE has no DU/F1 — still PDCP-cipher the DL DCCH, but deliver it over SRAP.
+  if (ue_p->is_remote_ue) {
+    deliver_dl_rrc_message_data_t data = {.rrc = rrc, .dl_rrc = NULL, .assoc_id = 0};
+    nr_pdcp_data_req_srb(ue_p->rrc_ue_id, srb_id, rrc_gNB_mui++, size, (unsigned char *const)buffer, rrc_deliver_dl_rrc_message_sl, &data);
+#ifdef E2_AGENT
+    E2_AGENT_SIGNAL_DL_DCCH_RRC_MSG(buffer, size, message_id);
+#else
+    UNUSED(message_id);
+#endif
+    return;
+  }
   f1_ue_data_t ue_data = cu_get_f1_ue_data(ue_p->rrc_ue_id);
   RETURN_IF_INVALID_ASSOC_ID(ue_data.du_assoc_id);
   f1ap_dl_rrc_message_t dl_rrc = {.gNB_CU_ue_id = ue_p->rrc_ue_id, .gNB_DU_ue_id = ue_data.secondary_ue, .srb_id = srb_id};
@@ -2431,6 +2467,167 @@ void rrc_gNB_process_initial_ul_rrc_message(sctp_assoc_t assoc_id, const f1ap_in
   ASN_STRUCT_FREE(asn_DEF_NR_UL_CCCH_Message, ul_ccch_msg);
 }
 
+/* ==================== SL mode-1 U2N relay: gNB-side control plane ====================
+ * A Remote UE has no DU/F1: its RRC is relayed over PC5 -> Relay UE -> Uu -> gNB SRAP. We mint a synthetic
+ * C-RNTI + DU-UE-id for it, create a normal gNB_RRC_UE context (so the EXISTING RRCSetupComplete -> NGAP
+ * path registers it with the AMF for free), borrow the Relay UE's CellGroupConfig, and send DL RRC back
+ * over SRAP instead of F1AP. */
+
+// Find the gNB RRC context of a Remote UE (matched by its relay's RNTI + the SRAP remote_ue_id).
+static rrc_gNB_ue_context_t *find_remote_ue_context(gNB_RRC_INST *rrc, uint32_t relay_rnti, uint8_t remote_ue_id)
+{
+  rrc_gNB_ue_context_t *ue_context_p = NULL;
+  RB_FOREACH(ue_context_p, rrc_nr_ue_tree_s, &rrc->rrc_ue_head) {
+    gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
+    if (UE->is_remote_ue && UE->relay_ue_rnti == relay_rnti && UE->remote_ue_id == remote_ue_id)
+      return ue_context_p;
+  }
+  return NULL;
+}
+
+/* SRAP data-plane hook (strong override of the weak default in nr_srap_oai_api.c): map a relayed Remote UE
+ * (identified by its relay's RNTI + the SRAP remote_ue_id) to its own gNB ue-id, so relayed user-plane is
+ * delivered to the Remote UE's PDCP/PDU-session context (its own N3 tunnel), not the relay's. */
+int nr_rrc_gNB_get_remote_ue_id(uint32_t relay_rnti, uint8_t remote_ue_id)
+{
+  gNB_RRC_INST *rrc = RC.nrrrc[0];
+  if (!rrc)
+    return -1;
+  rrc_gNB_ue_context_t *ue_context_p = find_remote_ue_context(rrc, relay_rnti, remote_ue_id);
+  return ue_context_p ? (int)ue_context_p->ue_context.rrc_ue_id : -1;
+}
+
+/* PDCP DL data-plane hook (strong override of the weak default in nr_pdcp_oai_api.c): if ue_id is a DU-less
+ * relay Remote UE, return its serving relay's Uu RLC key (the relay's real RNTI) + the SRAP remote_ue_id, so
+ * the remote's DL user-plane is sent over SRAP toward the relay. Mirrors rrc_deliver_dl_rrc_message_sl. */
+bool nr_rrc_gNB_remote_ue_dl_info(ue_id_t ue_id, uint32_t *relay_rnti, uint8_t *remote_ue_id)
+{
+  gNB_RRC_INST *rrc = RC.nrrrc[0];
+  if (!rrc)
+    return false;
+  rrc_gNB_ue_context_t *ue_ctx = rrc_gNB_get_ue_context(rrc, ue_id);
+  if (!ue_ctx || !ue_ctx->ue_context.is_remote_ue)
+    return false;
+  gNB_RRC_UE_t *ue_p = &ue_ctx->ue_context;
+  /* relay_ue_rnti holds the relay's CU UE id; the Uu RLC is keyed by the relay's real RNTI. */
+  rrc_gNB_ue_context_t *relay_ctx = rrc_gNB_get_ue_context(rrc, ue_p->relay_ue_rnti);
+  *relay_rnti = relay_ctx ? relay_ctx->ue_context.rnti : ue_p->relay_ue_rnti;
+  *remote_ue_id = ue_p->remote_ue_id;
+  return true;
+}
+
+// DL RRCSetup to a Remote UE: like rrc_gNB_generate_RRCSetup, but the masterCellGroup is the Relay UE's
+// (borrowed) CellGroupConfig and the PDU is sent over SRAP (gNB->Relay Uu, then Relay->Remote PC5), NOT via
+// F1AP dl_rrc_message_transfer (the Remote UE has no DU).
+static void rrc_gNB_generate_RRCSetup_sl(gNB_RRC_INST *rrc, rrc_gNB_ue_context_t *ue_context_pP)
+{
+  gNB_RRC_UE_t *ue_p = &ue_context_pP->ue_context;
+  unsigned char buf[1024];
+  uint8_t xid = rrc_gNB_get_next_transaction_identifier(0);
+  ue_p->xids[xid] = RRC_SETUP;
+  NR_SRB_ToAddModList_t *SRBs = createSRBlist(ue_p, false);
+  int size = do_RRCSetup(buf, sizeof(buf), xid, ue_p->mcg.buf, ue_p->mcg.len, SRBs);
+  freeSRBlist(SRBs);
+  if (size <= 0) {
+    LOG_E(NR_RRC, "[gNB] do_RRCSetup failed for Remote UE %d (mcg len %ld)\n", ue_p->remote_ue_id, ue_p->mcg.len);
+    return;
+  }
+  static uint32_t sl_dl_mui = 0;
+  protocol_ctxt_t ctxt = {0};
+  ctxt.enb_flag = 1;
+  // Uu leg transport (gNB -> Relay UE): Uu RLC is keyed by the relay's RNTI; relay_ue_rnti holds its CU UE id.
+  rrc_gNB_ue_context_t *relay_ctx = rrc_gNB_get_ue_context(rrc, ue_p->relay_ue_rnti);
+  ctxt.rntiMaybeUEid = relay_ctx ? relay_ctx->ue_context.rnti : ue_p->relay_ue_rnti;
+  ctxt.remote_ue_id = ue_p->remote_ue_id; // SRAP header: which Remote UE
+  nr_srap_data_req_srb(&ctxt, 0 /*SL-SRB0/CCCH*/, size, (char *)buf, srap_deliver_pdu_srb, sl_dl_mui++, UU);
+  LOG_I(NR_RRC, "[gNB] sent RRCSetup (%d B) to Remote UE %d via SRAP (relay rnti %04x, cu ue id %u)\n",
+        size, ue_p->remote_ue_id, ue_p->relay_ue_rnti, ue_p->rrc_ue_id);
+}
+
+// Strong override (gNB binary only) of the weak hook in nr_srap_oai_api.c. bearer_id: 0 = SL-SRB0/CCCH
+// (RRCSetupRequest), 1 = SL-SRB1/DCCH (RRCSetupComplete/SecurityModeComplete/ReconfigComplete/UL NAS).
+void nr_rrc_gNB_process_srap_message(int module_id, uint32_t relay_rnti, int bearer_id, uint8_t remote_ue_id, uint8_t *buf, int size)
+{
+  (void)module_id;
+  gNB_RRC_INST *rrc = RC.nrrrc[0];
+  if (rrc == NULL || buf == NULL || size <= 0)
+    return;
+
+  if (bearer_id == 0) {
+    // ---- CCCH: RRCSetupRequest from the Remote UE ----
+    NR_UL_CCCH_Message_t *ul_ccch_msg = NULL;
+    asn_dec_rval_t dec_rval = uper_decode(NULL, &asn_DEF_NR_UL_CCCH_Message, (void **)&ul_ccch_msg, buf, size, 0, 0);
+    if (dec_rval.code != RC_OK || dec_rval.consumed == 0) {
+      LOG_E(NR_RRC, "[gNB] SRAP CCCH decode failed for Remote UE %d\n", remote_ue_id);
+      ASN_STRUCT_FREE(asn_DEF_NR_UL_CCCH_Message, ul_ccch_msg);
+      return;
+    }
+    if (ul_ccch_msg->message.present == NR_UL_CCCH_MessageType_PR_c1
+        && ul_ccch_msg->message.choice.c1->present == NR_UL_CCCH_MessageType__c1_PR_rrcSetupRequest) {
+      const NR_RRCSetupRequest_IEs_t *req = &ul_ccch_msg->message.choice.c1->choice.rrcSetupRequest->rrcSetupRequest;
+      // Idempotent on RRCSetupRequest retransmission: reuse an existing context.
+      rrc_gNB_ue_context_t *ue_context_p = find_remote_ue_context(rrc, relay_rnti, remote_ue_id);
+      if (ue_context_p == NULL) {
+        uint64_t random_value = 0;
+        if (req->ue_Identity.present == NR_InitialUE_Identity_PR_randomValue
+            && req->ue_Identity.choice.randomValue.size == 5)
+          memcpy(((uint8_t *)&random_value) + 3, req->ue_Identity.choice.randomValue.buf, 5);
+        else if (req->ue_Identity.present == NR_InitialUE_Identity_PR_ng_5G_S_TMSI_Part1)
+          random_value = BIT_STRING_to_uint64(&req->ue_Identity.choice.ng_5G_S_TMSI_Part1);
+
+        rnti_t crnti = 0xE000 | (remote_ue_id & 0xFF);
+        uint32_t du_ue_id = 0xE00000u | remote_ue_id;
+        ue_context_p = rrc_gNB_create_ue_context((sctp_assoc_t)-1, crnti, rrc, random_value, du_ue_id);
+        if (ue_context_p == NULL) {
+          ASN_STRUCT_FREE(asn_DEF_NR_UL_CCCH_Message, ul_ccch_msg);
+          return;
+        }
+        gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
+        UE->is_remote_ue = true;
+        UE->relay_ue_rnti = relay_rnti;
+        UE->remote_ue_id = remote_ue_id;
+        UE->establishment_cause = req->establishmentCause;
+        // Borrow the Relay UE's CellGroupConfig (Remote UE has no DU cell of its own). Note: over SRAP the
+        // relay is identified by its CU UE id (what arrives here as relay_rnti), so look up by CU id.
+        rrc_gNB_ue_context_t *relay_ctx = rrc_gNB_get_ue_context(rrc, relay_rnti);
+        if (relay_ctx != NULL && relay_ctx->ue_context.mcg.buf != NULL)
+          store_cgc(UE, &relay_ctx->ue_context.mcg);
+        else
+          LOG_W(NR_RRC, "[gNB] Remote UE %d: no Relay(cuid %u) CellGroupConfig to borrow\n", remote_ue_id, (unsigned)relay_rnti);
+        // Borrow the Relay UE's serving PCell too: the DU-less Remote UE has no cell of its own, and NGAP's
+        // Initial UE Message (rrc_gNB_send_NGAP_NAS_FIRST_REQ) needs a pcell to fill the NR CGI / TAI.
+        if (relay_ctx != NULL) {
+          nr_rrc_cell_container_t *relay_pcell = rrc_get_pcell_for_ue(rrc, &relay_ctx->ue_context);
+          if (relay_pcell != NULL)
+            rrc_update_ue_pcell(UE, relay_pcell);
+          else
+            LOG_W(NR_RRC, "[gNB] Remote UE %d: no Relay pcell to borrow\n", remote_ue_id);
+        }
+        activate_srb(UE, 1);
+        LOG_I(NR_RRC, "[gNB] created Remote-UE RRC context (cu id %u, crnti %04x) via relay %04x, remote_ue_id %d\n",
+              UE->rrc_ue_id, crnti, relay_rnti, remote_ue_id);
+        rrc_gNB_generate_RRCSetup_sl(rrc, ue_context_p);
+      }
+    }
+    ASN_STRUCT_FREE(asn_DEF_NR_UL_CCCH_Message, ul_ccch_msg);
+  } else {
+    // ---- DCCH: feed develop's DCCH decoder via a synthetic F1 UL message (keyed by CU UE id) ----
+    rrc_gNB_ue_context_t *ue_context_p = find_remote_ue_context(rrc, relay_rnti, remote_ue_id);
+    if (ue_context_p == NULL) {
+      LOG_E(NR_RRC, "[gNB] SRAP DCCH for unknown Remote UE %d (relay %04x)\n", remote_ue_id, relay_rnti);
+      return;
+    }
+    f1ap_ul_rrc_message_t msg = {
+      .gNB_CU_ue_id = ue_context_p->ue_context.rrc_ue_id,
+      .gNB_DU_ue_id = 0,
+      .srb_id = 1,
+      .rrc_container = buf,
+      .rrc_container_length = size,
+    };
+    rrc_gNB_decode_dcch(rrc, &msg);
+  }
+}
+
 static void rrc_gNB_trigger_nsa_release(module_id_t mod_id, int ue_id)
 {
   gNB_RRC_INST *rrc = RC.nrrrc[mod_id];
@@ -3297,7 +3494,17 @@ static void rrc_gNB_process_e1_bearer_context_setup_resp(e1ap_bearer_setup_resp_
     return;
   }
 
-  if (!UE->f1_ue_context_active)
+  if (UE->is_remote_ue) {
+    /* SL mode-1 U2N relay: the Remote UE is a DU-less synthetic RRC context (no MAC/DU UE), so the
+     * normal E1->F1 UE Context Setup path (rrc_f1_ue_context_setup_from_e1_response ->
+     * ue_context_setup_request -> find_nr_UE) would assert. The CU-UP/N3 bearer + GTP-U tunnel are
+     * already set up above; here we just activate SRB2 (PDCP) and generate the PDU-session
+     * RRCReconfiguration (DRB config + the NAS PDU Session Establishment Accept) directly, which is
+     * delivered DL over SRAP (gNB->Relay Uu -> Relay->Remote PC5) by nr_rrc_transfer_protected_rrc_message.
+     * The Remote UE's user-plane rides the relay's DRB2 + SRAP/PC5, so it needs no Uu air-interface DRB. */
+    activate_srb(UE, SRB2);
+    rrc_gNB_generate_dedicatedRRCReconfiguration(rrc, UE, false);
+  } else if (!UE->f1_ue_context_active)
     rrc_f1_ue_context_setup_from_e1_response(rrc, ue_context_p, resp);
   else {
     /* Instruction towards the DU for DRB configuration and tunnel creation */

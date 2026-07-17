@@ -171,7 +171,13 @@ static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
    * must be raw IP with NO SDAP header — the remote's SL DRB is headerless (sl-SDAP-Header absent), so an
    * added Uu SDAP header would not be stripped and would corrupt the IP packet (TUN write fails). Force
    * the no-header path, symmetric to the gNB SDAP RX relay-remote handling. */
-  if (ctxt_p->enb_flag && get_softmodem_params()->relay_type > 0 && drb_id > 1) {
+  extern bool nr_rrc_gNB_remote_ue_dl_info(ue_id_t ue_id, uint32_t *relay_rnti, uint8_t *remote_ue_id);
+  uint32_t _relay_rnti; uint8_t _r_ue_id;
+  /* A DU-less relay Remote UE's real PDU-session DRB is DRB 1, so the drb_id>1 test alone misses it. Also
+   * force no-header when this gNB TX entity belongs to a Remote UE (its SL SDAP is headerless). */
+  bool remote_dl = ctxt_p->enb_flag && get_softmodem_params()->relay_type > 0
+                   && nr_rrc_gNB_remote_ue_dl_info(ctxt_p->rntiMaybeUEid, &_relay_rnti, &_r_ue_id);
+  if (ctxt_p->enb_flag && get_softmodem_params()->relay_type > 0 && (drb_id > 1 || remote_dl)) {
     sdap_dl_tx = false;
     sdap_ul_tx = false;
   }
@@ -914,9 +920,20 @@ void nr_reconfigure_sdap_entity(NR_SDAP_Config_t *sdap_config, ue_id_t ue_id, in
   sdap_entity->qfi2drb_map_update(sdap_entity, &sdap);
 }
 
+/* SL mode-1 U2N relay Remote UE: its SDAP entity is the PC5 SL data-plane one keyed on (src_id, pdu 10),
+ * recorded in nr_sdap.c. The NAS drives set_qfi/create_ue_ip_if with the registration keys (ue 0, pdu 1),
+ * so redirect them onto the SL entity. */
+extern int g_relay_remote_sl_ueid;
+extern int g_relay_remote_sl_pduid;
+
 void set_qfi(uint8_t qfi, uint8_t pduid, ue_id_t ue_id)
 {
   DevAssert(qfi < SDAP_MAX_QFI);
+  if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue
+      && pduid != 10 && g_relay_remote_sl_ueid >= 0) {
+    ue_id = g_relay_remote_sl_ueid;
+    pduid = g_relay_remote_sl_pduid;
+  }
   nr_sdap_entity_t *entity = nr_sdap_get_entity(ue_id, pduid);
   DevAssert(entity != NULL);
   entity->qfi = qfi;

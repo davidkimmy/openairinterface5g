@@ -265,6 +265,12 @@ typedef struct gNB_RRC_UE_s {
   delayed_action_state_t delayed_action;
 
   nr_redcap_ue_cap_t *redcap_cap;
+
+  /* SL mode-1 L2 U2N relay - Remote UE context info (this gNB_RRC_UE is a Remote UE reached via a Relay UE) */
+  bool    is_remote_ue;              // true if this UE is a Remote UE served over a Relay UE (no DU/F1 connection)
+  rnti_t  relay_ue_rnti;             // RNTI of the serving Relay UE (valid when is_remote_ue)
+  uint8_t remote_ue_id;              // Remote UE ID carried in the SRAP header (octet 2)
+  bool    relay_drb2_needs_reconfig; // Relay UE needs an RRCReconfiguration to (re)set its relayed-traffic DRB
 } gNB_RRC_UE_t;
 
 typedef struct rrc_gNB_ue_context_s {

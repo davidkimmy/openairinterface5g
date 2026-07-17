@@ -302,8 +302,35 @@ static void start_sdap_tun_ue(ue_id_t ue_id, int pdu_session_id, int sock, const
   nr_sdap_tun_attach(entity);
 }
 
+/* SL mode-1 U2N relay Remote UE: keys of the PC5 SL data-plane TUN/SDAP entity (set up at SL preconfig
+ * with pdu_session_id 10), recorded so the real core IP from registration can be placed on that same
+ * (PC5-backed) TUN instead of a dead Uu TUN. -1 = not yet created. */
+int g_relay_remote_sl_ueid = -1;
+int g_relay_remote_sl_pduid = -1;
+
 void create_ue_ip_if(const char *ipv4, const char *ipv6, int ue_id, int pdu_session_id, bool is_default)
 {
+  /* For the relay Remote UE, the user plane rides the PC5 SL-DRB (not a Uu air DRB), and its IP must come
+   * from real core registration (no --ip-demo). Two calls reach here: (1) the SL data-plane bring-up
+   * (pdu_session_id 10) — create the PC5-backed TUN but DEFER the IP; (2) the NAS PDU Session
+   * Establishment Accept (pdu_session_id != 10) — re-address that same SL TUN with the real core IP. */
+  if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue) {
+    if (pdu_session_id == 10) {
+      g_relay_remote_sl_ueid = ue_id;
+      g_relay_remote_sl_pduid = pdu_session_id;
+      ipv4 = NULL; /* defer: the real IP arrives with the PDU session accept */
+      ipv6 = NULL;
+      LOG_I(SDAP, "[Remote UE] SL data-plane TUN created without IP; awaiting core-assigned IP (ue %d pdu %d)\n",
+            ue_id, pdu_session_id);
+    } else if (g_relay_remote_sl_ueid >= 0) {
+      LOG_I(SDAP, "[Remote UE] applying core IP %s to PC5 SL TUN (ue %d pdu %d) instead of a Uu DRB\n",
+            ipv4 ? ipv4 : "(v6)", g_relay_remote_sl_ueid, g_relay_remote_sl_pduid);
+      ue_id = g_relay_remote_sl_ueid;
+      pdu_session_id = g_relay_remote_sl_pduid;
+      is_default = true;
+    }
+  }
+
   char ifname[IFNAMSIZ];
   tuntap_generate_ue_ifname(ifname, IFF_TUN, ue_id, is_default ? -1 : pdu_session_id);
 
@@ -316,7 +343,10 @@ void create_ue_ip_if(const char *ipv4, const char *ipv6, int ue_id, int pdu_sess
       nr_sdap_tun_attach(entity);
   }
 
-  tun_config(ifname, ipv4, ipv6);
+  /* ipv4==ipv6==NULL is the deferred relay-Remote-UE case (TUN + reader thread created now, IP applied
+   * later from core registration). tun_config asserts on a null IP, so skip it until the IP arrives. */
+  if (ipv4 || ipv6)
+    tun_config(ifname, ipv4, ipv6);
   if (ipv4) {
     setup_ue_ipv4_route(ifname, ue_id, pdu_session_id, ipv4);
     /* Sidelink same-host bring-up (episys/sl-mode1-relay port): when two UEs run in the same network

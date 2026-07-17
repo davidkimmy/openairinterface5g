@@ -451,6 +451,17 @@ static void handle_sl_bch(int ue_id,
 
   nr_mac_rrc_data_ind_ue(ue_id, 0, hfn_rx, frame_rx, slot_rx, rx_slss_id, 0, NR_SBCCH_SL_BCH, (uint8_t *)sl_mib, len);
 
+  // SL mode-1 U2N relay: once the Remote UE (relay_type==1, not the relay itself) is PC5-synced to the
+  // relay, kick off its RRC connection over the relay (RRCSetupRequest on PC5 SL-SRB0). Fire once.
+  if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue) {
+    static bool sl_rrc_setup_req_sent = false;
+    if (!sl_rrc_setup_req_sent) {
+      sl_rrc_setup_req_sent = true;
+      nr_mac_rrc_setup_req_ue(ue_id, frame_rx, slot_rx);
+      LOG_I(NR_MAC, "[Remote UE%d] PC5-synced -> triggering RRCSetupRequest over the relay\n", ue_id);
+    }
+  }
+
   return;
 }
 /*
@@ -503,10 +514,18 @@ void sl_nr_process_rx_ind(int ue_id,
         NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
         // Strip the 2-byte SL-SCH subheader (big-endian RLC-PDU length) and deliver exactly that many bytes,
         // discarding the transport-block padding. Guard against a corrupt length exceeding the decoded TB.
-        int sdu_len = ((int)slsch->pdu[0] << 8) | (int)slsch->pdu[1];
+        uint8_t lcid = slsch->pdu[0];
+        int sdu_len = ((int)slsch->pdu[1] << 8) | (int)slsch->pdu[2];
         if (sdu_len > 0 && sdu_len <= slsch->pdu_length - SL_SCH_SUBHEADER_LEN) {
-          nr_mac_rlc_data_ind_sl(mac->src_id, 1 /*SL DRB id*/, (char *)slsch->pdu + SL_SCH_SUBHEADER_LEN, sdu_len);
-          LOG_D(NR_MAC, "[UE%d] SL RX SLSCH %d bytes -> SL DRB\n", ue_id, sdu_len);
+          char *sdu = (char *)slsch->pdu + SL_SCH_SUBHEADER_LEN;
+          // Route by SL-SCH LCID: SRB0/SRB1 (mode-1 relay control plane) to the SL-SRB RLC, else SL-DRB1.
+          if (lcid == SL_SCH_LCID_SRB0)
+            nr_mac_rlc_data_ind_sl_srb(mac->src_id, 0, sdu, sdu_len);
+          else if (lcid == SL_SCH_LCID_SRB1)
+            nr_mac_rlc_data_ind_sl_srb(mac->src_id, 1, sdu, sdu_len);
+          else
+            nr_mac_rlc_data_ind_sl(mac->src_id, 1 /*SL DRB id*/, sdu, sdu_len);
+          LOG_D(NR_MAC, "[UE%d] SL RX SLSCH %d bytes lcid %d\n", ue_id, sdu_len, lcid);
         } else {
           LOG_W(NR_MAC, "[UE%d] SL RX SLSCH bad subheader len %d (TB %d)\n", ue_id, sdu_len, slsch->pdu_length);
         }

@@ -953,21 +953,29 @@ static int vrtsim_read(openair0_device_t *device, openair0_timestamp_t *ptimesta
   if (shm_td_iq_channel_is_aborted(vrtsim_state->channel)) {
     return 0;
   }
-  if (vrtsim_state->role == ROLE_SERVER) {
-    uint64_t timeout_uS = 0; // 0 means no timeout
-    shm_td_iq_channel_wait(vrtsim_state->channel, vrtsim_state->last_received_sample + nsamps, timeout_uS);
-  } else {
+  {
+    // Resilient read for BOTH roles (server=remote, client=relay): if the peer stalls, DO NOT block forever
+    // (server used timeout 0) or abort (client) — either kills/deadlocks the whole SL link (the abort path
+    // trips AssertFatal(rd==readBlockSize) in UE_thread_sl). Instead, zero-fill this slot and keep pumping.
+    // This breaks a MUTUAL read-wait deadlock: in the mode-1 relay setup the relay and remote can both end up
+    // blocked in their reads waiting for each other's write while one side's SL thread is briefly starved
+    // (e.g. by the remote's NAS USIM/Milenage auth). By advancing its own write, each side unblocks the peer's
+    // read so both resume. A dropped slot is just a lost PC5 TB (recovered by RLC/upper layers). Short timeout
+    // so recovery is quick; normal per-slot arrivals never hit it.
     uint64_t start_sample = shm_td_iq_channel_get_current_sample(vrtsim_state->channel);
-    uint64_t timeout_uS = 2 * 1000 * 1000; // 2 seconds timeout waiting for sample number to change
-    //
+    uint64_t timeout_uS = 1 * 1000 * 1000; // 1 s
     while (shm_td_iq_channel_wait(vrtsim_state->channel, vrtsim_state->last_received_sample + nsamps, timeout_uS) == 1) {
       uint64_t sample = shm_td_iq_channel_get_current_sample(vrtsim_state->channel);
       if (sample == start_sample) {
-        LOG_E(HW,
-              "VRTSIM: Read timeout waiting for sample %lu to change, aborting channel\n",
+        LOG_W(HW,
+              "VRTSIM: read timeout for sample %lu (peer stalled) — zero-filling this slot to keep the SL pump alive\n",
               vrtsim_state->last_received_sample + nsamps);
-        shm_td_iq_channel_abort(vrtsim_state->channel);
-        break;
+        for (int aa = 0; aa < nbAnt; aa++)
+          memset(samplesVoid[aa], 0, nsamps * sizeof(sample_t));
+        *ptimestamp = vrtsim_state->last_received_sample;
+        vrtsim_state->last_received_sample += nsamps;
+        vrtsim_state->rx_samples_total += nsamps;
+        return nsamps;
       } else {
         start_sample = sample;
       }

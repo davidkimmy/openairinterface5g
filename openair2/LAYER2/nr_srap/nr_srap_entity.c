@@ -89,9 +89,17 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
       forwarding_entity = nr_srap_get_entity(m, NR_SRAP_PC5);
     }
     AssertFatal(forwarding_entity != NULL, "Forwarding entity is NULL!!!");
-    LOG_D(NR_SRAP, "%s: Received SRAP SDU from %s; forwarding to %s with rb_id %ld.\n", __FUNCTION__, entity_types[entity->type], entity_types[forwarding_entity->type], rb_id);
+    /* Transport bearer for the forwarded PDU. For a control-plane SRB the transport differs from the SRAP
+     * header bearer: forward on the relay's Uu SRB1 (UL, PC5->Uu), or on the remote's SL-SRB carried in the
+     * SRAP header (DL, Uu->PC5). (DRB user data keeps the develop rb_id passthrough.) The SRAP header stays
+     * in the buffer, so the endpoint still recovers the remote's real bearer. */
+    rb_id_t fwd_rb_id = rb_id;
+    if (srb_flagP)
+      fwd_rb_id = (forwarding_entity->type == NR_SRAP_UU) ? 1 : hdr_bearer_id;
+    LOG_D(NR_SRAP, "%s: Received SRAP SDU from %s; forwarding to %s (transport rb_id %ld, hdr bearer %d).\n",
+          __FUNCTION__, entity_types[entity->type], entity_types[forwarding_entity->type], fwd_rb_id, hdr_bearer_id);
     ctxt_pP->rntiMaybeUEid = forwarding_entity->rnti;
-    srap_forward_sdu_drb(ctxt_pP, forwarding_entity, srb_flagP, MBMS_flagP, buffer, size, rb_id, src_id, ue_id);
+    srap_forward_sdu_drb(ctxt_pP, forwarding_entity, srb_flagP, MBMS_flagP, buffer, size, fwd_rb_id, src_id, ue_id);
   }
   if (!is_relay_ue || (!is_relay_ue && (entity->type == NR_SRAP_UU))) {
     LOG_D(NR_SRAP, "Sending sdu: rb_id %lu ue_id = %d\n", rb_id, ue_id);
@@ -102,7 +110,9 @@ void nr_srap_entity_recv_pdu(protocol_ctxt_t *const  ctxt_pP,
     }
 
     /* deliver on the DRB id read from the SRAP header (relay-UE packet: routed to the relay context's
-     * bearer identified by SRAP), not the RLC transport rb_id. */
+     * bearer identified by SRAP), not the RLC transport rb_id. Also carry the Remote UE id (SRAP header
+     * octet2) so the endpoint (gNB / remote UE) can route to the right Remote-UE context. */
+    ctxt_pP->remote_ue_id = ue_id;
     entity->deliver_sdu(ctxt_pP, entity->deliver_sdu_data, entity, sdu->buffer, sdu->size, srb_flagP, MBMS_flagP, hdr_bearer_id);
     entity->stats.txsdu_pkts++;
     entity->stats.txsdu_bytes += sdu->size;

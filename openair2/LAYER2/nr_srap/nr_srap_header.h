@@ -12,6 +12,14 @@ Email ID: ejaz.ahmed@applied.co
 #include "nr_srap_oai_api.h"
 
 
+// SRAP header octet-1 field masks (TS 38.351 6.2.2): bit7 = D/C (1=data/relayed SRAP), bits 5-6 reserved
+// (0), bits 0-4 = bearer id. octet2 = remote UE id (1..255). Used to detect relayed SRAP PDUs at the
+// relay/gNB and distinguish them from the relay's own (PDCP-ciphered) Uu traffic.
+#define SRAP_HDR_DC_MASK        0x80
+#define SRAP_HDR_RESERVED_MASK  0x60
+#define SRAP_HDR_BEARER_ID_MASK 0x1F
+#define SRAP_REMOTE_UE_ID_MIN   1
+#define SRAP_REMOTE_UE_ID_MAX   255
 // 38.351 6.2.2 SRAP data pdu: 2 bytes hdr for U2N, 3 bytes hdr for U2U
 // U2N Header (2 octets)
 typedef struct U2NHeader {
