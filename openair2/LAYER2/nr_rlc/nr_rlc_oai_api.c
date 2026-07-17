@@ -292,44 +292,27 @@ tbs_size_t mac_rlc_data_req(
   return ret;
 }
 
-mac_rlc_status_resp_t mac_rlc_status_ind(
-  const module_id_t       module_idP,
+/* Shared implementation for the RLC buffer-status query. The caller passes the UE
+   key in rntiP (the RNTI for Uu/SA, the sidelink source L2 ID for PC5) and states
+   the link type via is_pc5_link, so this function never has to guess the link type
+   from the key value. */
+static mac_rlc_status_resp_t nr_rlc_status_ind_impl(
   const rnti_t            rntiP,
-  const eNB_index_t       eNB_index,
   const frame_t           frameP,
-  const sub_frame_t       subframeP,
-  const eNB_flag_t        enb_flagP,
-  const MBMS_flag_t       MBMS_flagP,
   const logical_chan_id_t channel_idP,
-  const uint32_t sourceL2Id,
-  const uint32_t destinationL2Id
+  const bool              is_pc5_link
   )
 {
   nr_rlc_ue_t *ue;
   mac_rlc_status_resp_t ret;
   nr_rlc_entity_t *rb;
-  /* In Sidelink (Mode 1 and Mode 2), we have source and destination IDs defined.
-     In SA Mode, these are undefined and therefore both are zeros. */
-  bool is_relay_ue = get_softmodem_params()->is_relay_ue;
-  bool is_pc5_link = sourceL2Id != 0 || destinationL2Id != 0;
-
-  /* SPECIAL CASE: a Relay UE can use srcid=0 for PC5, so sourceL2Id=0 and the check
-     above wrongly looks like an SA query. The SL scheduler also passes the srcid in
-     rntiP, so if this looked like SA but we are the Relay UE and rntiP is a small
-     value (< 0x100, i.e. an L2 ID rather than a real RNTI) on a real bearer
-     (LCID >= 1), treat it as a PC5 lookup using rntiP as the key. */
-  if (!is_pc5_link && is_relay_ue && rntiP < 0x100 && channel_idP >= 1) {
-    is_pc5_link = true;
-  }
 
   nr_rlc_manager_lock(nr_rlc_ue_manager);
-  // For PC5 sidelink, use sourceL2Id for UE lookup (or rntiP if sourceL2Id=0 for Relay UE); otherwise use RNTI
-  rnti_t lookup_key = is_pc5_link ? (sourceL2Id != 0 ? sourceL2Id : rntiP) : rntiP;
-  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, lookup_key);
+  ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rntiP);
 
   if(ue == NULL) {
-    LOG_W(RLC, "[%s] RLC UE not found for lookup_key=0x%04x (is_pc5=%d, rntiP=0x%04x, srcL2Id=0x%04x, channel_idP=%d)\n",
-          __FUNCTION__, lookup_key, is_pc5_link, rntiP, sourceL2Id, channel_idP);
+    LOG_W(RLC, "[%s] RLC UE not found for rntiP=0x%04x (is_pc5=%d, channel_idP=%d)\n",
+          __FUNCTION__, rntiP, is_pc5_link, channel_idP);
     ret.bytes_in_buffer = 0;
     ret.pdus_in_buffer = 0;
     ret.head_sdu_creation_time = 0;
@@ -387,6 +370,38 @@ mac_rlc_status_resp_t mac_rlc_status_ind(
   ret.head_sdu_remaining_size_to_send = 0;
   ret.head_sdu_is_segmented = 0;
   return ret;
+}
+
+mac_rlc_status_resp_t mac_rlc_status_ind(
+  const module_id_t       module_idP,
+  const rnti_t            rntiP,
+  const eNB_index_t       eNB_index,
+  const frame_t           frameP,
+  const sub_frame_t       subframeP,
+  const eNB_flag_t        enb_flagP,
+  const MBMS_flag_t       MBMS_flagP,
+  const logical_chan_id_t channel_idP,
+  const uint32_t sourceL2Id,
+  const uint32_t destinationL2Id
+  )
+{
+  /* Uu/SA path: the UE is keyed by its RNTI. PC5 sidelink queries use
+     mac_rlc_status_ind_sl instead. */
+  return nr_rlc_status_ind_impl(rntiP, frameP, channel_idP, false);
+}
+
+/* Sidelink (PC5) buffer-status query used by the NR SL scheduler. The link type
+   is PC5 by construction, so the RLC layer never infers it from the RNTI value.
+   The UE is looked up by srcL2Id, the sidelink source L2 ID (0 for a Relay UE). */
+mac_rlc_status_resp_t mac_rlc_status_ind_sl(
+  const module_id_t       module_idP,
+  const uint32_t          srcL2Id,
+  const frame_t           frameP,
+  const sub_frame_t       subframeP,
+  const logical_chan_id_t channel_idP
+  )
+{
+  return nr_rlc_status_ind_impl(srcL2Id, frameP, channel_idP, true);
 }
 
 rlc_buffer_occupancy_t mac_rlc_get_buffer_occupancy_ind(

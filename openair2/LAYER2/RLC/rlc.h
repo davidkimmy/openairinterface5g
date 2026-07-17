@@ -237,6 +237,14 @@ mac_rlc_status_resp_t mac_rlc_status_ind   (const module_id_t, const rnti_t, con
     ,const uint32_t destinationL2Id
                                            );
 
+/*! \fn mac_rlc_status_resp_t mac_rlc_status_ind_sl(const module_id_t, const uint32_t srcL2Id, const frame_t, const sub_frame_t, logical_chan_id_t)
+* \brief    NR Sidelink (PC5) variant of mac_rlc_status_ind. The link type is PC5 by
+*           construction, so the RLC layer never infers it from the RNTI value. The UE is
+*           looked up by srcL2Id, the sidelink source L2 ID (0 for a Relay UE). Used by
+*           the NR SL scheduler.
+*/
+mac_rlc_status_resp_t mac_rlc_status_ind_sl(const module_id_t, const uint32_t srcL2Id, const frame_t, const sub_frame_t, logical_chan_id_t);
+
 /*! \fn rlc_buffer_occupancy_t mac_rlc_get_buffer_occupancy_ind(const module_id_t module_idP, const rnti_t rntiP, const eNB_index_t eNB_index, const frame_t frameP, const sub_frame_t subframeP,const eNB_flag_t enb_flagP, const logical_chan_id_t channel_idP)
 * \brief    Interface with MAC layer, UE only: request and get the number of bytes scheduled for transmission by the RLC instance corresponding to the radio bearer identifier.
 * \param[in]  mod_idP          Virtualized module identifier.

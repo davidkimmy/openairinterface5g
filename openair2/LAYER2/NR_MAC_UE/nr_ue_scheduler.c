@@ -3545,7 +3545,7 @@ static void nr_store_slsch_buffer(NR_UE_MAC_INST_t *mac, frame_t frame, sub_fram
     for (int lcid = lcid_start; lcid <= lcid_max; lcid++) {
       if ((lcid == 2) || (lcid == 3)) continue;
 
-      sched_ctrl->rlc_status[lcid] = mac_rlc_status_ind(0, mac->src_id, 0, frame, slot, ENB_FLAG_NO, MBMS_FLAG_NO, lcid, mac->src_id, UE->uid);
+      sched_ctrl->rlc_status[lcid] = mac_rlc_status_ind_sl(0, mac->src_id, frame, slot, lcid);
 
       if (sched_ctrl->rlc_status[lcid].bytes_in_buffer == 0)
           continue;
