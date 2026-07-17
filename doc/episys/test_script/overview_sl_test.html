@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OAI 5G NR Sidelink Test Framework</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.min.css">
+<style>
+  :root {
+    --r-heading-color: #1a3a5c;
+    --r-link-color: #2a7ae2;
+    --r-main-font-size: 28px;
+  }
+  .reveal h1 { font-size: 2.0em; color: #1a3a5c; }
+  .reveal h2 { font-size: 1.5em; color: #1a3a5c; margin-bottom: 0.4em; }
+  .reveal h3 { font-size: 1.1em; color: #2a6496; margin-bottom: 0.3em; }
+  .reveal { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; }
+  .reveal .slides section { text-align: left; }
+  .reveal ul { font-size: 0.85em; line-height: 1.6; }
+  .reveal li { margin-bottom: 0.2em; }
+  .reveal table { font-size: 0.7em; margin: 0.5em auto; border-collapse: collapse; }
+  .reveal th { background: #1a3a5c; color: white; padding: 6px 14px; }
+  .reveal td { padding: 5px 14px; border-bottom: 1px solid #ddd; }
+  /* Host-assignment table: keep the Type column (e.g. VRTSIM) on one line */
+  #host-mode-table th:nth-child(2), #host-mode-table td:nth-child(2) { white-space: nowrap; }
+  .reveal tr:nth-child(even) { background: #f4f8fc; }
+  .reveal code { font-size: 0.8em; background: #f0f4f8; padding: 2px 6px; border-radius: 3px; color: #c7254e; }
+  .reveal pre { font-size: 0.55em; background: #1e293b; color: #e2e8f0; padding: 14px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .reveal pre code { background: none; color: #e2e8f0; padding: 0; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.7em; font-weight: 600; margin: 2px; }
+  .badge-blue { background: #dbeafe; color: #1e40af; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-orange { background: #ffedd5; color: #9a3412; }
+  .badge-purple { background: #ede9fe; color: #5b21b6; }
+  .box { background: #f8fafc; border-left: 4px solid #2a7ae2; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 10px 0; font-size: 0.8em; }
+  .box-green { border-left-color: #10b981; background: #f0fdf4; }
+  .box-orange { border-left-color: #f59e0b; background: #fffbeb; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .diagram-box { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; font-family: monospace; font-size: 0.65em; line-height: 1.7; white-space: pre; }
+  .title-sub { font-size: 0.6em; color: #64748b; margin-top: 0.3em; }
+  .highlight { color: #2a7ae2; font-weight: 600; }
+  .slide-number { position: absolute; bottom: 10px; right: 20px; font-size: 0.5em; color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- Slide 1: Title -->
+<section data-background-gradient="linear-gradient(135deg, #1a3a5c 0%, #2a6496 50%, #3b82f6 100%)">
+  <div style="text-align: center; color: white;">
+    <h1 style="color: white; font-size: 2.2em; margin-bottom: 0.1em;">OAI 5G NR Sidelink</h1>
+    <h1 style="color: white; font-size: 2.2em; margin-top: 0;">Test Framework</h1>
+    <p style="font-size: 0.9em; color: #bfdbfe; margin-top: 1em;">Automated CI Test Harness for PC5 &amp; U2N Relay Validation</p>
+    <div style="margin-top: 2em;">
+      <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">PC5 Mode 1 &amp; 2</span>
+      <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">CSI / PSFCH</span>
+      <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">U2N Relay (SRAP)</span>
+      <span class="badge" style="background: rgba(255,255,255,0.2); color: white;">RF Sim, VRT Sim &amp; USRP</span>
+    </div>
+    <p style="font-size: 0.6em; color: #93c5fd; margin-top: 2.5em;">OpenAirInterface &mdash; 2026</p>
+  </div>
+</section>
+
+<!-- Slide 2: Overview & Key Features -->
+<section>
+  <h2>Overview &amp; Key Features</h2>
+  <div class="two-col">
+    <div>
+      <h3>What It Tests</h3>
+      <ul>
+        <li><span class="badge badge-blue">Mode 2</span> Sidelink direct D2D communication</li>
+        <li><span class="badge badge-blue">Mode 1</span> Sidelink network-scheduled</li>
+        <li><span class="badge badge-green">SRAP</span> U2N relay for remote UE connectivity</li>
+        <li><span class="badge badge-orange">CSI / PSFCH</span> Parametric feedback testing</li>
+        <li><span class="badge badge-purple">Uu</span> gNB &harr; UE interface testing</li>
+        <li><span class="badge badge-green">iperf3</span> Bandwidth sweep throughput characterization</li>
+        <li><span class="badge badge-orange">BLER</span> Waterfall curves across MCS 0-28 with noise sweep</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Key Features</h3>
+      <ul>
+        <li><strong>Array-based test selection</strong> &mdash; simple ordered list</li>
+        <li><strong>Parametric sweeps</strong> &mdash; CSI &times; PSFCH combinations</li>
+        <li><strong>Multi-host support</strong> &mdash; 1, 2, or 3 machines via SSH</li>
+        <li><strong>Profile-based config</strong> &mdash; pilot / regress / stress / bler</li>
+        <li><strong>Auto result tracking</strong> &mdash; ping + PSSCH statistics</li>
+        <li><strong>Three radio backends</strong> &mdash; <code>rfsim</code> (socket) / <code>usrp</code> (B210 HW) / <code>vrtsim</code> (shared-memory, local host)</li>
+      </ul>
+    </div>
+  </div>
+  <div class="box" style="margin-top: 15px;">
+    <strong>Two scripts:</strong>
+    <code>run_sl_test.sh</code> (test engine) +
+    <code>run_sl_test_config.sh</code> (user configuration)
+  </div>
+</section>
+
+<!-- Slide 3: Architecture & Execution Flow -->
+<section>
+  <h2>Architecture &amp; Execution Flow</h2>
+  <div class="two-col">
+    <div>
+      <h3>Execution Flow</h3>
+      <div class="diagram-box">1. Load config (run_sl_test_config.sh)
+2. Resolve enabled_tests array
+3. For each test:
+   a. Clean up old logs
+   b. Launch UEs (local / remote SSH)
+   c. Wait for tunnel interface
+   d. Wait for PC5 sync (PSBCH decode)
+   e. Execute ping test
+   f. Collect stats (ping + PSSCH)
+   g. Kill processes &amp; cleanup
+   h. Generate summary row
+4. Display final summary table
+
+Duration budget mode (ensure_ping_test_time):
+  =1: flexible, ping always runs (min 16s)
+  =0: strict, test ends after duration</div>
+    </div>
+    <div>
+      <h3>File Structure</h3>
+      <div class="diagram-box">run_sl_test.sh            # Test engine
+run_sl_test_config.sh     # Configuration
+~/.ssh/config             # SSH host aliases
+~/openairinterface5g/     # OAI source
+&lt;base_dir&gt;/
+  latest -&gt; test_&lt;ts&gt;/    # Symlink
+  test_&lt;timestamp&gt;/       # Results
+    test_summary_*.csv
+    iperf3_summary_*.csv / *.png
+    result_*_&lt;test&gt;_&lt;ts&gt;.log
+    ping_result_*.txt</div>
+      <div class="box" style="margin-top: 10px; font-size: 0.75em;">
+        <strong>base_dir priority:</strong> <code>-d</code> flag &gt; <code>base_log_dir</code> in config &gt; script directory
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 4: Multi-Host Testing & SSH Setup -->
+<section>
+  <h2>Multi-Host Testing</h2>
+  <div class="two-col">
+    <div>
+      <h3>Test Topologies</h3>
+      <div class="diagram-box" style="font-size: 0.6em; line-height: 1.8;">
+<strong style="color:#60a5fa;">Single-Host (Mode 2):</strong>
+  SyncRef UE &lt;--rfsim--&gt; Nearby UE
+  (both on localhost)
+
+<strong style="color:#60a5fa;">Two-Host (Mode 2):</strong>
+  Local:  SyncRef UE (rfsim server)
+  Remote: Nearby UE  (rfsim client)
+
+<strong style="color:#60a5fa;">Three-Host (Mode 1 SRAP):</strong>
+  gNB host:      gNB + 5G Core
+  relay_ue host: Relay UE (Uu + PC5)
+  remote_ue host: Remote UE (PC5)</div>
+    </div>
+    <div>
+      <h3>Host Assignment per Test Mode</h3>
+      <table id="host-mode-table" style="font-size: 0.6em; margin: 0.5em 0;">
+        <tr><th>SL Mode</th><th>Type</th><th style="text-align:center;">Hosts</th><th>gNB</th><th>SyncRef UE</th><th>Nearby UE</th></tr>
+        <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">1</td><td>&mdash;</td><td><code>local</code></td><td><code>local</code></td></tr>
+        <tr><td>Mode 2</td><td>RFSIM</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 2</td><td>USRP</td><td style="text-align:center;">2</td><td>&mdash;</td><td><code>local</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 2</td><td>VRTSIM</td><td style="text-align:center;">1</td><td>&mdash;</td><td><code>local</code></td><td><code>local</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>RFSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td><code>local</code></td><td><code>local</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>RFSIM</td><td style="text-align:center;">3</td><td><code>gNB</code>, <code>local</code></td><td><code>relay_ue</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>USRP</td><td style="text-align:center;">3</td><td><code>local</code></td><td><code>relay_ue</code></td><td><code>remote_ue</code></td></tr>
+        <tr><td>Mode 1 (SRAP)</td><td>VRTSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td><code>local</code></td><td><code>local</code></td></tr>
+        <tr><td>Uu</td><td>RFSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td>&mdash;</td><td><code>local</code> (nrUE)</td></tr>
+        <tr><td>Uu</td><td>RFSIM</td><td style="text-align:center;">2</td><td><code>local</code></td><td>&mdash;</td><td><code>nr_ue</code> (nrUE)</td></tr>
+        <tr><td>Uu</td><td>USRP</td><td style="text-align:center;">2</td><td><code>local</code></td><td>&mdash;</td><td><code>nr_ue</code> (nrUE)</td></tr>
+        <tr><td>Uu</td><td>VRTSIM</td><td style="text-align:center;">1</td><td><code>local</code></td><td>&mdash;</td><td><code>local</code> (nrUE)</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 5: Test Selection & Configuration -->
+<section>
+  <h2>Test Selection &amp; Configuration</h2>
+  <div class="two-col">
+    <div>
+      <h3>Test Profiles</h3>
+      <table style="margin: 0.5em 0;">
+        <tr><th>Profile</th><th style="text-align:center;">Repeats</th><th style="text-align:center;">MCS</th><th style="text-align:center;">Duration</th><th style="text-align:center;">TX/RX Gain</th><th style="text-align:center;">Max LDPC Iter</th></tr>
+        <tr><td><code>pilot</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
+        <tr><td><code>regress</code></td><td style="text-align:center;">1</td><td style="text-align:center;">1, 9</td><td style="text-align:center;">30s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
+        <tr><td><code>stress</code></td><td style="text-align:center;">3</td><td style="text-align:center;">9, 16, 28</td><td style="text-align:center;">300s</td><td style="text-align:center;">20 / 110</td><td style="text-align:center;">30</td></tr>
+        <tr><td><code>bler</code></td><td style="text-align:center;">12</td><td style="text-align:center;">0-28</td><td style="text-align:center;">85s</td><td style="text-align:center;">N/A</td><td style="text-align:center;">30</td></tr>
+      </table>
+      <div class="box" style="margin-top: 8px; font-size: 0.65em;">
+        <strong>BLER profile:</strong> Noise sweep &minus;12 to +4 dB (17 levels), path loss 8 dB, CSI=0, PSFCH=2.
+        Supports distributed parallel execution via <code>bler_hosts</code>.
+        See <a href="bler_test/README_BLER_test.md">README_BLER_test.md</a> for details.
+      </div>
+      <h3 style="margin-top: 15px;">Per-Profile Test Lists</h3>
+      <p style="font-size: 0.7em;">Each profile has its own test array (<code>pilot_tests</code>, <code>regress_tests</code>, <code>stress_tests</code>, <code>bler</code>) assigned to <code>enabled_tests</code> automatically.</p>
+      <ul style="font-size: 0.75em;">
+        <li><code>slmode2_basic_tests</code> &mdash; entire group</li>
+        <li><code>slmode2_basic_tests[0:2]</code> &mdash; range</li>
+        <li><code>slmode2_basic_tests[0,2]</code> &mdash; pick</li>
+        <li><code>slmode2_basic_tests[0]</code> &mdash; single</li>
+        <li><code>test_name:csi:psfch</code> &mdash; parametric</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Additional Config Settings</h3>
+      <pre><code># Log output directory (default: script dir)
+base_log_dir="~/openairinterface5g"
+
+# Use external clock source for USRP (0=internal, 1=external)
+use_external_clock=1
+# Use standalone mode (0=disabled, 1=enabled)
+use_sa=1
+# Use gnome-terminal (0=bash, 1=gnome)
+use_gnome=1
+# Ensure ping test time (0=strict, 1=flexible)
+ensure_ping_test_time=1
+
+# USRP serial numbers (SL Mode 1 relay only)
+RELAY_UE_USRP_SN_FOR_UU=340EA03
+RELAY_UE_USRP_SN_FOR_SL=340EA3B</code></pre>
+      <h3 style="margin-top: 15px;">Running Tests</h3>
+      <pre><code># use config settings (or defaults)
+./run_sl_test.sh
+# override log dir and gnome terminal
+./run_sl_test.sh -d ~/openairinterface5g
+./run_sl_test.sh -g 1
+./run_sl_test.sh -d ~/openairinterface5g -g 1</code></pre>
+      <div class="box" style="margin-top: 10px; font-size: 0.75em;">
+        <strong>Priority:</strong> CLI flags (<code>-d</code>, <code>-g</code>) &gt; config file &gt; defaults
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 5.5: Four-Tier Configuration System -->
+<section>
+  <h2>Four-Tier Configuration System</h2>
+  <p style="font-size: 0.8em; margin-bottom: 1em;">Override MCS and duration at four levels: <span class="highlight">test-specific &gt; slice-specific &gt; group-specific &gt; profile-default</span></p>
+
+  <div class="two-col">
+    <div>
+      <h3>Configuration Examples</h3>
+      <pre><code># In run_sl_test_config.sh
+
+# Group-level (all tests in group)
+group_specific_duration["slmode2_basic_tests"]=30
+group_specific_mcs["slmode2_basic_tests"]="16,28"
+
+# Slice-level (specific indices)
+# [0:2] range, [0,2] pick-list, [2] single
+group_specific_duration["slmode2_basic_tests[2]"]=60
+group_specific_mcs["slmode2_basic_tests[2]"]="12,16,20,24,28"
+
+# Test-specific (individual test)
+test_specific_duration["usrp_B210_pc5_ping_test"]=90
+test_specific_mcs["usrp_B210_pc5_ping_test"]="20,24,28"</code></pre>
+    </div>
+    <div>
+      <h3>Key Features</h3>
+      <ul style="font-size: 0.8em;">
+        <li><strong>MCS formats:</strong> Comma-separated <code>"16,28"</code>, space-separated <code>"16 28"</code>, or command substitution <code>"$(seq 0 1 10)"</code></li>
+        <li><strong>Auto-discovery:</strong> Test groups ending with <code>_basic_tests</code>, <code>_iperf3_tests</code>, or <code>_csi_psfch_tests</code> are automatically recognized</li>
+        <li><strong>Excluded:</strong> <code>pilot_tests</code>, <code>regress_tests</code>, <code>stress_tests</code> (profile arrays)</li>
+      </ul>
+      <div class="box-green box" style="margin-top: 15px; font-size: 0.75em;">
+        <strong>Priority order:</strong><br>
+        1️⃣ Test-specific &rarr; 2️⃣ Slice-specific &rarr; 3️⃣ Group-specific &rarr; 4️⃣ Profile-default
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 6: Available Test Cases -->
+<section>
+  <h2>Available Test Cases</h2>
+  <table style="font-size: 0.65em; width: 100%;">
+    <tr><th>Test Case</th><th style="text-align:center;">Mode</th><th style="text-align:center;">Hosts</th><th>Description</th></tr>
+    <tr><td><code>rfsim_pc5_ping_test_on_local_host</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>Basic PC5 ping between SyncRef &amp; Nearby UE</td></tr>
+    <tr><td><code>rfsim_pc5_ping_test_on_two_hosts</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">2</td><td>PC5 ping across two machines</td></tr>
+    <tr><td><code>rfsim_pc5_csi_psfch_*_on_local_host</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>CSI/PSFCH parametric sweep (8 combos)</td></tr>
+    <tr><td><code>rfsim_pc5_csi_psfch_*_on_two_hosts</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">2</td><td>CSI/PSFCH parametric on two machines</td></tr>
+    <tr><td><code>rfsim_pc5_iperf3_test_on_*</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1-2</td><td>iperf3 bandwidth sweep over PC5</td></tr>
+    <tr><td><code>rfsim_slmode1_srap_ping_*</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1, 3</td><td>U2N relay ping via SRAP</td></tr>
+    <tr><td><code>rfsim_slmode1_srap_csi_acquisition_psfch_*</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1, 3</td><td>U2N relay CSI/PSFCH parametric sweep (8 combos)</td></tr>
+    <tr><td><code>rfsim_slmode1_srap_iperf3_*</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1, 3</td><td>U2N relay iperf3 bandwidth sweep</td></tr>
+    <tr><td><code>rfsim_uu_ping_test_on_local_host</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">1</td><td>gNB &harr; UE ping on localhost</td></tr>
+    <tr><td><code>rfsim_uu_ping_test_on_two_hosts</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">2</td><td>gNB &harr; UE ping across two machines</td></tr>
+    <tr><td><code>usrp_B210_*</code></td><td style="text-align:center;">All</td><td style="text-align:center;">2-3</td><td>USRP hardware variants of above tests</td></tr>
+    <tr><td><code>vrtsim_uu_ping_test_on_local_host</code></td><td style="text-align:center;">Uu</td><td style="text-align:center;">1</td><td>gNB &harr; UE ping over shared-memory radio</td></tr>
+    <tr><td><code>vrtsim_pc5_ping_test_on_local_host</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>PC5 ping over shared-memory radio</td></tr>
+    <tr><td><code>vrtsim_pc5_csi_acquisition_psfch_*</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>PC5 CSI/PSFCH parametric sweep over shared-memory radio (8 combos)</td></tr>
+    <tr><td><code>vrtsim_pc5_iperf3_test_on_local_host</code></td><td style="text-align:center;">SL Mode 2</td><td style="text-align:center;">1</td><td>PC5 iperf3 bandwidth sweep over shared-memory radio</td></tr>
+    <tr><td><code>vrtsim_slmode1_srap_ping_test_on_local_host</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1</td><td>U2N relay ping (SRAP) over shared-memory radio; launch-order/timing sensitive</td></tr>
+    <tr><td><code>vrtsim_slmode1_srap_csi_acquisition_psfch_*</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1</td><td>U2N relay CSI/PSFCH parametric sweep over shared-memory radio (8 combos)</td></tr>
+    <tr><td><code>vrtsim_slmode1_srap_iperf3_test_on_local_host</code></td><td style="text-align:center;">SL Mode 1</td><td style="text-align:center;">1</td><td>U2N relay iperf3 sweep over shared-memory radio; client binds <code>oaitun_ue2</code></td></tr>
+  </table>
+  <div class="two-col" style="margin-top: 10px;">
+    <div class="box-green box">
+      <strong>Pass criteria:</strong> &ge;60% ICMP ping success rate &nbsp;|&nbsp;
+      <strong>PSSCH stats:</strong> TX/RX counters extracted from UE logs
+    </div>
+    <div class="box">
+      <strong>Predefined groups:</strong>
+      <code>uu_basic_tests</code>,
+      <code>slmode2_basic_tests</code>,
+      <code>slmode2_csi_psfch_tests</code>,
+      <code>slmode2_iperf3_tests</code>,
+      <code>slmode1_basic_tests</code>,
+      <code>slmode1_csi_psfch_tests</code>,
+      <code>slmode1_iperf3_tests</code>
+    </div>
+  </div>
+</section>
+
+<!-- Slide 7: Test Results & PSSCH Statistics -->
+<section>
+  <h2>Test Results &amp; PSSCH Statistics</h2>
+  <h3>Summary Table Output</h3>
+  <pre style="font-size: 0.5em; line-height: 1.5;"><code>Test Name                                      | Itrn | Hosts | MCS | Runtime | Ping Rate | PSSCH Rate1     | PSSCH Rate2     | PSSCH Total | Result
+===========================================================================================================================================================================
+rfsim_pc5_ping_test_on_local_host              |    1 |     1 |   9 |     40s |      100% | 33/33 (100%)    | 33/33 (100%)    |        100% |   PASS
+rfsim_pc5_csi_psfch_*_csi0_psfch1              |    1 |     2 |   9 |     44s |      100% | 12/12 (100%)    | 8/8 (100%)      |        100% |   PASS
+rfsim_slmode1_srap_ping_test_on_local_host     |    1 |     1 |   9 |     58s |      100% | 36/36 (100%)    | 38/38 (100%)    |        100% |   PASS</code></pre>
+  <div class="two-col" style="margin-top: 15px;">
+    <div>
+      <h3>PSSCH Rate Calculation</h3>
+      <ul style="font-size: 0.75em;">
+        <li><strong>Rate1:</strong> SyncRef TX &rarr; Nearby RX<br>
+            <code>RX_nearby / TX_syncref</code></li>
+        <li><strong>Rate2:</strong> Nearby TX &rarr; SyncRef RX<br>
+            <code>RX_syncref / TX_nearby</code></li>
+        <li><strong>Total:</strong> Aggregated both directions<br>
+            <code>(RX_sync + RX_nearby) / (TX_sync + TX_nearby)</code></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Log Files (per test)</h3>
+      <ul style="font-size: 0.75em;">
+        <li><code>test_summary_*.csv</code> &mdash; summary table</li>
+        <li><code>iperf3_summary_*.csv</code> &mdash; iperf3 bandwidth sweep results</li>
+        <li><code>iperf3_summary_*.png</code> &mdash; iperf3 bandwidth/loss plot</li>
+        <li><code>result_&lt;component&gt;_&lt;test_name&gt;_&lt;ts&gt;.log</code> &mdash; softmodem output (gNB, nrUE, syncref, nearby, nrUE_syncref)</li>
+        <li><code>ping_result_*.txt</code> &mdash; ping output</li>
+        <li><code>iperf3_server_*.txt</code> / <code>iperf3_client_*.txt</code> &mdash; iperf3 logs</li>
+      </ul>
+      <div class="box" style="margin-top: 8px; font-size: 0.7em;">
+        Remote logs captured via <code>tee</code>, then moved to log folder.<br>
+        Log file list defined in <code>softmodem_log_files</code> in config.
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.min.js"></script>
+<script>
+Reveal.initialize({
+  hash: true,
+  slideNumber: true,
+  width: 1280,
+  height: 720,
+  margin: 0.06,
+  transition: 'slide'
+});
+</script>
+</body>
+</html>
