@@ -754,7 +754,9 @@ wait_for_remote_ue_core_ip() {
     # (PduSessionEstablishmentAccept.c).
     local log_file="/tmp/result_nearby.log"
     local timeout=${1:-40}
-    local marker="PDU SESSION ESTABLISHMENT ACCEPT - Received UE IP"
+    # Marker must match what the Remote UE actually logs when its Core-assigned IP lands on the PC5 SL TUN.
+    # (The develop-based build prints "[SDAP] [Remote UE] applying core IP <ip> to PC5 SL TUN ...".)
+    local marker="applying core IP"
 
     REMOTE_UE_CORE_IP=""
     echo "Waiting for remote UE Core IP (timeout: ${timeout}s)..."
@@ -1729,10 +1731,11 @@ run_syncref_cmd() {
             fi
         elif [[ $test_type == "vrtsim" ]]; then
             # vrtsim relay/SyncRef (sl_mode 1): Uu client + PC5 client, local host only.
+            # --remote-ue-id 1 (SRAP header match) + --thread-pool -1,-1,-1,-1 (CPU) + PDU-session DNN, as above.
             syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                         -O $CONF_PATH/sl_sync_ref.conf \
-                        -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                        $sa_flag --sync-ref --node-number 2 --sl-mode 1 \
+                        -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
+                        $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 --thread-pool -1,-1,-1,-1 \
                         --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 0 \
                         --log_config.global_log_level info --relay-type 1 --is-relay-ue 1 $mcs"
         fi
@@ -1803,9 +1806,11 @@ run_nearby_cmd() {
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
         elif [[ $test_type == "vrtsim" ]]; then
             # vrtsim remote UE (sl_mode 1): PC5 server; own IMSI ...002 (registers with Core).
+            # --remote-ue-id 1 (encoded in the SRAP header; must match gNB+relay), --thread-pool -1,-1,-1,-1
+            # (avoid RT-thread CPU oversubscription that starves the relay Uu link), and the PDU-session DNN.
             nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
-                        -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
-                        $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
+                        -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 --uicc0.pdu_sessions.[0].dnn oai \
+                        $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 --thread-pool -1,-1,-1,-1 \
                         --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 0 \
                         --log_config.global_log_level info"
         fi
@@ -1891,11 +1896,15 @@ slmode1_srap_ping_test() {
     # (PC5 server) -> Relay UE (Uu+PC5 client). The relay must complete Uu registration
     # and PC5 bring-up so the Remote UE finishes its Core registration (transitioning
     # from the initial demo IP to its Core-assigned IP) BEFORE the ping runs.
+    # vrtsim uses POSIX shared-memory radio channels (/dev/shm/vrtsim_channel[_sl]); stale segments left by a
+    # previous (killed) run corrupt the PC5/Uu sample exchange -> the remote's RRCSetupRequest never reaches
+    # the gNB and registration fails. Clear them before launching so every run starts with fresh channels.
+    [[ $test_type == "vrtsim" ]] && sudo rm -f /dev/shm/vrtsim* 2>/dev/null
     if [[ $test_type == "vrtsim" ]]; then
         run_gNB_cmd $test_type $sl_mode $gnb_host_name
-        sleep 5
+        sleep 9
         run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
-        sleep 5
+        sleep 6
         run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
         sleep 5
     else
@@ -1930,7 +1939,7 @@ slmode1_srap_ping_test() {
     # Gate the ping on remote UE Core registration (SL mode-1 relay). PC5 sync
     # alone is not enough: the remote UE's oaitun_ue2 keeps its pre-registration
     # default IP until the PDU Session Establishment Accept arrives via the relay.
-    if wait_for_remote_ue_core_ip 40; then
+    if wait_for_remote_ue_core_ip 90; then
         evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
     else
         LAST_TEST_RESULT="FAIL"
