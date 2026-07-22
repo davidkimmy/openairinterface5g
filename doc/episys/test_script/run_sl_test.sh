@@ -1902,11 +1902,10 @@ slmode1_srap_ping_test() {
     [[ $test_type == "vrtsim" ]] && sudo rm -f /dev/shm/vrtsim* 2>/dev/null
     if [[ $test_type == "vrtsim" ]]; then
         run_gNB_cmd $test_type $sl_mode $gnb_host_name
-        sleep 9
+        sleep 3
         run_nearby_cmd  $test_type $mcs $sl_mode $nearby_host_name
-        sleep 6
+        sleep 3
         run_syncref_cmd $test_type $mcs $sl_mode $syncref_host_name
-        sleep 5
     else
         run_gNB_cmd $test_type $sl_mode $gnb_host_name
         sleep 1
@@ -1939,7 +1938,7 @@ slmode1_srap_ping_test() {
     # Gate the ping on remote UE Core registration (SL mode-1 relay). PC5 sync
     # alone is not enough: the remote UE's oaitun_ue2 keeps its pre-registration
     # default IP until the PDU Session Establishment Accept arrives via the relay.
-    if wait_for_remote_ue_core_ip 90; then
+    if wait_for_remote_ue_core_ip 40; then
         evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
     else
         LAST_TEST_RESULT="FAIL"

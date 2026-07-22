@@ -8,6 +8,7 @@
 #include "PHY/nr_phy_common/inc/nr_sl_decode_defs.h"  // episys SL port: shared LDPC decode struct for SLSCH RX fill
 #include <openair1/PHY/TOOLS/phy_scope_interface.h>
 #include "common/utils/LOG/log.h"
+#include "common/utils/colors.h"  // KGRN etc. for coloured SL stats (matches episys/sl-mode1-relay)
 #include "UTIL/OPT/opt.h"
 #include "intertask_interface.h"
 #include "T.h"
@@ -202,7 +203,7 @@ static int nr_psbch_process(PHY_VARS_NR_UE *ue,
   return sampleShift;
 }
 
-int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data)
+int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data)
 {
   int frame_rx = proc->frame_rx;
   int nr_slot_rx = proc->nr_slot_rx;
@@ -219,6 +220,32 @@ int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr
 
   // Dual-card relay (mode-1): the PC5 device fills rxdata_sl; single-card (mode-2) SL reuses rxdata.
   c16_t **sl_rxdata = ue->sl_dual_card ? ue->common_vars.rxdata_sl : ue->common_vars.rxdata;
+
+  // Periodic sidelink PHY stats (KGRN colouring, matching episys/sl-mode1-relay). Placed BEFORE the
+  // sl_rx_action branch so BOTH roles report: the sync-ee (which receives PSBCH) AND the SyncRef/relay
+  // (which transmits PSBCH and only receives PSSCH). The develop port had buried this inside the RX_PSBCH
+  // branch, so the SyncRef never printed any SL stats (get_pssch_stats then read N/A / 0 for the relay).
+  if ((frame_rx & 127) == 0) {
+    LOG_I(NR_PHY, "============================================\n");
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSBCH Stats: TX %d, RX ok %d, RX not ok %d\n", KGRN,
+          ue->Mod_id, frame_rx, nr_slot_rx,
+          sl_phy_params->psbch.num_psbch_tx, sl_phy_params->psbch.rx_ok, sl_phy_params->psbch.rx_errors);
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSCCH Stats: TX %u, RX ok %u\n", KGRN,
+          ue->Mod_id, frame_rx, nr_slot_rx,
+          sl_phy_params->pscch.num_pscch_tx, sl_phy_params->pscch.rx_ok);
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSSCH/SCI2 Stats: TX %u, RX ok %u, RX not ok %u\n", KGRN,
+          ue->Mod_id, frame_rx, nr_slot_rx,
+          sl_phy_params->pssch.num_pssch_sci2_tx, sl_phy_params->pssch.rx_sci2_ok, sl_phy_params->pssch.rx_sci2_errors);
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSSCH Stats: TX %u, RX ok %u, RX not ok (%u/%u/%u/%u)\n", KGRN,
+          ue->Mod_id, frame_rx, nr_slot_rx,
+          sl_phy_params->pssch.num_pssch_tx, sl_phy_params->pssch.rx_ok,
+          sl_phy_params->pssch.rx_errors[0], sl_phy_params->pssch.rx_errors[1],
+          sl_phy_params->pssch.rx_errors[2], sl_phy_params->pssch.rx_errors[3]);
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSFCH Stats: TX %u, RX %u\n", KGRN,
+          ue->Mod_id, frame_rx, nr_slot_rx,
+          sl_phy_params->psfch.num_psfch_tx, sl_phy_params->psfch.num_psfch_rx);
+    LOG_I(NR_PHY, "============================================\n");
+  }
 
   if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSBCH) {
     LOG_D(NR_PHY, " ----- PSBCH RX TTI: frame.slot %d.%d ------  \n", frame_rx % 1024, nr_slot_rx);
@@ -238,52 +265,6 @@ int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr
       }
       sampleShift =
           nr_psbch_process(ue, phy_data, proc, sym, rxdataF_symb, &e_rx_offset, psbch_e_rx, psbch_unClippled, dl_ch_estimates_time);
-    }
-
-    if (frame_rx % 64 == 0) {
-      LOG_I(NR_PHY, "============================================\n");
-
-      LOG_I(NR_PHY,
-            "[UE%d] %d:%d PSBCH Stats: TX %d, RX ok %d, RX not ok %d\n",
-            ue->Mod_id,
-            frame_rx,
-            nr_slot_rx,
-            sl_phy_params->psbch.num_psbch_tx,
-            sl_phy_params->psbch.rx_ok,
-            sl_phy_params->psbch.rx_errors);
-
-      // PC5 PHY TX/RX stats (episys port). PSCCH RX-ok is 0 for now (SCI-1 decode deferred: blind PSSCH
-      // RX); PSFCH TX is 0 (PSFCH TX not wired on this branch). PSSCH/SCI2 counters are live.
-      LOG_I(NR_PHY,
-            "[UE%d] %d:%d PSCCH Stats: TX %u, RX ok %u\n",
-            ue->Mod_id, frame_rx, nr_slot_rx,
-            sl_phy_params->pscch.num_pscch_tx,
-            sl_phy_params->pscch.rx_ok);
-
-      LOG_I(NR_PHY,
-            "[UE%d] %d:%d PSSCH/SCI2 Stats: TX %u, RX ok %u, RX not ok %u\n",
-            ue->Mod_id, frame_rx, nr_slot_rx,
-            sl_phy_params->pssch.num_pssch_sci2_tx,
-            sl_phy_params->pssch.rx_sci2_ok,
-            sl_phy_params->pssch.rx_sci2_errors);
-
-      LOG_I(NR_PHY,
-            "[UE%d] %d:%d PSSCH Stats: TX %u, RX ok %u, RX not ok (%u/%u/%u/%u)\n",
-            ue->Mod_id, frame_rx, nr_slot_rx,
-            sl_phy_params->pssch.num_pssch_tx,
-            sl_phy_params->pssch.rx_ok,
-            sl_phy_params->pssch.rx_errors[0],
-            sl_phy_params->pssch.rx_errors[1],
-            sl_phy_params->pssch.rx_errors[2],
-            sl_phy_params->pssch.rx_errors[3]);
-
-      LOG_I(NR_PHY,
-            "[UE%d] %d:%d PSFCH Stats: TX %u, RX %u\n",
-            ue->Mod_id, frame_rx, nr_slot_rx,
-            sl_phy_params->psfch.num_psfch_tx,
-            sl_phy_params->psfch.num_psfch_rx);
-
-      LOG_I(NR_PHY, "============================================\n");
     }
   }
   // episys SL data-plane port: PSSCH (SLSCH) receive. develop's SL was sync-only; this is the data plane.
@@ -399,21 +380,8 @@ void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc
     sl_nr_tx_config_psbch_pdu_t *psbch_vars = &phy_data->psbch_vars;
     nr_tx_psbch(ue, frame_tx, slot_tx, psbch_vars, txdataF);
     sl_phy_params->psbch.num_psbch_tx++;
-
-    if (frame_tx % 64 == 0) {
-      LOG_I(NR_PHY, "============================================\n");
-
-      LOG_I(NR_PHY,
-            "[UE%d] %d:%d PSBCH Stats: TX %d, RX ok %d, RX not ok %d\n",
-            ue->Mod_id,
-            frame_tx,
-            slot_tx,
-            sl_phy_params->psbch.num_psbch_tx,
-            sl_phy_params->psbch.rx_ok,
-            sl_phy_params->psbch.rx_errors);
-
-      LOG_I(NR_PHY, "============================================\n");
-    }
+    // SL stats are dumped (all channels, coloured) in psbch_pscch_pssch_processing's periodic block, which runs
+    // for both roles; no separate PSBCH-only dump needed here (removed to match episys's single dump).
     tx_action = 1;
   }
   // episys SL data-plane port: PSCCH+PSSCH transmit. PSCCH (SCI-1) is encoded UE-native (nr_generate_sci1).

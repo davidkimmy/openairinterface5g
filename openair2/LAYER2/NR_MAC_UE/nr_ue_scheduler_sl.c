@@ -573,45 +573,66 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
         LOG_D(NR_MAC, "[UE%d] %d:%d SL HARQ RETX pid %d (buffered TB %d bytes)\n",
               ue_id, sl_ind->frame_tx, sl_ind->slot_tx, harq_pid, cap);
       } else {
+        // Proper SL-SCH MAC multiplexing (TS 38.321 6.1.6): write ONE SL-SCH fixed header (SRC/DST), then pack
+        // as many MAC sub-PDUs as fit, draining SRB0 > SRB1 > DRB, each behind a standard NR_MAC_SUBHEADER_LONG.
+        // Because we keep pulling from a bearer until its buffer empties (or the TB fills), an RLC-AM STATUS PDU
+        // and a data PDU ride the SAME TB — so ARQ never starves the RRC/user bytes. This is what lets the
+        // SL-SRB run on RLC-AM without the earlier 3-byte-STATUS-churn freeze (a single-sub-PDU TB could carry
+        // only STATUS *or* data, so STATUS displaced the 207-byte RRCSetup every slot).
         uint32_t tb = pdu->tb_size > SL_NR_MAX_SLSCH_PAYLOAD_BYTES ? SL_NR_MAX_SLSCH_PAYLOAD_BYTES : pdu->tb_size;
-        uint32_t room = (tb > SL_SCH_SUBHEADER_LEN) ? tb - SL_SCH_SUBHEADER_LEN : 0;
-        char *sdu_dst = (char *)pdu->slsch_payload + SL_SCH_SUBHEADER_LEN;
-        uint8_t lcid = SL_SCH_LCID_DRB1;
-        // mode-1 U2N relay: control-plane SL-SRBs take priority over user data (SRB0 CCCH > SRB1 DCCH > DRB).
-        if (get_softmodem_params()->relay_type == 1 && room > 0) {
-          if (nr_mac_rlc_status_ind_sl_srb(mac->src_id, 0, sl_ind->frame_tx).bytes_in_buffer > 0) {
-            len = nr_mac_rlc_data_req_sl_srb(mac->src_id, 0, room, sdu_dst);
-            lcid = SL_SCH_LCID_SRB0;
-            LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG pull SRB0 room=%d -> len=%d\n", ue_id, sl_ind->frame_tx, sl_ind->slot_tx, room, (int)len);
-          } else if (nr_mac_rlc_status_ind_sl_srb(mac->src_id, 1, sl_ind->frame_tx).bytes_in_buffer > 0) {
-            len = nr_mac_rlc_data_req_sl_srb(mac->src_id, 1, room, sdu_dst);
-            lcid = SL_SCH_LCID_SRB1;
-            LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG pull SRB1 room=%d -> len=%d\n", ue_id, sl_ind->frame_tx, sl_ind->slot_tx, room, (int)len);
+        uint8_t *wr = pdu->slsch_payload;
+        uint8_t *const end = pdu->slsch_payload + tb;
+        if ((size_t)(end - wr) >= sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED)) {
+          NR_SLSCH_MAC_SUBHEADER_FIXED *slh = (NR_SLSCH_MAC_SUBHEADER_FIXED *)wr;
+          slh->V = 0;
+          slh->R = 0;
+          slh->SRC = mac->src_id;
+          slh->DST = SL_F1_BROADCAST_DEST;
+          wr += sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
+        }
+        // Bearer priority order: SRB0 (CCCH) > SRB1 (DCCH) > DRB1 (user data). SL-SRBs exist only on the
+        // mode-1 relay/remote; a plain mode-2 UE carries the DRB only.
+        const struct { uint8_t lcid; bool is_srb; uint8_t id; } sl_bearers[] = {
+            {SL_SCH_LCID_SRB0, true, 0}, {SL_SCH_LCID_SRB1, true, 1}, {SL_SCH_LCID_DRB1, false, SL_F1_DRB_ID}};
+        for (unsigned b = 0; b < sizeof(sl_bearers) / sizeof(sl_bearers[0]); b++) {
+          if (sl_bearers[b].is_srb && get_softmodem_params()->relay_type != 1)
+            continue;
+          while ((size_t)(end - wr) > sizeof(NR_MAC_SUBHEADER_LONG)) {
+            mac_rlc_status_resp_t st = sl_bearers[b].is_srb
+                                           ? nr_mac_rlc_status_ind_sl_srb(mac->src_id, sl_bearers[b].id, sl_ind->frame_tx)
+                                           : nr_mac_rlc_status_ind_sl(mac->src_id, sl_bearers[b].id, sl_ind->frame_tx);
+            if (st.bytes_in_buffer == 0)
+              break;
+            NR_MAC_SUBHEADER_LONG *sh = (NR_MAC_SUBHEADER_LONG *)wr;
+            char *sdu_dst = (char *)(wr + sizeof(NR_MAC_SUBHEADER_LONG));
+            uint32_t room = (uint32_t)(end - wr) - sizeof(NR_MAC_SUBHEADER_LONG);
+            int slen = sl_bearers[b].is_srb ? nr_mac_rlc_data_req_sl_srb(mac->src_id, sl_bearers[b].id, room, sdu_dst)
+                                            : nr_mac_rlc_data_req_sl(mac->src_id, sl_bearers[b].id, room, sdu_dst);
+            if (slen <= 0)
+              break; // nothing pulled this time -> next bearer
+            sh->R = 0;
+            sh->F = 1;
+            sh->LCID = sl_bearers[b].lcid;
+            sh->L = htons((uint16_t)slen);
+            wr += sizeof(NR_MAC_SUBHEADER_LONG) + slen;
+            len += slen;
+            LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG mux LCID %d len %d (tb_left %d)\n",
+                  ue_id, sl_ind->frame_tx, sl_ind->slot_tx, sl_bearers[b].lcid, slen, (int)(end - wr));
           }
         }
-        if (len == 0)
-          len = nr_mac_rlc_data_req_sl(mac->src_id, SL_F1_DRB_ID, room, sdu_dst);
-        if (len > 0) {
-          pdu->slsch_payload[0] = lcid;
-          pdu->slsch_payload[1] = ((uint32_t)len >> 8) & 0xff;
-          pdu->slsch_payload[2] = (uint32_t)len & 0xff;
-          pdu->slsch_payload_len = (uint32_t)len + SL_SCH_SUBHEADER_LEN;
-          // Buffer the TB (with subheader) for a possible HARQ retransmission on NACK.
-          if (htx) {
-            uint32_t cp = pdu->slsch_payload_len <= sizeof(htx->transportBlock) ? pdu->slsch_payload_len : sizeof(htx->transportBlock);
-            memcpy(htx->transportBlock, pdu->slsch_payload, cp);
-            htx->tb_size = cp;
-          }
-        } else {
-          // Filler transmission (no data this turn, but the mode-1 relay/remote MUST transmit every one of
-          // its half-duplex turns to keep the shared PC5 channel's one-writer-per-slot lock-step alive). Emit
-          // a CLEAN SL-SCH subheader with length 0 so the peer's RX ignores it (NR_IF_Module requires sdu_len
-          // > 0). Must NOT leave the stale payload from a previous TX in the buffer: the PHY fills the whole
-          // TB from slsch_payload, so a stale subheader would make the peer re-decode e.g. a duplicate RRCSetup.
-          pdu->slsch_payload[0] = 0;
-          pdu->slsch_payload[1] = 0;
-          pdu->slsch_payload[2] = 0;
-          pdu->slsch_payload_len = SL_SCH_SUBHEADER_LEN;
+        // Padding sub-PDU marks the end of meaningful data (RX stops here); the PHY fills the rest of the TB.
+        if ((size_t)(end - wr) >= sizeof(NR_MAC_SUBHEADER_FIXED)) {
+          NR_MAC_SUBHEADER_FIXED *pad = (NR_MAC_SUBHEADER_FIXED *)wr;
+          pad->R = 0;
+          pad->LCID = SL_SCH_LCID_PADDING;
+          wr += sizeof(NR_MAC_SUBHEADER_FIXED);
+        }
+        pdu->slsch_payload_len = (uint32_t)(wr - pdu->slsch_payload);
+        // Buffer the whole multiplexed TB for a possible HARQ retransmission on NACK.
+        if (htx) {
+          uint32_t cp = pdu->slsch_payload_len <= sizeof(htx->transportBlock) ? pdu->slsch_payload_len : sizeof(htx->transportBlock);
+          memcpy(htx->transportBlock, pdu->slsch_payload, cp);
+          htx->tb_size = cp;
         }
       }
       tx_config.number_pdus = 1;

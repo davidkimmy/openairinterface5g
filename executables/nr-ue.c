@@ -633,7 +633,7 @@ static int UE_dl_preprocessing(PHY_VARS_NR_UE *UE,
         AssertFatal((phy_data->sl_rx_action >= SL_NR_CONFIG_TYPE_RX_PSBCH &&
                      phy_data->sl_rx_action < SL_NR_CONFIG_TYPE_RX_MAXIMUM), "Incorrect SL RX Action Scheduled\n");
 
-        sampleShift = psbch_pscch_processing(UE, proc, phy_data);
+        sampleShift = psbch_pscch_pssch_processing(UE, proc, phy_data);
       }
     }
   } else
@@ -1196,7 +1196,7 @@ void *UE_thread(void *arg)
  * Self-contained: drives ONLY the PC5 card (nrue_ru_*_sl -> rf_map_sl.card, rxdata_sl/txData_sl) and runs the
  * SL RX/TX processing inline, deliberately NOT using the Uu dl_actors / process_slot_tx_barriers machinery, so
  * PC5 sync/processing can never delay the Uu UE_thread (they are independent threads on independent devices).
- * Reuses the same SL processing the mode-2 path uses (sl_indication scheduler + psbch_pscch_processing RX +
+ * Reuses the same SL processing the mode-2 path uses (sl_indication scheduler + psbch_pscch_pssch_processing RX +
  * phy_procedures_nrUE_SL_TX). Runtime-unverified for mode-1 until the SRAP + 3-node harness exists. */
 void *UE_thread_sl(void *arg)
 {
@@ -1317,7 +1317,7 @@ void *UE_thread_sl(void *arg)
       nrue_ru_read_sl(UE, &ignore, (void **)UE->common_vars.rxdata_sl, first_symbols, fp->nb_antennas_rx);
     }
 
-    // SL RX processing (psbch_pscch_processing reads rxdata_sl via the sl_dual_card routing)
+    // SL RX processing (psbch_pscch_pssch_processing reads rxdata_sl via the sl_dual_card routing)
     nr_phy_data_t phy_data = {0};
     if (proc.rx_slot_type == NR_SIDELINK_SLOT) {
       phy_data.sl_rx_action = 0;
@@ -1327,7 +1327,7 @@ void *UE_thread_sl(void *arg)
         UE->if_inst->sl_indication(&sl_ind);
       }
       if (phy_data.sl_rx_action)
-        psbch_pscch_processing(UE, &proc, &phy_data);
+        psbch_pscch_pssch_processing(UE, &proc, &phy_data);
     }
 
     // SL TX. Do NOT apply the Uu N_TA_offset here: sidelink timing is independent of the gNB Uu timing

@@ -69,6 +69,17 @@ typedef struct {
   uint8_t R: 2;       // octet 1 [7:6]
 } __attribute__ ((__packed__)) NR_MAC_SUBHEADER_FIXED;
 
+// SL-SCH MAC header (TS 38.321 6.1.6): one fixed 4-octet header per SL-SCH transport block, carrying the
+// SL source/destination L2 IDs, followed by MAC sub-PDUs (each with a SHORT/LONG subheader). Ported from
+// episys/sl-mode1-relay so the SL-SCH can multiplex multiple sub-PDUs (e.g. an RLC-AM STATUS PDU alongside
+// data) in one TB. Self-contained: our TX writes it and our RX (get_mac_len loop) parses it.
+typedef struct {
+  uint8_t V: 4;       // octet 1 [3:0] SL-SCH format version
+  uint8_t R: 4;       // octet 1 [7:4] reserved
+  uint16_t SRC: 16;   // octet 2-3 source L2 ID (lower 16 bits)
+  uint8_t DST: 8;     // octet 4 destination L2 ID (lower 8 bits)
+} __attribute__ ((__packed__)) NR_SLSCH_MAC_SUBHEADER_FIXED;
+
 static inline int get_mac_len(uint8_t *pdu, uint32_t pdu_len, uint16_t *mac_ce_len, uint16_t *mac_subheader_len)
 {
   if (pdu_len < sizeof(NR_MAC_SUBHEADER_SHORT))

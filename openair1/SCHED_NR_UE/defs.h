@@ -130,7 +130,7 @@ void nr_ue_csi_rs_procedures(PHY_VARS_NR_UE *ue,
 
 void trs_freq_correction(PHY_VARS_NR_UE *ue, int cfo);
 
-int psbch_pscch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data);
+int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data);
 void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_tx_t *phy_data, c16_t **txp);
 
 /* episys SL data-plane port: UE-native PSSCH demodulator (fills ue->pssch_vars[].llr_layers) and the

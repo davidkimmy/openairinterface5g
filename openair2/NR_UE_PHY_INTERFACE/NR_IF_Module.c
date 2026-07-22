@@ -452,13 +452,27 @@ static void handle_sl_bch(int ue_id,
   nr_mac_rrc_data_ind_ue(ue_id, 0, hfn_rx, frame_rx, slot_rx, rx_slss_id, 0, NR_SBCCH_SL_BCH, (uint8_t *)sl_mib, len);
 
   // SL mode-1 U2N relay: once the Remote UE (relay_type==1, not the relay itself) is PC5-synced to the
-  // relay, kick off its RRC connection over the relay (RRCSetupRequest on PC5 SL-SRB0). Fire once.
+  // relay, kick off its RRC connection over the relay (RRCSetupRequest on PC5 SL-SRB0).
+  // The RRCSetupRequest rides SL-SRB0 (CCCH) which is RLC-UM (no ARQ) with no HARQ/PSFCH feedback on this
+  // path, so it is a single-shot unacknowledged transmission: if that one PC5 PSSCH is lost at the relay
+  // PHY, registration would stall forever (root cause of the intermittent-failure defect). Retransmit it
+  // (standard T300-style retry) on subsequent PSBCH decodes until the RRCSetup arrives (RRC CONNECTED),
+  // bounded by a max attempt count and a minimum inter-attempt gap so a merely-slow round trip does not
+  // spawn duplicates.
   if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue) {
-    static bool sl_rrc_setup_req_sent = false;
-    if (!sl_rrc_setup_req_sent) {
-      sl_rrc_setup_req_sent = true;
-      nr_mac_rrc_setup_req_ue(ue_id, frame_rx, slot_rx);
-      LOG_I(NR_MAC, "[Remote UE%d] PC5-synced -> triggering RRCSetupRequest over the relay\n", ue_id);
+    static const int SL_RRC_SETUP_MAX_ATTEMPTS = 20;
+    static const uint32_t SL_RRC_SETUP_RETRY_FRAMES = 30; // ~300 ms at 10 ms/frame
+    static int sl_rrc_attempts = 0;
+    static uint32_t sl_rrc_last_frame = 0;
+    if (!nr_rrc_ue_is_connected(ue_id) && sl_rrc_attempts < SL_RRC_SETUP_MAX_ATTEMPTS) {
+      uint32_t elapsed = (frame_rx + 1024 - sl_rrc_last_frame) & 1023;
+      if (sl_rrc_attempts == 0 || elapsed >= SL_RRC_SETUP_RETRY_FRAMES) {
+        sl_rrc_last_frame = frame_rx;
+        sl_rrc_attempts++;
+        nr_mac_rrc_setup_req_ue(ue_id, frame_rx, slot_rx);
+        LOG_I(NR_MAC, "[Remote UE%d] PC5-synced -> (re)sending RRCSetupRequest over the relay (attempt %d)\n",
+              ue_id, sl_rrc_attempts);
+      }
     }
   }
 
@@ -507,27 +521,33 @@ void sl_nr_process_rx_ind(int ue_id,
 
       break;
     case SL_NR_RX_PDU_TYPE_SLSCH: {
-      // episys SL data-plane port (F1 minimal): deliver the decoded SLSCH TB up to the SL DRB RLC entity.
-      // ack_nack==CRC-OK. No SLSCH MAC subheader yet -> deliver the whole TB as the RLC PDU (single SL DRB).
+      // Parse the SL-SCH MAC PDU (proper multiplexing, TS 38.321 6.1.6): one NR_SLSCH_MAC_SUBHEADER_FIXED
+      // (SRC/DST) followed by a sequence of MAC sub-PDUs, each with a standard NR_MAC_SUBHEADER_SHORT/LONG
+      // parsed by get_mac_len. Deliver each SDU to its SL bearer by LCID; stop at the padding LCID or when the
+      // TB is exhausted. Mirror of the TX multiplex in nr_ue_scheduler_sl.c (lets an RLC-AM STATUS PDU and a
+      // data PDU share one TB, so ARQ never starves the RRC/user bytes). ack_nack == CRC-OK.
       sl_nr_slsch_pdu_t *slsch = &rx_ind->rx_indication_body[num_pdus - 1].rx_slsch_pdu;
-      if (slsch->ack_nack && slsch->pdu && slsch->pdu_length > SL_SCH_SUBHEADER_LEN) {
+      if (slsch->ack_nack && slsch->pdu && slsch->pdu_length > (int)sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED)) {
         NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
-        // Strip the 2-byte SL-SCH subheader (big-endian RLC-PDU length) and deliver exactly that many bytes,
-        // discarding the transport-block padding. Guard against a corrupt length exceeding the decoded TB.
-        uint8_t lcid = slsch->pdu[0];
-        int sdu_len = ((int)slsch->pdu[1] << 8) | (int)slsch->pdu[2];
-        if (sdu_len > 0 && sdu_len <= slsch->pdu_length - SL_SCH_SUBHEADER_LEN) {
-          char *sdu = (char *)slsch->pdu + SL_SCH_SUBHEADER_LEN;
-          // Route by SL-SCH LCID: SRB0/SRB1 (mode-1 relay control plane) to the SL-SRB RLC, else SL-DRB1.
-          if (lcid == SL_SCH_LCID_SRB0)
-            nr_mac_rlc_data_ind_sl_srb(mac->src_id, 0, sdu, sdu_len);
-          else if (lcid == SL_SCH_LCID_SRB1)
-            nr_mac_rlc_data_ind_sl_srb(mac->src_id, 1, sdu, sdu_len);
+        uint8_t *p = (uint8_t *)slsch->pdu + sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED); // skip SL-SCH fixed header
+        int remaining = slsch->pdu_length - (int)sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
+        while (remaining > 0) {
+          uint8_t rx_lcid = ((NR_MAC_SUBHEADER_FIXED *)p)->LCID;
+          if (rx_lcid == SL_SCH_LCID_PADDING)
+            break;
+          uint16_t mac_len = 0, mac_subheader_len = 0;
+          if (!get_mac_len(p, (uint32_t)remaining, &mac_len, &mac_subheader_len) || mac_len == 0)
+            break; // malformed or no more sub-PDUs
+          char *sdu = (char *)p + mac_subheader_len;
+          if (rx_lcid == SL_SCH_LCID_SRB0)
+            nr_mac_rlc_data_ind_sl_srb(mac->src_id, 0, sdu, mac_len);
+          else if (rx_lcid == SL_SCH_LCID_SRB1)
+            nr_mac_rlc_data_ind_sl_srb(mac->src_id, 1, sdu, mac_len);
           else
-            nr_mac_rlc_data_ind_sl(mac->src_id, 1 /*SL DRB id*/, sdu, sdu_len);
-          LOG_D(NR_MAC, "[UE%d] SL RX SLSCH %d bytes lcid %d\n", ue_id, sdu_len, lcid);
-        } else {
-          LOG_W(NR_MAC, "[UE%d] SL RX SLSCH bad subheader len %d (TB %d)\n", ue_id, sdu_len, slsch->pdu_length);
+            nr_mac_rlc_data_ind_sl(mac->src_id, 1 /*SL DRB id*/, sdu, mac_len);
+          LOG_D(NR_MAC, "[UE%d] SL RX SLSCH sub-PDU lcid %d len %d\n", ue_id, rx_lcid, mac_len);
+          p += mac_subheader_len + mac_len;
+          remaining -= mac_subheader_len + mac_len;
         }
       }
       // episys SL PSFCH port (Stage 3b): on a received SLSCH, build the PSFCH (HARQ ACK/NACK) feedback

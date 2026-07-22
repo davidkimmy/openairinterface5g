@@ -244,7 +244,7 @@ test_profile='pilot'
 #############################################################
 if [[ $test_profile == "pilot" ]]; then
     enabled_tests=("${pilot_tests[@]}")
-    num_repeat=1
+    num_repeat=3
     mcs_array=(9)
     duration=30
     iperf3_bw_array=(6M)

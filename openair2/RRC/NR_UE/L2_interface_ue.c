@@ -32,6 +32,17 @@ void nr_mac_rrc_sync_ind(const module_id_t module_id, const frame_t frame, const
   itti_send_msg_to_task(TASK_RRC_NRUE, GNB_MODULE_ID_TO_INSTANCE(module_id), message_p);
 }
 
+/* SL mode-1 U2N relay Remote UE: query whether RRC connection setup has completed (RRCSetup received).
+ * Used by the MAC/sidelink thread to stop retransmitting the RRCSetupRequest over PC5 once setup succeeded.
+ * Reads a plain process-global flag (set in nr_rrc_process_rrcsetup); does NOT touch the RRC-instance array
+ * from the SL thread — an earlier version dereferenced get_NR_UE_rrc_inst() here and segfaulted the remote. */
+extern volatile bool g_nr_ue_rrc_connected;
+bool nr_rrc_ue_is_connected(const module_id_t module_id)
+{
+  (void)module_id; // one UE per softmodem process
+  return g_nr_ue_rrc_connected;
+}
+
 // SL mode-1 U2N relay: MAC tells RRC the Remote UE has PC5-synced, so RRC starts its RRC connection
 // (RRCSetupRequest over the relay). Mirrors nr_mac_rrc_sync_ind's ITTI idiom.
 void nr_mac_rrc_setup_req_ue(const module_id_t module_id, const frame_t frame, const int slot)

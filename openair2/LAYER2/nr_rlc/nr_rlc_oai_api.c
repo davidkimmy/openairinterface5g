@@ -583,6 +583,19 @@ static void successful_delivery(void *_ue, nr_rlc_entity_t *entity, int sdu_id)
     }
   }
 
+  /* SL bearers (PC5, mode-1 U2N relay): sl_srb0 / sl_srb[] / sl_drb[]. successful_delivery is AM-only, so it
+   * never fired for the old UM SL-SRBs; now that SL-SRB1 is AM it does, and it must NOT hit the Uu-only
+   * exit(1) below. No Uu-side action is needed on SL successful delivery (the SL control plane is relayed,
+   * not terminated here) — just return. */
+  if (entity == ue->sl_srb0)
+    return;
+  for (i = 0; i < sizeofArray(ue->sl_srb); i++)
+    if (entity == ue->sl_srb[i])
+      return;
+  for (i = 0; i < sizeofArray(ue->sl_drb); i++)
+    if (entity == ue->sl_drb[i])
+      return;
+
   LOG_E(RLC, "Fatal, no RB found for ue %d\n", ue->ue_id);
   exit(1);
 
@@ -635,6 +648,24 @@ static void max_retx_reached(void *_ue, nr_rlc_entity_t *entity)
       goto rb_found;
     }
   }
+
+  /* SL bearers (PC5, mode-1 U2N relay): sl_srb0 / sl_srb[] / sl_drb[]. Max-retx on an SL AM bearer must NOT
+   * exit(1) — the Uu srb[]/drb[] search above never finds it. Log and return: the SL control plane recovers
+   * at the RRC level (RRCSetupRequest retry) and a DU-less remote UE has no gNB RLF handler. */
+  if (entity == ue->sl_srb0) {
+    LOG_W(RLC, "max RETX reached on SL-SRB 0 for ue %d (ignored, no SL RLF handler)\n", ue->ue_id);
+    return;
+  }
+  for (i = 0; i < (int)(sizeof(ue->sl_srb) / sizeof(ue->sl_srb[0])); i++)
+    if (entity == ue->sl_srb[i]) {
+      LOG_W(RLC, "max RETX reached on SL-SRB %d for ue %d (ignored, no SL RLF handler)\n", i + 1, ue->ue_id);
+      return;
+    }
+  for (i = 0; i < (int)(sizeof(ue->sl_drb) / sizeof(ue->sl_drb[0])); i++)
+    if (entity == ue->sl_drb[i]) {
+      LOG_W(RLC, "max RETX reached on SL-DRB %d for ue %d (ignored, no SL RLF handler)\n", i + 1, ue->ue_id);
+      return;
+    }
 
   LOG_E(RLC, "Fatal, no RB found for ue %d\n", ue->ue_id);
   exit(1);
@@ -1195,13 +1226,16 @@ void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t 
   if (logical_channel_group != 0)
     LOG_E(RLC, "%s:%d:%s: unexpected SL SRB LCG %d\n", __FILE__, __LINE__, __FUNCTION__, logical_channel_group);
 
-  /* SL-SRB is RLC UM (matches get_SRB_RLC_BearerConfig_sl and the working SL-DRB). AM was wrong for the U2N
-   * relay: an AM entity runs ARQ (STATUS PDUs / polling / retransmit) which fights the relay's pure-forwarding
-   * role — the relay endlessly ACKs the remote's PDUs, TXing tiny STATUS PDUs that starve/stall the SL TX
-   * scheduler (both rfsim and vrtsim froze on the first SL-SRB PSSCH TX). UM (fire-and-forget, no feedback)
-   * is correct: reliability for the relayed RRC is end-to-end over the gNB<->remote PDCP, and PC5 is broadcast.
-   * sl_SN_FieldLengthUM size6 per get_SRB_RLC_BearerConfig_sl. */
-  int t_reassembly = 35, sn_field_length = 6;
+  /* SL-SRB0 = CCCH (RRCSetupRequest): a one-shot contention channel, so RLC-TM (no ARQ) per the standard NR
+   * bearer mapping; loss is recovered at the RRC level (the RRCSetupRequest retry / T300), not by RLC. An AM
+   * entity on CCCH would wait for an ACK the channel never provides and retransmit to max-retx.
+   * SL-SRB1+ = DCCH (RRC/NAS signalling): must be reliable, so RLC-AM (ARQ). With the SL-SCH MAC multiplexing
+   * now in place (nr_ue_scheduler_sl.c TX / NR_IF_Module.c RX) an AM STATUS PDU and a data PDU share ONE TB,
+   * so ARQ no longer starves the RRC bytes (the earlier 3-byte-STATUS-churn freeze that forced UM is gone).
+   * AM params per episys: t_poll_retransmit 45, t_reassembly 35, t_status_prohibit 0, pollPDU/pollByte
+   * infinity (-1), maxRetxThreshold 8, sn_field_length 12. */
+  int t_poll_retransmit = 45, t_reassembly = 35, t_status_prohibit = 0;
+  int poll_pdu = -1, poll_byte = -1, max_retx_threshold = 8, sn_field_length = 12;
 
   nr_rlc_manager_lock(nr_rlc_ue_manager);
   ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, rnti);
@@ -1209,11 +1243,21 @@ void nr_rlc_add_srb_sl(int rnti, int srb_id, const NR_SL_RLC_BearerConfig_r16_t 
   if (existing != NULL) {
     LOG_W(RLC, "SL SRB %d already exists for RNTI %04x, do nothing\n", srb_id, rnti);
   } else {
-    nr_rlc_entity_t *nr_rlc_um = new_nr_rlc_entity_um(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE,
-                                                      deliver_sdu, ue, t_reassembly, sn_field_length);
-    nr_rlc_um->intf_type = PC5;
-    nr_rlc_ue_add_srb_rlc_entity(ue, srb_id, nr_rlc_um);
-    LOG_I(RLC, "added SL SRB %d (UM) to UE with RNTI 0x%x\n", srb_id, rnti);
+    nr_rlc_entity_t *ent;
+    if (srb_id == 0) {
+      // SL-SRB0 = CCCH: RLC-TM (transparent, no ARQ). One-shot; loss recovered by the RRC-level retry.
+      ent = new_nr_rlc_entity_tm(RLC_TX_MAXSIZE, deliver_sdu, ue);
+      LOG_I(RLC, "added SL SRB 0 (TM) to UE with RNTI 0x%x\n", rnti);
+    } else {
+      // SL-SRB1+ = DCCH: RLC-AM (reliable signalling); STATUS + data share a TB via SL-SCH MAC multiplexing.
+      ent = new_nr_rlc_entity_am(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE,
+                                 deliver_sdu, ue, successful_delivery, ue, max_retx_reached, ue,
+                                 t_poll_retransmit, t_reassembly, t_status_prohibit,
+                                 poll_pdu, poll_byte, max_retx_threshold, sn_field_length);
+      LOG_I(RLC, "added SL SRB %d (AM) to UE with RNTI 0x%x\n", srb_id, rnti);
+    }
+    ent->intf_type = PC5;
+    nr_rlc_ue_add_srb_rlc_entity(ue, srb_id, ent);
   }
   nr_rlc_manager_unlock(nr_rlc_ue_manager);
 }

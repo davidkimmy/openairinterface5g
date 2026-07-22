@@ -54,6 +54,12 @@
 #include "openair2/LAYER2/nr_srap/nr_srap_oai_api.h" // SL mode-1 U2N relay: remote-UE RRC over PC5 SL-SRB (SRAP)
 
 static NR_UE_RRC_INST_t *NR_UE_rrc_inst[MAX_NUM_NR_UE_INST] = {0};
+
+/* SL mode-1 U2N relay Remote UE: process-global flag set once the Remote UE reaches RRC_CONNECTED
+ * (RRCSetup received over PC5). Read from the sidelink/MAC thread by nr_rrc_ue_is_connected() to stop
+ * retransmitting the RRCSetupRequest — deliberately a plain bool (no RRC-instance array access from the
+ * SL thread, which previously segfaulted). One UE per softmodem process, so no per-instance keying needed. */
+volatile bool g_nr_ue_rrc_connected = false;
 /* NAS Attach request with IMSI */
 static const char nr_nas_attach_req_imsi_dummy_NSA_case[] = {
     0x07,
@@ -2455,6 +2461,7 @@ static void nr_rrc_process_rrcsetup(NR_UE_RRC_INST_t *rrc, const NR_RRCSetup_t *
   // if the RRCSetup is received in response to an RRCResumeRequest, RRCResumeRequest1 or RRCSetupRequest
   // enter RRC_CONNECTED
   rrc->nrRrcState = RRC_STATE_CONNECTED_NR;
+  g_nr_ue_rrc_connected = true; // SL relay Remote UE: stop the PC5 RRCSetupRequest retry (read by MAC/SL thread)
 
   // Indicate to NAS that the RRC connection has been established (5.3.1.3 of 3GPP TS 24.501)
   MessageDef *msg_p = itti_alloc_new_message(TASK_RRC_NRUE, 0, NR_NAS_CONN_ESTABLISH_IND);
