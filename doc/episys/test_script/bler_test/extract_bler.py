@@ -16,6 +16,44 @@ Log types:
 import re, csv, sys, os, tempfile
 from pathlib import Path
 
+# SNR (dB) is derived from the swept noise power as: SNR = TX_POWER_DBM - PLOSS_DB - noise.
+# The TX reference and ploss come from the config (run_sl_test_config.sh) via env vars set by
+# process_and_fetch_results.sh; defaults preserve the previous 20/8 behaviour. The equation is
+# the same for both backends, only the TX reference differs:
+#   - RFSim : tx_power_dbm (nominal TX power in dBm)
+#   - vrtsim: vrtsim_tx_power_dbfs (TX signal level in dBFS; vrtsim's noise_power_dB is a
+#             dBFS noise floor, so SNR = signal_dBFS - ploss - noise_power_dB).
+TX_POWER_DBM = float(os.environ.get("BLER_TX_POWER_DBM", 20))
+PLOSS_DB = float(os.environ.get("BLER_PLOSS_DB", 8))
+
+# How PC5 (nearby/syncref) BLER is combined (Uu always uses "rx"). Select via BLER_PC5_METHOD
+# (config: bler_pc5_method); default "rx":
+#   "rx"           - RX-summary method only, like Uu (per-iteration rows, plot averages). DEFAULT.
+#   "rx_preferred" - RX-summary, bilateral only as a fallback (iteration-mean per method).
+#   "max"          - max(RX, bilateral) per point (iteration-mean per method); conservative.
+PC5_METHOD = os.environ.get("BLER_PC5_METHOD", "rx").lower()
+
+# Optional log-filename prefix filter. When several backends' logs share one test dir (e.g. a
+# serial rfsim+vrtsim BLER run), BLER_LOG_PREFIX restricts extraction to one backend's logs
+# (their filenames start with the test name, e.g. "rfsim"/"vrtsim"). Empty = no filter.
+LOG_PREFIX = os.environ.get("BLER_LOG_PREFIX", "")
+
+def _snr_from_noise(noise):
+    return TX_POWER_DBM - PLOSS_DB - noise
+
+# The test_dir argument may be a single directory OR a ':'-separated list of directories
+# (used by merge_runs.sh to re-process several runs TOGETHER without copying/renaming any
+# logs). We simply glob across all of them; extract emits one row per log file, so the plot
+# averages the runs by (mcs, snr).
+def _split_dirs(test_dir):
+    return [Path(d).expanduser() for d in str(test_dir).split(':') if d]
+
+def _glob_dirs(dirs, pattern):
+    files = []
+    for d in dirs:
+        files.extend(d.glob(f"{LOG_PREFIX}{pattern}"))
+    return sorted(files)
+
 # Bilateral extraction for PC5
 def parse_log_filename(filename, filepath):
     pattern = r'.*mcs(\d+)_noise(-?\d+)_.*result_.*\.log'
@@ -29,7 +67,7 @@ def parse_log_filename(filename, filepath):
 
 def find_log_pairs(test_dir):
     groups = {}
-    for log_file in Path(test_dir).expanduser().glob("*mcs*_noise*_result*.log"):
+    for log_file in _glob_dirs(_split_dirs(test_dir), "*mcs*_noise*_result*.log"):
         info = parse_log_filename(log_file.name, str(log_file))
         if not info: continue
         key = (info['mcs'], info['noise'])
@@ -38,9 +76,14 @@ def find_log_pairs(test_dir):
     pairs = []
     for (mcs, noise), roles in groups.items():
         if roles['nearby'] and roles['syncref']:
-            nearby_log = max(roles['nearby'], key=lambda x: x[1])[0]
-            syncref_log = max(roles['syncref'], key=lambda x: x[1])[0]
-            pairs.append({'mcs': mcs, 'noise': noise, 'nearby_log': str(nearby_log), 'syncref_log': str(syncref_log)})
+            # Pair per ITERATION: sort both roles by timestamp and zip them, so each
+            # num_repeat iteration's nearby+syncref logs form one pair (instead of only the
+            # latest). This lets the iterations be averaged downstream. Any extra unmatched
+            # log (unequal counts) is dropped by zip().
+            nearby_sorted = [f for f, _ in sorted(roles['nearby'], key=lambda x: x[1])]
+            syncref_sorted = [f for f, _ in sorted(roles['syncref'], key=lambda x: x[1])]
+            for nearby_log, syncref_log in zip(nearby_sorted, syncref_sorted):
+                pairs.append({'mcs': mcs, 'noise': noise, 'nearby_log': str(nearby_log), 'syncref_log': str(syncref_log)})
     return pairs
 
 def extract_pssch_stats(log_file):
@@ -56,7 +99,7 @@ def compute_bilateral_bler(pair, ue_role):
     tx_peer = tx_syncref if ue_role == 'nearby' else tx_nearby
     rx_ok_self = rx_ok_nearby if ue_role == 'nearby' else rx_ok_syncref
     if tx_peer < 50 or rx_ok_self > tx_peer: return None
-    return {'mcs': pair['mcs'], 'noise': pair['noise'], 'snr': 20-8-pair['noise'], 'rounds_0': rx_ok_self, 'rounds_1': 0, 'rounds_2': 0, 'rounds_3': 0, 'bler': (tx_peer - rx_ok_self) / tx_peer}
+    return {'mcs': pair['mcs'], 'noise': pair['noise'], 'snr': _snr_from_noise(pair['noise']), 'rounds_0': rx_ok_self, 'rounds_1': 0, 'rounds_2': 0, 'rounds_3': 0, 'bler': (tx_peer - rx_ok_self) / tx_peer}
 
 def extract_bilateral_bler(test_dir, output_bler_csv, output_ldpc_csv, ue_role):
     pairs = find_log_pairs(test_dir)
@@ -70,8 +113,9 @@ def extract_bilateral_bler(test_dir, output_bler_csv, output_ldpc_csv, ue_role):
 
 # RX method extraction for PC5 and Uu
 def extract_bler_rx_method(test_dir, output_bler_csv, output_ldpc_csv, log_type):
-    results_path = Path(test_dir).expanduser()
-    if not results_path.exists(): print(f"Error: {test_dir} doesn't exist"); sys.exit(1)
+    dirs = _split_dirs(test_dir)
+    missing = [str(d) for d in dirs if not d.exists()]
+    if missing: print(f"Error: {', '.join(missing)} doesn't exist"); sys.exit(1)
 
     # Config for each log type
     configs = {
@@ -85,7 +129,7 @@ def extract_bler_rx_method(test_dir, output_bler_csv, output_ldpc_csv, log_type)
     if log_type not in configs: print(f"Error: Unknown log_type '{log_type}'"); sys.exit(1)
 
     log_pattern, ue_name, rx_tag, harq_tag, ldpc_tag = configs[log_type]
-    ue_logs = sorted(results_path.glob(log_pattern))
+    ue_logs = _glob_dirs(dirs, log_pattern)
     print(f"Processing {len(ue_logs)} {ue_name} logs...")
 
     bler_data, ldpc_data = [], []
@@ -93,7 +137,7 @@ def extract_bler_rx_method(test_dir, output_bler_csv, output_ldpc_csv, log_type)
         mcs_match = re.search(r'mcs(\d+)_', log_file.name)
         noise_match = re.search(r'noise([-0-9]+)_', log_file.name)
         if not mcs_match or not noise_match: continue
-        mcs, noise, snr = int(mcs_match.group(1)), int(noise_match.group(1)), 20 - 8 - int(noise_match.group(1))
+        mcs, noise, snr = int(mcs_match.group(1)), int(noise_match.group(1)), _snr_from_noise(int(noise_match.group(1)))
 
         try:
             with open(log_file, 'r', errors='ignore') as f: content = f.read()
@@ -152,51 +196,55 @@ def extract_bler_rx_method(test_dir, output_bler_csv, output_ldpc_csv, log_type)
 
     return len(bler_data), len(ldpc_data)
 
-# MAX BLER merge for PC5 (pure Python, no pandas)
-def merge_max_bler(rx_csv, bilateral_csv, output_csv):
-    # Read RX data
-    rx_data = {}
-    if Path(rx_csv).exists() and os.path.getsize(rx_csv) > 0:
-        with open(rx_csv, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                key = (int(row['mcs']), int(row['noise']))
-                rx_data[key] = row
+# PC5 BLER combine (pure Python, no pandas): iteration-mean per method, then combine the two
+# methods per `combine`: "rx_preferred" (RX, bilateral only as fallback) or "max" (larger of
+# the two). (name kept as merge_max_bler for call-site stability.)
+def merge_max_bler(rx_csv, bilateral_csv, output_csv, combine="rx_preferred"):
+    # Aggregate a per-point CSV ACROSS ITERATIONS: mean BLER + mean HARQ rounds per
+    # (mcs, noise). Previously this did a dict last-row-wins overwrite, so num_repeat
+    # iterations on one host were discarded (only the last survived). Now each iteration
+    # contributes to the mean.
+    def load_mean(path):
+        acc = {}
+        if Path(path).exists() and os.path.getsize(path) > 0:
+            with open(path, 'r') as f:
+                for row in csv.DictReader(f):
+                    acc.setdefault((int(row['mcs']), int(row['noise'])), []).append(row)
+        agg = {}
+        for key, rows in acc.items():
+            n = len(rows)
+            agg[key] = {
+                'mcs': key[0], 'noise': key[1], 'snr': rows[0]['snr'],
+                'rounds_0': round(sum(int(r['rounds_0']) for r in rows) / n),
+                'rounds_1': round(sum(int(r['rounds_1']) for r in rows) / n),
+                'rounds_2': round(sum(int(r['rounds_2']) for r in rows) / n),
+                'rounds_3': round(sum(int(r['rounds_3']) for r in rows) / n),
+                'bler': sum(float(r['bler']) for r in rows) / n,
+            }
+        return agg
 
-    # Read bilateral data
-    bilateral_data = {}
-    if Path(bilateral_csv).exists() and os.path.getsize(bilateral_csv) > 0:
-        with open(bilateral_csv, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                key = (int(row['mcs']), int(row['noise']))
-                bilateral_data[key] = row
+    rx_data = load_mean(rx_csv)
+    bilateral_data = load_mean(bilateral_csv)
 
-    # Merge using MAX strategy
+    # One row per (mcs, noise). combine="rx_preferred": use the RX-summary iteration-mean (the
+    # PHY's own direct error count), bilateral only where RX is absent. combine="max": take the
+    # larger of the two iteration-means (conservative). RX HARQ rounds are kept in both cases.
     all_keys = set(rx_data.keys()) | set(bilateral_data.keys())
     merged_data = []
-
     for key in sorted(all_keys):
-        mcs, noise = key
         rx_row = rx_data.get(key)
         bilateral_row = bilateral_data.get(key)
-
         if rx_row and bilateral_row:
-            # Both exist: use MAX BLER, keep RX HARQ data
-            result_row = rx_row.copy()
-            if float(bilateral_row['bler']) > float(rx_row['bler']):
+            result_row = dict(rx_row)
+            if combine == "max" and bilateral_row['bler'] > rx_row['bler']:
                 result_row['bler'] = bilateral_row['bler']
-        elif rx_row:
-            result_row = rx_row.copy()
         else:
-            result_row = bilateral_row.copy()
-
+            result_row = dict(rx_row or bilateral_row)
         merged_data.append(result_row)
 
-    # Write merged data
     if merged_data:
         with open(output_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=merged_data[0].keys())
+            writer = csv.DictWriter(f, fieldnames=['mcs', 'noise', 'snr', 'rounds_0', 'rounds_1', 'rounds_2', 'rounds_3', 'bler'])
             writer.writeheader()
             writer.writerows(merged_data)
 
@@ -207,34 +255,28 @@ def extract_bler_unified(test_dir, output_bler_csv, output_ldpc_csv, log_type):
     valid_types = ['nearby', 'syncref', 'uu_dl', 'uu_dl_gnb', 'uu_dl_relay', 'uu_ul']
     if log_type not in valid_types: print(f"Error: Invalid log_type. Valid: {', '.join(valid_types)}"); sys.exit(1)
 
-    if log_type in ['uu_dl', 'uu_dl_gnb', 'uu_dl_relay', 'uu_ul']:
+    # Uu ALWAYS uses the RX method. PC5 (nearby/syncref) uses the RX method by DEFAULT
+    # (BLER_PC5_METHOD="rx"), same as Uu: one row per log file (per num_repeat iteration), the
+    # plot averages them. BLER_PC5_METHOD can instead select a bilateral-augmented mode
+    # ("rx_preferred" or "max"); the RX-summary is the PHY's own direct error count, while the
+    # bilateral (two-sided counter-differencing) is artifact-prone, hence "rx" is the default.
+    if log_type in ['uu_dl', 'uu_dl_gnb', 'uu_dl_relay', 'uu_ul'] or PC5_METHOD == 'rx':
         print(f"Using RX method for {log_type}")
         return extract_bler_rx_method(test_dir, output_bler_csv, output_ldpc_csv, log_type)
 
-    print(f"Using MAX BLER strategy for {log_type}")
+    # PC5 with the bilateral estimator (BLER_PC5_METHOD = "rx_preferred" or "max").
+    print(f"Using PC5 method '{PC5_METHOD}' (RX + bilateral) for {log_type}")
     temp_dir_obj = tempfile.TemporaryDirectory()
     temp_dir = temp_dir_obj.name
-    rx_bler_csv = Path(temp_dir) / "rx_bler.csv"
-    rx_ldpc_csv = Path(temp_dir) / "rx_ldpc.csv"
-    bilateral_bler_csv = Path(temp_dir) / "bilateral_bler.csv"
-    bilateral_ldpc_csv = Path(temp_dir) / "bilateral_ldpc.csv"
-
-    print("Step 1: RX method...")
-    rx_bler_count, rx_ldpc_count = extract_bler_rx_method(test_dir, str(rx_bler_csv), str(rx_ldpc_csv), log_type)
-    print(f"  RX: {rx_bler_count} BLER rows")
-
-    print("Step 2: Bilateral method...")
-    bilateral_bler_count, _ = extract_bilateral_bler(test_dir, str(bilateral_bler_csv), str(bilateral_ldpc_csv), log_type)
-    print(f"  Bilateral: {bilateral_bler_count} BLER rows")
-
-    print("Step 3: Merging with MAX...")
-    merged_count = merge_max_bler(str(rx_bler_csv), str(bilateral_bler_csv), output_bler_csv)
-    print(f"  Merged: {merged_count} BLER rows")
-
+    rx_bler_csv, rx_ldpc_csv = Path(temp_dir) / "rx_bler.csv", Path(temp_dir) / "rx_ldpc.csv"
+    bil_bler_csv, bil_ldpc_csv = Path(temp_dir) / "bil_bler.csv", Path(temp_dir) / "bil_ldpc.csv"
+    _, rx_ldpc_count = extract_bler_rx_method(test_dir, str(rx_bler_csv), str(rx_ldpc_csv), log_type)
+    extract_bilateral_bler(test_dir, str(bil_bler_csv), str(bil_ldpc_csv), log_type)
+    combine = 'max' if PC5_METHOD == 'max' else 'rx_preferred'
+    merged_count = merge_max_bler(str(rx_bler_csv), str(bil_bler_csv), output_bler_csv, combine=combine)
     if rx_ldpc_csv.exists():
         import shutil
         shutil.copy(str(rx_ldpc_csv), output_ldpc_csv)
-
     temp_dir_obj.cleanup()
     return merged_count, rx_ldpc_count
 

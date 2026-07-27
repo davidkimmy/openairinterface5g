@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
+import os
 from pathlib import Path
 from matplotlib.patches import Ellipse
 from scipy.interpolate import make_interp_spline
@@ -102,8 +103,9 @@ def plot_bler_4panel(results_dir, perspective='nearby'):
     print(f"MCS values: {mcs_values}")
 
     # Modulation order groups with fixed ellipse positions
-    # Only draw ellipses if BLER data reaches moderate levels
-    draw_ellipses = len(df) > 0 and df['bler'].max() > 0.20
+    # Only draw ellipses if BLER data reaches moderate levels and not vrtsim.
+    backend = os.environ.get("BLER_BACKEND", "")
+    draw_ellipses = len(df) > 0 and df['bler'].max() > 0.20 and backend != "vrtsim"
 
     # Different ellipse sizing for Uu interface vs PC5 sidelink
     if perspective in ['uu_dl', 'uu_dl_gnb', 'uu_dl_relay']:
@@ -184,8 +186,17 @@ def plot_bler_4panel(results_dir, perspective='nearby'):
     ax1.set_ylabel('Block Error Rate', fontsize=14, fontweight='bold')
     ax1.set_title(subplot_title, fontsize=16, fontweight='bold')
     ax1.grid(True, alpha=0.3, linewidth=1)
-    # Compact legend with 2 columns, smaller font, positioned right at plot edge
-    ax1.legend(bbox_to_anchor=(1.01, 1), loc='upper left', fontsize=6.5, ncol=2)
+    # MCS legend inside the chart (upper-right, the usually-empty corner of a BLER
+    # waterfall). Favor readability: a larger font and FEWER columns so the entries list
+    # down more rows instead of being crammed across many columns. Use 1 column for small
+    # sweeps, at most 2 columns for the full MCS range.
+    n_leg = len(mcs_values)
+    leg_ncol = 1 if n_leg <= 10 else 2
+    # Anchor slightly below the top edge (y=0.93 in axes fraction) so there is a top margin
+    # between the chart border and the legend.
+    ax1.legend(loc='upper right', bbox_to_anchor=(1.0, 0.93), fontsize=8, ncol=leg_ncol,
+               framealpha=0.6, handlelength=1.5, handletextpad=0.5, columnspacing=1.0,
+               labelspacing=0.4, borderpad=0.4)
 
     # Auto-scale y-axis to zoom into data range when BLER is low
     if len(df) > 0:
@@ -201,6 +212,17 @@ def plot_bler_4panel(results_dir, perspective='nearby'):
             ax1.set_ylim(0, 1.0)
     else:
         ax1.set_ylim(0, 1.0)
+
+    # Focus the x-axis on the active SNR range (where the curves/dotted lines are),
+    # so the fixed modulation-region annotations don't stretch it to a wide fixed
+    # span. This keeps the view within the swept range (SNR = TX_ref - ploss - noise),
+    # regardless of backend. The out-of-range ellipses are simply clipped to the axes.
+    if len(df) > 0 and df['snr'].notna().any():
+        snr_lo = float(df['snr'].min())
+        snr_hi = float(df['snr'].max())
+        if snr_hi > snr_lo:
+            margin = max(1.0, 0.05 * (snr_hi - snr_lo))
+            ax1.set_xlim(snr_lo - margin, snr_hi + margin)
 
     ax1.tick_params(labelsize=11)
 
@@ -285,10 +307,16 @@ def plot_bler_4panel(results_dir, perspective='nearby'):
         noise_10_bler = []
         mcs_for_plot = []
         for mcs in mcs_values:
-            mcs_data = df[df['mcs'] == mcs].sort_values('snr')
-            bler_10 = mcs_data[mcs_data['bler'] <= 0.10]
+            # Aggregate across hosts/iterations FIRST (mean BLER per (snr,noise) operating
+            # point), THEN threshold -- mirrors the ax1 groupby. Using raw rows here would let
+            # a single low-SNR row with BLER<=0.1 from any host collapse the threshold to the
+            # minimum SNR for every MCS -> a flat line even when each host's curve is not flat.
+            mcs_agg = (df[df['mcs'] == mcs]
+                       .groupby(['snr', 'noise'])['bler'].mean()
+                       .reset_index().sort_values('snr'))
+            bler_10 = mcs_agg[mcs_agg['bler'] <= 0.10]
             if len(bler_10) > 0:
-                # Find the minimum SNR where BLER <= 10%
+                # Find the minimum SNR where the AVERAGED BLER <= 10%
                 idx_min = bler_10['snr'].idxmin()
                 snr_threshold = bler_10.loc[idx_min, 'snr']
                 noise_threshold = bler_10.loc[idx_min, 'noise']
