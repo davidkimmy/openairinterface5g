@@ -548,7 +548,9 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     for (int l = 0; l < nl; l++)
       rxComp[l] = rxComp_buf[l];
 
-    nr_channel_compensation(buf_len, nbRx, nl, rxF_ext, ch_ext, ch_maga, ch_magb, ch_magc,
+    // develop added pdsch_buf_size_max (ch_mag buffer size) as the 2nd arg; here the ch_mag buffers are
+    // [nl][buf_len], so it equals buf_len (same as buffer_length), matching develop's own callers.
+    nr_channel_compensation(buf_len, buf_len, nbRx, nl, rxF_ext, ch_ext, ch_maga, ch_magb, ch_magc,
                             rxComp, NULL, Qm, 0, log2_maxh);
 
     // SCI region accounting: SCI1 occupies the first sci1_re_per_symb REs of the PSCCH symbols;

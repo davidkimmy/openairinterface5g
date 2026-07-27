@@ -587,7 +587,7 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
           slh->V = 0;
           slh->R = 0;
           slh->SRC = mac->src_id;
-          slh->DST = SL_F1_BROADCAST_DEST;
+          slh->DST = SL_F1_BROADCAST_DEST & 0xFF; // DST is a uint8_t:8 field = low 8 bits of the L2 dest ID
           wr += sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
         }
         // Bearer priority order: SRB0 (CCCH) > SRB1 (DCCH) > DRB1 (user data). SL-SRBs exist only on the

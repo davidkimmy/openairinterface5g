@@ -135,7 +135,8 @@ static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
     LOG_W(SDAP, "Dropping TX SDAP SDU: no DRB mapping for QFI %u (pdu_session=%d)\n", qfi, entity->pdusession_id);
     return false;
   }
-  const int drb_id = map->drb_id;
+  // non-const: the ip-demo SL-relay DL path (update_drb_id below) overrides the DRB from the dest IP.
+  int drb_id = map->drb_id;
   const int drb_role = map->entity_role;
 
   sdap_ul_tx = drb_role & SDAP_UL_TX;
