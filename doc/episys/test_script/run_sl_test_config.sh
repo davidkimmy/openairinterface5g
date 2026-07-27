@@ -323,8 +323,16 @@ elif [[ $test_profile == "stress" ]]; then
     rx_gain=110  # 110, 70
 elif [[ $test_profile == "bler" ]]; then
     # BLER test configuration
+    # Select the radio backend(s) for the BLER sweep:
+    #   rfsim_slmode1_bler_test_on_local_host   - RFSim (uses noise_power_array below)
+    #   vrtsim_slmode1_bler_test_on_local_host  - vrtsim shared-memory radio, local host only
+    #                                             (uses vrtsim_noise_power_array below)
+    # You may enable BOTH: they run serially (rfsim sweep, then vrtsim sweep) and
+    # post-processing auto-splits by backend into bler_results_<ts>_rfsim/ and _vrtsim/
+    # (each with its own SNR reference). See README_BLER_test.md.
     enabled_tests=(
         rfsim_slmode1_bler_test_on_local_host
+        #vrtsim_slmode1_bler_test_on_local_host
     )
 
     num_repeat=12             # 12 iterations per configuration for statistical validity
@@ -338,7 +346,28 @@ elif [[ $test_profile == "bler" ]]; then
     # +4 dB noise → 8 dB SINR (low end, all modulations reach 100% BLER)
     noise_power_array=($(seq -12 4))
 
+    # vrtsim uses a DIFFERENT noise scale than rfsim (its own noise_device path):
+    #   100 = OFF (no noise); more-negative = LESS noise; ~-30 dB already breaks sync.
+    # So the rfsim range above (-12..4) would mean near-max noise in vrtsim. The vrtsim
+    # BLER wrapper picks this array instead (see dispatcher). Sweep light -> heavy:
+    #   -60 (very light) ... -30 (link breaks). Tune per your setup.
+    vrtsim_noise_power_array=($(seq -62 3 -35))
+
     ploss_db=8                # Fixed path loss (8 dB)
+
+    # SNR axis (post-processing) is derived as: SNR = <ref> - ploss_db - noise, where <ref>
+    # is a "TX power" reference chosen per backend (see extract_bler.py via BLER_* env vars):
+    #   - RFSim : tx_power_dbm     (nominal TX power in dBm)
+    #   - vrtsim: vrtsim_tx_power_dbfs (TX signal level in dBFS, since vrtsim's
+    #             noise_power_dB is a dBFS noise floor). Calibrated so SNR~=0 dB at the
+    #             observed link-break (noise_power_dB ~= -30). Tune per your setup.
+    tx_power_dbm=20
+    vrtsim_tx_power_dbfs=-30
+    # How PC5 (nearby/syncref) BLER is computed in post-processing (Uu always uses RX):
+    #   rx           - RX-summary method only, same as Uu (DEFAULT; per-iteration rows averaged)
+    #   rx_preferred - RX-summary, bilateral only as a fallback where RX is missing
+    #   max          - max(RX, bilateral) per point (conservative; bilateral is artifact-prone)
+    bler_pc5_method="rx"
     csi_acquisition=0         # Disable CSI
     psfch_period=2            # PSFCH Period = 2
     ping_per_second=15        # Ping rate (packets per second)
@@ -407,6 +436,7 @@ else
 fi
 if [[ $test_profile == "bler" ]]; then
     echo "Noise Power Array    : ${noise_power_array[@]}"
+    [[ -n "${vrtsim_noise_power_array+x}" ]] && echo "Noise Array (vrtsim) : ${vrtsim_noise_power_array[@]}"
     echo "Path Loss            : ${ploss_db} dB"
     echo "CSI Acquisition      : ${csi_acquisition}"
     echo "PSFCH Period         : ${psfch_period}"

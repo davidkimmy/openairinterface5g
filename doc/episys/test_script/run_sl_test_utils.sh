@@ -122,8 +122,9 @@ setup_parallel_bler_hosts() {
             # Update local config
             update_host_config_local "$start" "$end"
         else
-            # Copy utilities to remote host
-            scp -q "$SCRIPT_DIR/run_sl_test_utils.sh" "${hostname}:~/ci_script/" 2>/dev/null || {
+            # Copy utilities to remote host (home-relative path; scp resolves it under the
+            # remote user's home, so it works even if the remote user id differs).
+            scp -q "$SCRIPT_DIR/run_sl_test_utils.sh" "${hostname}:${SCRIPT_DIR_REL:-${SCRIPT_DIR#$HOME/}}/" 2>/dev/null || {
                 echo "  ⚠ Failed to copy utilities to ${hostname}"
                 continue
             }
@@ -166,10 +167,13 @@ update_host_config_remote() {
     local start=$2
     local end=$3
     local num_repeat=$((end - start + 1))
+    # Home-relative path of the test scripts on the remote host (same layout under $HOME
+    # even if the remote user id differs). Matches the remote launch in run_sl_test.sh.
+    local script_dir_rel="${SCRIPT_DIR_REL:-${SCRIPT_DIR#$HOME/}}"
 
     ssh "$hostname" "bash -c '
-        source_config=\"\$HOME/ci_script/run_sl_test_config.sh\"
-        worker_config=\"\$HOME/ci_script/run_sl_test_config_worker_${hostname}.sh\"
+        source_config=\"\$HOME/$script_dir_rel/run_sl_test_config.sh\"
+        worker_config=\"\$HOME/$script_dir_rel/run_sl_test_config_worker_${hostname}.sh\"
 
         # Create worker-specific config from master config
         cp \"\$source_config\" \"\$worker_config\"

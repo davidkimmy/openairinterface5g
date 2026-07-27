@@ -2,8 +2,8 @@
 # Detailed status check for full BLER tests on all machines
 # Reads bler_hosts from config file and shows detailed progress
 
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-SL_TEST_CONFIG_FILE="${SCRIPT_DIR}/../run_sl_test_config.sh"
+BLER_SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+SL_TEST_CONFIG_FILE="${BLER_SCRIPT_DIR}/../run_sl_test_config.sh"
 
 # Source config to get bler_hosts array
 if [[ -f "$SL_TEST_CONFIG_FILE" ]]; then
@@ -424,9 +424,9 @@ for hostname in "${bler_hosts[@]}"; do
 
     # Try to load worker config if it exists
     if [[ "$hostname" == "localhost" || "$hostname" == "local" ]]; then
-        host_config_file="${SCRIPT_DIR}/../run_sl_test_config_worker_local.sh"
+        host_config_file="${BLER_SCRIPT_DIR}/../run_sl_test_config_worker_local.sh"
     else
-        host_config_file="${SCRIPT_DIR}/../run_sl_test_config_worker_${hostname}.sh"
+        host_config_file="${BLER_SCRIPT_DIR}/../run_sl_test_config_worker_${hostname}.sh"
     fi
 
     if [[ -f "$host_config_file" ]]; then
@@ -511,5 +511,5 @@ echo "  • Noise values: ${num_noise_vals}"
 echo "  • Iterations: ${num_repeat:-12}"
 echo "  • Duration per test: ${duration:-70}s"
 echo ""
-echo "Monitor: watch -n 30 '$SCRIPT_DIR/check_test_status.sh'"
+echo "Monitor: watch -n 30 '$BLER_SCRIPT_DIR/check_test_status.sh'"
 echo "=========================================="

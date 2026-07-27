@@ -7,6 +7,10 @@
 
 timestamp=$(date +"%Y%m%d_%H%M%S")
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+# Path of this script relative to the user's home. Used for remote (ssh) hosts, which may
+# run under a DIFFERENT user id but keep the same layout under their home directory.
+# If the script is not under $HOME the strip is a no-op and this keeps the absolute path.
+SCRIPT_DIR_REL="${SCRIPT_DIR#$HOME/}"
 
 # Defaults
 base_dir="$SCRIPT_DIR"
@@ -210,14 +214,17 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
 
         if [[ "$hostname" == "localhost" || "$hostname" == "local" ]]; then
             # Launch locally - uses worker-specific config
-            cd ~/ci_script
+            cd "$SCRIPT_DIR"
             # Override config file via environment variable
             BLER_CONFIG_FILE="run_sl_test_config_worker_local.sh" nohup bash run_sl_test.sh > "${log_file/#\~/$HOME}" 2>&1 &
             echo $! > "${pid_file/#\~/$HOME}"
             echo "  ✓ Started locally (PID: $!)"
         else
             # Launch remotely - uses worker-specific config
-            ssh -n -f "$hostname" "cd ~/ci_script && BLER_CONFIG_FILE=\"run_sl_test_config_worker_${hostname}.sh\" nohup bash run_sl_test.sh > $log_file 2>&1 & echo \$! > $pid_file" 2>/dev/null
+            # Use a home-relative path with an escaped \$HOME so it expands on the REMOTE
+            # host: works even if the remote user id differs, as long as the script lives
+            # at the same path under that user's home.
+            ssh -n -f "$hostname" "cd \"\$HOME/$SCRIPT_DIR_REL\" && BLER_CONFIG_FILE=\"run_sl_test_config_worker_${hostname}.sh\" nohup bash run_sl_test.sh > $log_file 2>&1 & echo \$! > $pid_file" 2>/dev/null
             if [[ $? -eq 0 ]]; then
                 echo "  ✓ Started on ${hostname}"
             else
@@ -233,7 +240,7 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     echo "=========================================="
     echo ""
     echo "Monitor progress:"
-    echo "  bash ~/ci_script/check_test_status.sh"
+    echo "  bash $SCRIPT_DIR/check_test_status.sh"
     echo ""
     echo "Logs:"
     host_idx=0
@@ -257,10 +264,10 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     echo "  Per machine: ${tests_per_host} tests × ${test_time}s = ${time_per_host_hours}h ${time_per_host_min}m"
     echo ""
     echo "Note: Worker config files created (will persist for debugging):"
-    echo "  Local: ~/ci_script/run_sl_test_config_worker_local.sh"
+    echo "  Local: $SCRIPT_DIR/run_sl_test_config_worker_local.sh"
     for hostname in "${bler_hosts[@]}"; do
         if [[ "$hostname" != "localhost" && "$hostname" != "local" ]]; then
-            echo "  ${hostname}: ~/ci_script/run_sl_test_config_worker_${hostname}.sh"
+            echo "  ${hostname}: ~/$SCRIPT_DIR_REL/run_sl_test_config_worker_${hostname}.sh"
         fi
     done
     echo "=========================================="
@@ -2078,10 +2085,12 @@ save_logs_for_mcs() {
     local timestamp=$(date +"%H%M%S")
     local log_prefix="${test_name}_mcs${mcs}_noise${noise}_${timestamp}"
 
-    # Copy current logs to archive (don't move - processes still writing)
+    # Copy current logs to archive (don't move - processes still writing).
+    # Softmodem logs are written to /tmp by run_cmd (tee /tmp/result_*.log), same as the
+    # other tests; copy from there (not $HOME, which never holds these files).
     for log_file in "${softmodem_log_files[@]}"; do
-        if [[ -f "$HOME/$log_file" ]]; then
-            cp "$HOME/$log_file" "$log_dir/${log_prefix}_${log_file}"
+        if [[ -f "/tmp/$log_file" ]]; then
+            cp "/tmp/$log_file" "$log_dir/${log_prefix}_${log_file}"
         fi
     done
 
@@ -2168,20 +2177,39 @@ run_gNB_cmd_with_noise() {
     # Get BLER config path using helper function
     local config_path=$(get_gnb_config_path $sl_mode $host_name 1)
 
-    gNB_cmd="cd $OAI_BUILD_DIR; \
-             sudo -E LD_LIBRARY_PATH=\$PWD ./nr-softmodem \
-             -O $config_path \
-             --gNBs.[0].min_rxtxtime 6 \
-             --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa \
-             --log_config.global_log_level info --log_config.global_log_options time \
-             --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
-             --channelmod.modellist_rfsimu_1.[0].noise_power_dB ${noise_power} \
-             --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
-             --MACRLCs.[0].dl_max_mcs ${mcs_value} \
-             --MACRLCs.[0].ul_max_mcs ${mcs_value} \
-             --MACRLCs.[0].dl_harq_round_max 1 \
-             --MACRLCs.[0].ul_harq_round_max 1 \
-             $sl_relay_tag"
+    if [[ $test_type == "vrtsim" ]]; then
+        # vrtsim gNB: Uu server. chanmod is DELIBERATELY OFF on the gNB so the Uu DL stays
+        # clean. vrtsim's cold cell-search breaks under any gNB-Uu noise, which would stop
+        # the relay from ever syncing/registering. BLER noise is injected on the PC5
+        # sidelink only (relay + remote UE); the fixed-MCS overrides still apply here.
+        # (ploss=${ploss} is accepted for signature parity but not applied on the clean Uu.)
+        gNB_cmd="cd $OAI_BUILD_DIR; \
+                 sudo -E LD_LIBRARY_PATH=\$PWD ./nr-softmodem \
+                 -O $config_path \
+                 --gNBs.[0].min_rxtxtime 6 \
+                 --sa --device.name vrtsim --vrtsim.role server --vrtsim.chanmod 0 \
+                 --log_config.global_log_level info --log_config.global_log_options time \
+                 --MACRLCs.[0].dl_max_mcs ${mcs_value} \
+                 --MACRLCs.[0].ul_max_mcs ${mcs_value} \
+                 --MACRLCs.[0].dl_harq_round_max 1 \
+                 --MACRLCs.[0].ul_harq_round_max 1 \
+                 $sl_relay_tag"
+    else
+        gNB_cmd="cd $OAI_BUILD_DIR; \
+                 sudo -E LD_LIBRARY_PATH=\$PWD ./nr-softmodem \
+                 -O $config_path \
+                 --gNBs.[0].min_rxtxtime 6 \
+                 --rfsimulator.serveraddr server --rfsimulator.serverport 4048 --rfsim --sa \
+                 --log_config.global_log_level info --log_config.global_log_options time \
+                 --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
+                 --channelmod.modellist_rfsimu_1.[0].noise_power_dB ${noise_power} \
+                 --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
+                 --MACRLCs.[0].dl_max_mcs ${mcs_value} \
+                 --MACRLCs.[0].ul_max_mcs ${mcs_value} \
+                 --MACRLCs.[0].dl_harq_round_max 1 \
+                 --MACRLCs.[0].ul_harq_round_max 1 \
+                 $sl_relay_tag"
+    fi
 
     log_file="/tmp/result_gNB.log"
 
@@ -2208,18 +2236,37 @@ run_syncref_cmd_with_noise() {
     : ${noise_power:=0}
     : ${ploss:=5}
 
-    syncref_cmd="cd $OAI_BUILD_DIR; \
-                 sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
-                 -O $CONF_PATH/sl_sync_ref.conf \
-                 -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                 --rfsim --sa --sync-ref --sl-mode 1 \
-                 --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
-                 --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
-                 --log_config.global_log_level info --log_config.global_log_options time \
-                 --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
-                 --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
-                 --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
-                 --relay-type 1 --is-relay-ue 1 --mcs ${mcs} --node-number 2"
+    if [[ $test_type == "vrtsim" ]]; then
+        # vrtsim relay/SyncRef: Uu client + PC5 client. chanmod ON injects the swept
+        # noise/ploss on the relay's PC5 TX (relay->remote). Note: --vrtsim.chanmod is
+        # process-global so the same noise also touches the relay's Uu UL; that Uu-side
+        # effect is intentionally ignored for this BLER test. (Flags may need tuning.)
+        syncref_cmd="cd $OAI_BUILD_DIR; \
+                     sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
+                     -O $CONF_PATH/sl_sync_ref.conf \
+                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                     --sa --sync-ref --sl-mode 1 --node-number 2 \
+                     --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 1 \
+                     --channelmod.modellist_vrtsim.[0].noise_power_dB ${noise_power} \
+                     --channelmod.modellist_vrtsim.[0].ploss_dB ${ploss} \
+                     --channelmod.modellist_vrtsim.[1].noise_power_dB ${noise_power} \
+                     --channelmod.modellist_vrtsim.[1].ploss_dB ${ploss} \
+                     --log_config.global_log_level info --log_config.global_log_options time \
+                     --relay-type 1 --is-relay-ue 1 --mcs ${mcs}"
+    else
+        syncref_cmd="cd $OAI_BUILD_DIR; \
+                     sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
+                     -O $CONF_PATH/sl_sync_ref.conf \
+                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                     --rfsim --sa --sync-ref --sl-mode 1 \
+                     --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
+                     --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
+                     --log_config.global_log_level info --log_config.global_log_options time \
+                     --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
+                     --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
+                     --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
+                     --relay-type 1 --is-relay-ue 1 --mcs ${mcs} --node-number 2"
+    fi
 
     log_file="/tmp/result_nrUE_syncref.log"
 
@@ -2246,19 +2293,38 @@ run_nearby_cmd_with_noise() {
     : ${noise_power:=0}
     : ${ploss:=5}
 
-    nearby_cmd="cd $OAI_BUILD_DIR; \
-                sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
-                -O $CONF_PATH/sl_ue1.conf \
-                -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 \
-                --rfsim --sa --sl-mode 2 \
-                --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
-                --log_config.global_log_level info --log_config.global_log_options time \
-                --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
-                --channelmod.modellist_rfsimu_1.[0].noise_power_dB ${noise_power} \
-                --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
-                --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
-                --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
-                --mcs ${mcs} --node-number 3 --relay-type 1"
+    if [[ $test_type == "vrtsim" ]]; then
+        # vrtsim remote UE: PC5 server (sl-mode 2), sidelink-only node -> all of its chanmod
+        # noise is on PC5 (remote->relay). This is the clean, fully-isolated PC5 BLER knob;
+        # its own sidelink sync (RX of the relay's PC5 TX) is unaffected by this TX noise.
+        # (Flags may need tuning; command line differs from rfsim.)
+        nearby_cmd="cd $OAI_BUILD_DIR; \
+                    sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
+                    -O $CONF_PATH/sl_ue1.conf \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 \
+                    --sa --sl-mode 2 --node-number 3 --relay-type 1 \
+                    --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 1 \
+                    --channelmod.modellist_vrtsim.[0].noise_power_dB ${noise_power} \
+                    --channelmod.modellist_vrtsim.[0].ploss_dB ${ploss} \
+                    --channelmod.modellist_vrtsim.[1].noise_power_dB ${noise_power} \
+                    --channelmod.modellist_vrtsim.[1].ploss_dB ${ploss} \
+                    --log_config.global_log_level info --log_config.global_log_options time \
+                    --mcs ${mcs}"
+    else
+        nearby_cmd="cd $OAI_BUILD_DIR; \
+                    sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
+                    -O $CONF_PATH/sl_ue1.conf \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 \
+                    --rfsim --sa --sl-mode 2 \
+                    --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
+                    --log_config.global_log_level info --log_config.global_log_options time \
+                    --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
+                    --channelmod.modellist_rfsimu_1.[0].noise_power_dB ${noise_power} \
+                    --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
+                    --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
+                    --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
+                    --mcs ${mcs} --node-number 3 --relay-type 1"
+    fi
 
     log_file="/tmp/result_nearby.log"
 
@@ -2333,6 +2399,12 @@ bler_test() {
     local bler_ping_count=$((duration * ping_per_second))
     local bler_ping_interval=$(awk "BEGIN {print 1.0/$ping_per_second}")
     echo "Starting ping: $bler_ping_count packets @ ${ping_per_second} pkt/s (interval ${bler_ping_interval}s)..."
+
+    # Save the ping command to commands.txt (mirrors the node-launch commands logged above)
+    echo "=== Ping Command (mcs=${mcs}, noise=${noise_power}) ===" >> "$log_dir/commands.txt"
+    echo "ping -I $src_if $dest_ip -i $bler_ping_interval -c $bler_ping_count > /tmp/ping_result_mcs${mcs}.txt 2>&1" >> "$log_dir/commands.txt"
+    echo "" >> "$log_dir/commands.txt"
+
     ping -I $src_if $dest_ip -i $bler_ping_interval -c $bler_ping_count > /tmp/ping_result_mcs${mcs}.txt 2>&1
 
     # Parse ping results
@@ -2353,6 +2425,40 @@ bler_test() {
     local elapsed=$((end_time - start_time))
     print_runtime $start_time $end_time
 
+    # Populate the PSSCH (SLSCH) figures for the summary. bler_test does not call
+    # evaluate_ping_test, so LAST_PSSCH_* would otherwise stay unset (-> 0 -> N/A).
+    # bler_test is always sl_mode 1: relay/syncref -> result_nrUE_syncref.log,
+    # remote/nearby -> result_nearby.log. Each UE's TX and RX are read from ITS OWN log;
+    # print_test_summary pairs TX of one UE with RX of the other (cross-UE).
+    local bler_syncref_log=""
+    if [ -f "/tmp/result_nrUE_syncref.log" ]; then
+        bler_syncref_log="/tmp/result_nrUE_syncref.log"
+    elif [ -f "$log_dir/result_nrUE_syncref.log" ]; then
+        bler_syncref_log="$log_dir/result_nrUE_syncref.log"
+    fi
+    local bler_nearby_log=""
+    if [ -f "/tmp/result_nearby.log" ]; then
+        bler_nearby_log="/tmp/result_nearby.log"
+    elif [ -f "$log_dir/result_nearby.log" ]; then
+        bler_nearby_log="$log_dir/result_nearby.log"
+    fi
+    if [ -f "$bler_syncref_log" ]; then
+        local pssch_syncref=$(get_pssch_stats "$bler_syncref_log" "syncref")
+        LAST_PSSCH_TX_SYNCREF=$(echo $pssch_syncref | awk '{print $1}')
+        LAST_PSSCH_RX_SYNCREF=$(echo $pssch_syncref | awk '{print $2}')
+    else
+        LAST_PSSCH_TX_SYNCREF=0
+        LAST_PSSCH_RX_SYNCREF=0
+    fi
+    if [ -f "$bler_nearby_log" ]; then
+        local pssch_nearby=$(get_pssch_stats "$bler_nearby_log" "nearby")
+        LAST_PSSCH_TX_NEARBY=$(echo $pssch_nearby | awk '{print $1}')
+        LAST_PSSCH_RX_NEARBY=$(echo $pssch_nearby | awk '{print $2}')
+    else
+        LAST_PSSCH_TX_NEARBY=0
+        LAST_PSSCH_RX_NEARBY=0
+    fi
+
     # Print test summary
     print_test_summary "${test_name}" "iter${iteration}_noise${noise_power}_mcs${mcs}" "$num_hosts" "$mcs" "$elapsed" "$tx_packets" "$rx_packets" "$test_result"
 }
@@ -2369,6 +2475,31 @@ rfsim_slmode1_bler_test_on_local_host() {
     [[ $# -ge 4 ]] && noise_power=$4
 
     local test_type="rfsim"
+    local gnb_host_name="local"
+    local syncref_host_name="local"
+    local nearby_host_name="local"
+    local num_hosts=1
+
+    bler_test $duration $test_type $mcs $iteration $noise_power $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+}
+
+#############################################################
+vrtsim_slmode1_bler_test_on_local_host() {
+#############################################################
+    # vrtsim BLER test wrapper - delegates to the core bler_test function.
+    # Local-host only (vrtsim is a shared-memory radio). Noise/ploss is applied on the PC5
+    # sidelink only; the gNB Uu is kept clean (see run_gNB_cmd_with_noise) so the relay can
+    # sync/register. Sweep values come from vrtsim_noise_power_array (vrtsim noise scale:
+    # 100 = off, more-negative = less noise, ~-30 dB breaks sync), which the dispatcher
+    # selects automatically for vrtsim_*bler* tests.
+    # Arguments: duration, mcs, iteration, noise_power
+    echo "====================  Testing ${FUNCNAME[0]}  ===================="
+    [[ $# -ge 1 ]] && duration=$1
+    [[ $# -ge 2 ]] && mcs=$2
+    [[ $# -ge 3 ]] && iteration=$3
+    [[ $# -ge 4 ]] && noise_power=$4
+
+    local test_type="vrtsim"
     local gnb_host_name="local"
     local syncref_host_name="local"
     local nearby_host_name="local"
@@ -3398,8 +3529,15 @@ main() {
         # Determine test type and parameter array based on test name
         # Check for BLER first (before rfsim_* check, since BLER names contain "rfsim")
         if [[ $test_name == *"bler"* ]]; then
-            # BLER tests: use noise_power_array and iteration range
-            param_array=("${noise_power_array[@]}")
+            # BLER tests: use the noise sweep + iteration range.
+            # vrtsim uses its own noise scale, so pick vrtsim_noise_power_array for
+            # vrtsim_*bler* tests when it is defined; otherwise fall back to the
+            # (rfsim) noise_power_array.
+            if [[ $test_name == vrtsim_* && -n "${vrtsim_noise_power_array+x}" ]]; then
+                param_array=("${vrtsim_noise_power_array[@]}")
+            else
+                param_array=("${noise_power_array[@]}")
+            fi
             is_bler=true
             iteration_start_val=${iteration_start:-1}
             iteration_end_val=${iteration_end:-$num_repeat}
@@ -3508,6 +3646,22 @@ main() {
     else
         echo "No tests were executed (check test flags and num_hosts configuration)"
         echo ""
+    fi
+
+    # For a local BLER sweep, automatically post-process the results once the full
+    # sweep is done (extract BLER/LDPC CSVs + plots). Distributed/parallel runs exit
+    # earlier (the coordinator does not reach this point), so this only fires locally.
+    if [[ "$test_profile" == "bler" ]]; then
+        local bler_processor="$SCRIPT_DIR/bler_test/process_and_fetch_results.sh"
+        if [[ -x "$bler_processor" ]]; then
+            echo ""
+            echo "=========================================="
+            echo "Post-processing BLER results"
+            echo "=========================================="
+            bash "$bler_processor"
+        else
+            echo "WARNING: BLER post-processor not found or not executable: $bler_processor"
+        fi
     fi
 }
 main

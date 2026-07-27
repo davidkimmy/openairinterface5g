@@ -5,8 +5,11 @@
 # Uses iteration-based distribution with full MCS range per host
 #############################################################
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+BLER_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Home-relative path of this bler_test dir, used for REMOTE (ssh) hosts so they resolve the
+# scripts under their own $HOME (works even if the remote user id differs).
+BLER_SCRIPT_DIR_REL="${BLER_SCRIPT_DIR#$HOME/}"
+PARENT_DIR="$(dirname "$BLER_SCRIPT_DIR")"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Source config first to get OAI_BASE_DIR
@@ -15,9 +18,99 @@ if [[ -f "$SL_TEST_CONFIG_FILE" ]]; then
     source "$SL_TEST_CONFIG_FILE" > /dev/null 2>&1
 fi
 
+# Pass the SNR-mapping constants to extract_bler.py, which computes
+#   SNR = BLER_TX_POWER_DBM - BLER_PLOSS_DB - noise.
+# The TX reference is backend-specific: RFSim uses tx_power_dbm (dBm); vrtsim uses
+# vrtsim_tx_power_dbfs (TX signal level in dBFS), since vrtsim's noise_power_dB is a dBFS
+# noise floor. Detect the backend from the enabled BLER test name.
+# Which BLER backends are enabled (independent checks -- both may be listed for a serial run).
+has_rfsim=false; has_vrtsim=false
+printf '%s\n' "${enabled_tests[@]}" 2>/dev/null | grep -q '^[[:space:]]*rfsim_.*bler' && has_rfsim=true
+printf '%s\n' "${enabled_tests[@]}" 2>/dev/null | grep -q '^[[:space:]]*vrtsim_.*bler' && has_vrtsim=true
+
+# Select the backend for the TX reference. A per-backend sub-invocation forces it via
+# BLER_FORCE_BACKEND; otherwise auto-detect (vrtsim wins if present).
+if [[ -n "$BLER_FORCE_BACKEND" ]]; then
+    BLER_BACKEND="$BLER_FORCE_BACKEND"
+elif [[ "$has_vrtsim" == true ]]; then
+    BLER_BACKEND="vrtsim"
+else
+    BLER_BACKEND="rfsim"
+fi
+# Export so plot_results.py can see it (e.g. to drop the modulation-order annotations for vrtsim,
+# whose SNR axis uses a dBFS reference).
+export BLER_BACKEND
+if [[ "$BLER_BACKEND" == "vrtsim" ]]; then
+    export BLER_TX_POWER_DBM="${vrtsim_tx_power_dbfs:--30}"
+else
+    export BLER_TX_POWER_DBM="${tx_power_dbm:-20}"
+fi
+export BLER_PLOSS_DB="${ploss_db:-8}"
+# PC5 BLER combine method for extract_bler.py: rx (default) | rx_preferred | max
+export BLER_PC5_METHOD="${bler_pc5_method:-rx}"
+# Log-filename prefix filter (empty = all). Set to "rfsim"/"vrtsim" in a per-backend
+# sub-invocation so the extractors only pick that backend's logs. Local python calls inherit
+# it from the environment; the remote ssh calls pass it explicitly.
+export BLER_LOG_PREFIX="${BLER_LOG_PREFIX:-}"
+echo "SNR mapping: backend=$BLER_BACKEND  TX_ref=${BLER_TX_POWER_DBM}  ploss=${BLER_PLOSS_DB}  (SNR = TX_ref - ploss - noise)${BLER_LOG_PREFIX:+  [logs: ${BLER_LOG_PREFIX}*]}"
+
 # Use configured paths or defaults
 OAI_BASE_DIR="${OAI_BASE_DIR:-$HOME/openairinterface5g}"
-LOCAL_RESULTS="${BLER_RESULTS_DIR}_${TIMESTAMP}"
+
+# Merge mode (set by merge_runs.sh): BLER_MERGE_DIRS is a ':'-separated list of existing
+# test_<ts> dirs to re-process TOGETHER (averaged). We read those dirs directly -- no logs are
+# copied, renamed, or symlinked, and 'latest' is not touched. Merging is inherently a single
+# host operation, so force localhost-only regardless of the configured bler_hosts.
+if [[ -n "$BLER_MERGE_DIRS" ]]; then
+    bler_hosts=(localhost)
+fi
+
+# Serial rfsim + vrtsim run: both backends' logs share one test_<ts> dir but need DIFFERENT SNR
+# references (rfsim=dBm, vrtsim=dBFS), so they cannot be plotted together. When both are enabled
+# (and we are not already in a per-backend sub-invocation or a merge), re-run this script once
+# per backend -- each pass filters logs by prefix and writes its own bler_results_<ts>_<backend>.
+if [[ "$has_rfsim" == true && "$has_vrtsim" == true && -z "$BLER_LOG_PREFIX" && -z "$BLER_MERGE_DIRS" ]]; then
+    echo "Both rfsim and vrtsim BLER tests enabled -> post-processing each backend separately"
+    for be in rfsim vrtsim; do
+        echo ""
+        echo "########## Backend: $be ##########"
+        BLER_LOG_PREFIX="$be" BLER_FORCE_BACKEND="$be" BLER_RESULTS_SUFFIX="_$be" bash "$0"
+    done
+    exit 0
+fi
+
+# Resolve the local test dir(s): the merge list if merging, else the 'latest' symlink, else the
+# newest test_2026* by mtime.
+resolve_local_test_dir() {
+    if [[ -n "$BLER_MERGE_DIRS" ]]; then
+        echo "$BLER_MERGE_DIRS"
+    elif [[ -d "${OAI_BASE_DIR}/latest" ]]; then
+        readlink -f "${OAI_BASE_DIR}/latest"
+    else
+        ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1
+    fi
+}
+
+# Name the results folder after the DATA's timestamp -- the test_<timestamp> dir that the
+# 'latest' symlink points to -- instead of the moment this script runs. This makes the
+# output folder match the test run it was derived from, and re-processing the same run
+# writes to the same bler_results_<timestamp> folder. Falls back to the current time if
+# there is no 'latest' symlink (e.g. a hand-made test dir).
+DATA_TIMESTAMP=""
+if [[ -d "${OAI_BASE_DIR}/latest" ]]; then
+    DATA_TIMESTAMP=$(basename "$(readlink -f "${OAI_BASE_DIR}/latest")" | grep -oE '[0-9]{8}_[0-9]{6}' | head -1)
+fi
+RESULTS_TIMESTAMP="${DATA_TIMESTAMP:-$TIMESTAMP}"
+
+# BLER_RESULTS_SUFFIX (e.g. "_rfsim"/"_vrtsim") is set by the per-backend split above so each
+# backend gets its own results folder; empty for a normal single-backend run.
+if [[ -n "$BLER_MERGE_DIRS" ]]; then
+    # Merge output goes NEXT TO the input run dirs: parent dir defaults to OAI_BASE_DIR (where
+    # the test_<ts> dirs live) and is overridable via merge_runs.sh -d <parent>.
+    LOCAL_RESULTS="${BLER_MERGE_OUT_PARENT:-$OAI_BASE_DIR}/bler_results_merged_${TIMESTAMP}${BLER_RESULTS_SUFFIX}"
+else
+    LOCAL_RESULTS="${BLER_RESULTS_DIR}_${RESULTS_TIMESTAMP}${BLER_RESULTS_SUFFIX}"
+fi
 
 mkdir -p $LOCAL_RESULTS
 
@@ -25,6 +118,27 @@ echo "=========================================="
 echo "BLER Results - Process & Plot"
 echo "=========================================="
 echo ""
+
+# Verify Python and the plotting dependencies (see requirements.txt in this folder).
+# We only check here (no auto-install) so nothing is fetched from the network without
+# the user's action. plot_results.py needs matplotlib/numpy/pandas/scipy; the extract
+# scripts are stdlib-only.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 not found. Install Python 3 to post-process BLER results."
+    exit 1
+fi
+MISSING_PY=$(python3 - <<'PY'
+import importlib.util
+mods = ["matplotlib", "numpy", "pandas", "scipy"]
+print(" ".join(m for m in mods if importlib.util.find_spec(m) is None))
+PY
+)
+if [[ -n "$MISSING_PY" ]]; then
+    echo "ERROR: missing Python packages for BLER post-processing: $MISSING_PY"
+    echo "Install them with:"
+    echo "  pip3 install -r \"$BLER_SCRIPT_DIR/requirements.txt\""
+    exit 1
+fi
 
 # Check if bler_hosts array is defined (already sourced above)
 if [[ -z "${bler_hosts[@]}" ]]; then
@@ -86,7 +200,7 @@ for hostname in "${bler_hosts[@]}"; do
 
     if [[ "$hostname" == "localhost" ]]; then
         # Process locally
-        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        test_dir=$(resolve_local_test_dir)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
@@ -95,8 +209,8 @@ for hostname in "${bler_hosts[@]}"; do
         echo "  Test directory: $test_dir"
         echo "  Processing logs..."
 
-        cd $SCRIPT_DIR
-        python3 process_bler_local.py \
+        cd $BLER_SCRIPT_DIR
+        BLER_TX_POWER_DBM=$BLER_TX_POWER_DBM BLER_PLOSS_DB=$BLER_PLOSS_DB BLER_LOG_PREFIX=$BLER_LOG_PREFIX python3 process_bler_local.py \
             $test_dir \
             $LOCAL_RESULTS/bler_${host_id}.csv \
             $LOCAL_RESULTS/bler_${host_id}_pc5_rx.csv
@@ -118,8 +232,8 @@ for hostname in "${bler_hosts[@]}"; do
         ssh_success=false
         for attempt in 1 2 3; do
             if timeout 300 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "
-                # Find most recent test directory
-                test_dir=\$(ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1)
+                # Prefer the 'latest' symlink (deterministic); fall back to newest test_* by mtime
+                test_dir=\$(if [ -d ~/openairinterface5g/latest ]; then readlink -f ~/openairinterface5g/latest; else ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1; fi)
                 if [[ -z \"\$test_dir\" ]]; then
                     echo '  ⚠ No test directory found'
                     exit 1
@@ -128,8 +242,8 @@ for hostname in "${bler_hosts[@]}"; do
                 echo \"  Test directory: \$test_dir\"
                 echo \"  Processing logs...\"
 
-                cd ~/ci_script/bler_test
-                python3 process_bler_local.py \
+                cd ~/$BLER_SCRIPT_DIR_REL
+                BLER_TX_POWER_DBM=$BLER_TX_POWER_DBM BLER_PLOSS_DB=$BLER_PLOSS_DB BLER_LOG_PREFIX=$BLER_LOG_PREFIX python3 process_bler_local.py \
                     \$test_dir \
                     /tmp/bler_${host_id}.csv \
                     /tmp/bler_${host_id}_pc5_rx.csv
@@ -170,7 +284,7 @@ echo "Combining Results from All Machines"
 echo "=========================================="
 
 # Combine all host CSVs
-cd $SCRIPT_DIR
+cd $BLER_SCRIPT_DIR
 
 # Create combined CSV by concatenating all host results
 echo "Combining MAC BLER results..."
@@ -225,21 +339,21 @@ for hostname in "${bler_hosts[@]}"; do
     echo "→ Processing $host_id ($hostname)..."
 
     if [[ "$hostname" == "localhost" ]]; then
-        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        test_dir=$(resolve_local_test_dir)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
         fi
         echo "  Test directory: $test_dir"
 
-        python3 $SCRIPT_DIR/extract_bler.py \
+        python3 $BLER_SCRIPT_DIR/extract_bler.py \
             "$test_dir" \
             $LOCAL_RESULTS/nearby_bler_${host_id}.csv \
             $LOCAL_RESULTS/nearby_ldpc_${host_id}.csv \
             nearby
     else
         # Try to find test directory with timeout
-        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1" 2>/dev/null)
+        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "if [ -d ~/openairinterface5g/latest ]; then readlink -f ~/openairinterface5g/latest; else ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1; fi" 2>/dev/null)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found or connection failed, skipping..."
             continue
@@ -247,7 +361,7 @@ for hostname in "${bler_hosts[@]}"; do
         echo "  Test directory: $test_dir"
 
         # Try SSH with timeout (increased for bilateral processing)
-        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "BLER_TX_POWER_DBM=$BLER_TX_POWER_DBM BLER_PLOSS_DB=$BLER_PLOSS_DB BLER_PC5_METHOD=$BLER_PC5_METHOD BLER_LOG_PREFIX=$BLER_LOG_PREFIX python3 ~/$BLER_SCRIPT_DIR_REL/extract_bler.py \
             $test_dir \
             /tmp/nearby_bler_${host_id}.csv \
             /tmp/nearby_ldpc_${host_id}.csv \
@@ -319,21 +433,21 @@ for hostname in "${bler_hosts[@]}"; do
     echo "→ Processing $host_id ($hostname)..."
 
     if [[ "$hostname" == "localhost" ]]; then
-        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        test_dir=$(resolve_local_test_dir)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
         fi
         echo "  Test directory: $test_dir"
 
-        python3 $SCRIPT_DIR/extract_bler.py \
+        python3 $BLER_SCRIPT_DIR/extract_bler.py \
             "$test_dir" \
             $LOCAL_RESULTS/syncref_rx_bler_${host_id}.csv \
             $LOCAL_RESULTS/syncref_rx_ldpc_${host_id}.csv \
             syncref
     else
         # Try to find test directory with timeout
-        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1" 2>/dev/null)
+        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "if [ -d ~/openairinterface5g/latest ]; then readlink -f ~/openairinterface5g/latest; else ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1; fi" 2>/dev/null)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found or connection failed, skipping..."
             continue
@@ -341,7 +455,7 @@ for hostname in "${bler_hosts[@]}"; do
         echo "  Test directory: $test_dir"
 
         # Try SSH with timeout (increased for bilateral processing)
-        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "BLER_TX_POWER_DBM=$BLER_TX_POWER_DBM BLER_PLOSS_DB=$BLER_PLOSS_DB BLER_PC5_METHOD=$BLER_PC5_METHOD BLER_LOG_PREFIX=$BLER_LOG_PREFIX python3 ~/$BLER_SCRIPT_DIR_REL/extract_bler.py \
             $test_dir \
             /tmp/syncref_rx_bler_${host_id}.csv \
             /tmp/syncref_rx_ldpc_${host_id}.csv \
@@ -407,27 +521,27 @@ for hostname in "${bler_hosts[@]}"; do
     echo "→ Processing $host_id ($hostname)..."
 
     if [[ "$hostname" == "localhost" ]]; then
-        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        test_dir=$(resolve_local_test_dir)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
         fi
         echo "  Test directory: $test_dir"
 
-        python3 $SCRIPT_DIR/extract_bler.py \
+        python3 $BLER_SCRIPT_DIR/extract_bler.py \
             "$test_dir" \
             $LOCAL_RESULTS/uu_dl_bler_${host_id}.csv \
             $LOCAL_RESULTS/uu_dl_ldpc_${host_id}.csv \
             uu_dl
     else
-        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1" 2>/dev/null)
+        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "if [ -d ~/openairinterface5g/latest ]; then readlink -f ~/openairinterface5g/latest; else ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1; fi" 2>/dev/null)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found or connection failed, skipping..."
             continue
         fi
         echo "  Test directory: $test_dir"
 
-        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "BLER_TX_POWER_DBM=$BLER_TX_POWER_DBM BLER_PLOSS_DB=$BLER_PLOSS_DB BLER_PC5_METHOD=$BLER_PC5_METHOD BLER_LOG_PREFIX=$BLER_LOG_PREFIX python3 ~/$BLER_SCRIPT_DIR_REL/extract_bler.py \
             $test_dir \
             /tmp/uu_dl_bler_${host_id}.csv \
             /tmp/uu_dl_ldpc_${host_id}.csv \
@@ -493,27 +607,27 @@ for hostname in "${bler_hosts[@]}"; do
     echo "→ Processing $host_id ($hostname)..."
 
     if [[ "$hostname" == "localhost" ]]; then
-        test_dir=$(ls -dt ${OAI_BASE_DIR}/test_2026* 2>/dev/null | head -1)
+        test_dir=$(resolve_local_test_dir)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found"
             continue
         fi
         echo "  Test directory: $test_dir"
 
-        python3 $SCRIPT_DIR/extract_bler.py \
+        python3 $BLER_SCRIPT_DIR/extract_bler.py \
             "$test_dir" \
             $LOCAL_RESULTS/uu_ul_bler_${host_id}.csv \
             $LOCAL_RESULTS/uu_ul_ldpc_${host_id}.csv \
             uu_ul
     else
-        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1" 2>/dev/null)
+        test_dir=$(timeout 10 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "if [ -d ~/openairinterface5g/latest ]; then readlink -f ~/openairinterface5g/latest; else ls -dt ~/openairinterface5g/test_2026* 2>/dev/null | head -1; fi" 2>/dev/null)
         if [[ -z "$test_dir" ]]; then
             echo "  ⚠ No test directory found or connection failed, skipping..."
             continue
         fi
         echo "  Test directory: $test_dir"
 
-        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "python3 ~/ci_script/bler_test/extract_bler.py \
+        if ! timeout 180 ssh -o ConnectTimeout=5 -o ConnectionAttempts=1 $hostname "BLER_TX_POWER_DBM=$BLER_TX_POWER_DBM BLER_PLOSS_DB=$BLER_PLOSS_DB BLER_PC5_METHOD=$BLER_PC5_METHOD BLER_LOG_PREFIX=$BLER_LOG_PREFIX python3 ~/$BLER_SCRIPT_DIR_REL/extract_bler.py \
             $test_dir \
             /tmp/uu_ul_bler_${host_id}.csv \
             /tmp/uu_ul_ldpc_${host_id}.csv \
@@ -553,7 +667,7 @@ echo "=========================================="
 
 # Generate nearby 4-panel plot
 echo "→ Nearby (UE Rx) 4-panel plot..."
-if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS nearby; then
+if python3 $BLER_SCRIPT_DIR/plot_results.py $LOCAL_RESULTS nearby; then
     echo "  ✓ nearby_bler_4panel.png"
 else
     echo "  ✗ Failed to generate nearby plot (see error above)"
@@ -561,7 +675,7 @@ fi
 
 # Generate syncref RX 4-panel plot
 echo "→ Syncref RX 4-panel plot..."
-if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS syncref_rx; then
+if python3 $BLER_SCRIPT_DIR/plot_results.py $LOCAL_RESULTS syncref_rx; then
     echo "  ✓ syncref_rx_bler_4panel.png"
 else
     echo "  ✗ Failed to generate syncref RX plot (see error above)"
@@ -569,7 +683,7 @@ fi
 
 # Generate Uu DL 4-panel plot
 echo "→ Uu DL (gNB→RelayUE) 4-panel plot..."
-if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS uu_dl; then
+if python3 $BLER_SCRIPT_DIR/plot_results.py $LOCAL_RESULTS uu_dl; then
     echo "  ✓ uu_dl_bler_4panel.png"
 else
     echo "  ✗ Failed to generate Uu DL plot (see error above)"
@@ -577,7 +691,7 @@ fi
 
 # Generate Uu UL 4-panel plot (only BLER + HARQ, no LDPC)
 echo "→ Uu UL (RelayUE→gNB) 2-panel plot..."
-if python3 $SCRIPT_DIR/plot_results.py $LOCAL_RESULTS uu_ul; then
+if python3 $BLER_SCRIPT_DIR/plot_results.py $LOCAL_RESULTS uu_ul; then
     echo "  ✓ uu_ul_bler_2panel.png"
 else
     echo "  ✗ Failed to generate Uu UL plot (see error above)"

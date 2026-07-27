@@ -1,0 +1,12 @@
+# Python dependencies for BLER post-processing.
+#
+# Only plot_results.py needs external packages; extract_bler.py and
+# process_bler_local.py use the Python standard library only.
+#
+# Install with:
+#   pip3 install -r requirements.txt
+#
+matplotlib
+numpy
+pandas
+scipy

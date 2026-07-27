@@ -9,10 +9,33 @@ NO EXTERNAL DEPENDENCIES - uses only standard library
 import re
 import sys
 import csv
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 from collections import defaultdict
+
+# SNR (dB) = TX_POWER_DBM - PLOSS_DB - noise, from the config via env (BLER_TX_POWER_DBM /
+# BLER_PLOSS_DB, set/forwarded by process_and_fetch_results.sh). Matches extract_bler.py so
+# vrtsim (and Uu) BLER use the same config-driven SNR mapping instead of a hardcoded 20 - 8.
+TX_POWER_DBM = float(os.environ.get("BLER_TX_POWER_DBM", 20))
+PLOSS_DB = float(os.environ.get("BLER_PLOSS_DB", 8))
+
+# Optional log-filename prefix filter (see extract_bler.py). When several backends share one
+# test dir (serial rfsim+vrtsim run), BLER_LOG_PREFIX="rfsim"/"vrtsim" restricts to one backend.
+LOG_PREFIX = os.environ.get("BLER_LOG_PREFIX", "")
+
+# test_dir may be a single directory OR a ':'-separated list of directories (merge_runs.sh
+# re-processes several runs TOGETHER without copying/renaming logs). Glob across all of them;
+# the averaging by (mcs, noise, interface) below then averages the runs.
+def _split_dirs(test_dir):
+    return [Path(d).expanduser() for d in str(test_dir).split(':') if d]
+
+def _glob_all(paths, pattern):
+    files = []
+    for p in paths:
+        files.extend(p.glob(f"{LOG_PREFIX}{pattern}"))
+    return sorted(files)
 
 def extract_pc5_tx_from_log(log_file, interface_type):
     """Extract PC5_TX (scheduler-side) BLER from syncref logs"""
@@ -25,8 +48,7 @@ def extract_pc5_tx_from_log(log_file, interface_type):
 
     mcs = int(mcs_match.group(1))
     noise = int(noise_match.group(1))
-    ploss_db = 8
-    snr = 20 - ploss_db - noise
+    snr = TX_POWER_DBM - PLOSS_DB - noise
 
     try:
         with open(log_file, 'r', errors='ignore') as f:
@@ -90,8 +112,7 @@ def extract_pc5_rx_summary_from_log(log_file, interface_type):
 
     mcs = int(mcs_match.group(1))
     noise = int(noise_match.group(1))
-    ploss_db = 8
-    snr = 20 - ploss_db - noise
+    snr = TX_POWER_DBM - PLOSS_DB - noise
 
     try:
         with open(log_file, 'r', errors='ignore') as f:
@@ -136,8 +157,7 @@ def extract_mac_bler_from_log(log_file, interface_type):
 
     mcs = int(mcs_match.group(1))
     noise = int(noise_match.group(1))
-    ploss_db = 8
-    snr = 20 - ploss_db - noise
+    snr = TX_POWER_DBM - PLOSS_DB - noise
 
     try:
         with open(log_file, 'r', errors='ignore') as f:
@@ -270,7 +290,7 @@ def convert_bilateral_row_to_pc5_rx_format(row):
     return {
         'mcs': int(row['mcs']),
         'noise': int(row['noise']),
-        'snr': int(row['snr']),
+        'snr': float(row['snr']),  # config-driven SNR is a float (e.g. 17.0); int() would raise
         'total': total,
         'errors': errors,
         'bler': bler,
@@ -350,9 +370,9 @@ def extract_bilateral_bler_data(test_dir, script_dir):
 
     return all_pc5_rx_data
 
-def process_relay_ue_logs(results_path):
+def process_relay_ue_logs(results_paths):
     """
-    Process Relay UE (syncref) logs for PC5 interface
+    Process Relay UE (syncref) logs for PC5 interface (across one or more test dirs)
 
     Returns:
         tuple: (harq_data, pc5_rx_data)
@@ -360,7 +380,7 @@ def process_relay_ue_logs(results_path):
     harq_data = []
     pc5_rx_data = []
 
-    relay_logs = sorted(results_path.glob("*mcs*_noise*_result_nrUE_syncref.log"))
+    relay_logs = _glob_all(results_paths, "*mcs*_noise*_result_nrUE_syncref.log")
     print(f"  Processing {len(relay_logs)} Relay UE logs...")
 
     for log in relay_logs:
@@ -381,9 +401,9 @@ def process_relay_ue_logs(results_path):
 
     return harq_data, pc5_rx_data
 
-def process_remote_ue_logs(results_path):
+def process_remote_ue_logs(results_paths):
     """
-    Process Remote UE (nearby) logs for PC5 interface
+    Process Remote UE (nearby) logs for PC5 interface (across one or more test dirs)
 
     Returns:
         tuple: (harq_data, pc5_rx_data)
@@ -391,7 +411,7 @@ def process_remote_ue_logs(results_path):
     harq_data = []
     pc5_rx_data = []
 
-    remote_logs = sorted(results_path.glob("*mcs*_noise*_result_nearby.log"))
+    remote_logs = _glob_all(results_paths, "*mcs*_noise*_result_nearby.log")
     print(f"  Processing {len(remote_logs)} Remote UE logs...")
 
     for log in remote_logs:
@@ -407,16 +427,16 @@ def process_remote_ue_logs(results_path):
 
     return harq_data, pc5_rx_data
 
-def process_gnb_logs(results_path):
+def process_gnb_logs(results_paths):
     """
-    Process gNB logs for Uu interface (DL and UL)
+    Process gNB logs for Uu interface (DL and UL) (across one or more test dirs)
 
     Returns:
         list: HARQ data for both DL and UL
     """
     harq_data = []
 
-    gnb_logs = sorted(results_path.glob("*mcs*_noise*_result_gNB.log"))
+    gnb_logs = _glob_all(results_paths, "*mcs*_noise*_result_gNB.log")
     print(f"  Processing {len(gnb_logs)} gNB logs...")
 
     for log in gnb_logs:
@@ -555,29 +575,30 @@ def process_local_logs(test_dir, output_csv, output_pc5_rx_csv):
 
     Main orchestrator function that coordinates all extraction and processing steps
     """
-    results_path = Path(test_dir)
+    results_paths = _split_dirs(test_dir)
     script_dir = Path(__file__).parent
 
     print(f"Processing logs in: {test_dir}")
 
-    # Step 1: Extract bilateral BLER data using extract_bler.py
+    # Step 1: Extract bilateral BLER data using extract_bler.py (test_dir may be a ':'-list;
+    # extract_bler.py globs across all of them too).
     all_pc5_rx_data = extract_bilateral_bler_data(test_dir, script_dir)
 
     # Step 2: Process logs for HARQ-based BLER
     all_harq_data = []
 
     # PC5 Relay UE (syncref)
-    relay_harq, relay_pc5_rx = process_relay_ue_logs(results_path)
+    relay_harq, relay_pc5_rx = process_relay_ue_logs(results_paths)
     all_harq_data.extend(relay_harq)
     all_pc5_rx_data.extend(relay_pc5_rx)
 
     # PC5 Remote UE (nearby)
-    remote_harq, remote_pc5_rx = process_remote_ue_logs(results_path)
+    remote_harq, remote_pc5_rx = process_remote_ue_logs(results_paths)
     all_harq_data.extend(remote_harq)
     all_pc5_rx_data.extend(remote_pc5_rx)
 
     # Uu from gNB logs
-    gnb_harq = process_gnb_logs(results_path)
+    gnb_harq = process_gnb_logs(results_paths)
     all_harq_data.extend(gnb_harq)
 
     # Step 3: Validate data
@@ -607,8 +628,9 @@ def main():
     output_csv = sys.argv[2]
     output_pc5_rx_csv = sys.argv[3] if len(sys.argv) > 3 else output_csv.replace('.csv', '_pc5_rx.csv')
 
-    if not Path(test_dir).exists():
-        print(f"Error: Test directory not found: {test_dir}")
+    missing = [str(d) for d in _split_dirs(test_dir) if not d.exists()]
+    if missing:
+        print(f"Error: Test directory not found: {', '.join(missing)}")
         sys.exit(1)
 
     success = process_local_logs(test_dir, output_csv, output_pc5_rx_csv)

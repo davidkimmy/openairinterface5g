@@ -5,8 +5,8 @@
 # Kills test scripts, softmodems, and cleans up all processes
 #############################################################
 
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-SL_TEST_CONFIG_FILE="${SCRIPT_DIR}/../run_sl_test_config.sh"
+BLER_SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+SL_TEST_CONFIG_FILE="${BLER_SCRIPT_DIR}/../run_sl_test_config.sh"
 
 # Source config to get bler_hosts array
 if [[ -f "$SL_TEST_CONFIG_FILE" ]]; then
@@ -160,5 +160,5 @@ for hostname in "${bler_hosts[@]}"; do
 done
 echo ""
 echo "To verify status:"
-echo "  $SCRIPT_DIR/check_test_status.sh"
+echo "  $BLER_SCRIPT_DIR/check_test_status.sh"
 echo "=========================================="

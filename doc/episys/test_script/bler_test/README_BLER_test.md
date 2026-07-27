@@ -4,18 +4,42 @@ Comprehensive guide for automated Block Error Rate (BLER) performance characteri
 
 ## Overview
 
-The BLER testing framework provides automated performance characterization across the full MCS range (0-28) and SNR sweep (-12 to 4 dB) using **RFSim (RF Simulator)**. It supports both local execution and distributed parallel testing across multiple machines for faster completion.
+The BLER testing framework provides automated performance characterization across the full MCS range (0-28) and a noise/SNR sweep using either **RFSim (RF Simulator)** or the **VRTSim shared-memory radio** as the backend. It supports both local execution and distributed parallel testing across multiple machines for faster completion.
 
 The BLER test runs over the **SL Mode 1 U2N relay** topology (gNB + Relay UE + Remote UE), so it exercises both the PC5 sidelink and the Uu interface. Each iteration restarts the 5G Core and brings up the three nodes in order (gNB → Remote UE → Relay UE); the Remote UE then **registers with the 5G Core through the Relay UE** before the ping runs. Because the Remote UE's IP is assigned by the Core during registration (it is no longer a fixed address), the BLER ping binds to the Remote UE's `oaitun_ue2` interface (`ping -I oaitun_ue2 8.8.8.8`) rather than a hardcoded IP.
 
-> **Note**: This framework is designed for **RFSim testing** with configurable noise injection. It relies on the rfsimulator channel model to inject noise power, so there is **no VRTSim or USRP BLER variant** — the only BLER test is `rfsim_slmode1_bler_test_on_local_host`. Use the VRTSim shared-memory backend for the functional PC5/relay tests documented in [README_sl_test.md](../README_sl_test.md), not for BLER characterization.
+> **Note**: Two BLER backends are available, both running over the same SL Mode 1 U2N relay topology:
+>
+> - **`rfsim_slmode1_bler_test_on_local_host`** — RFSim. Noise/path loss are injected via the rfsimulator channel model (`--rfsimulator.options chanmod --channelmod.modellist_rfsimu_1.[N].noise_power_dB/ploss_dB`). Uses `noise_power_array` and supports distributed/parallel multi-host runs.
+> - **`vrtsim_slmode1_bler_test_on_local_host`** — VRTSim shared-memory radio, **local host only**. Noise/path loss are injected on the **PC5 sidelink** (Relay + Remote UE) via `--vrtsim.chanmod 1` and `--channelmod.modellist_vrtsim.[N].noise_power_dB/ploss_dB`; the **gNB Uu is kept clean** (`--vrtsim.chanmod 0`) so the relay can sync/register. Uses `vrtsim_noise_power_array`, because VRTSim's noise scale differs from RFSim's (`100` = off, more-negative = less noise, `~-30 dB` already breaks sync). Select it by enabling this test in `enabled_tests` (the dispatcher then picks `vrtsim_noise_power_array` automatically).
+>
+> There is still **no USRP BLER variant**. For functional (non-BLER) PC5/relay tests, see [README_sl_test.md](../README_sl_test.md).
 
 > **Note**: SL Mode 1 requires the OAI 5G Core Network and Remote UE registration. Both the Relay UE IMSI (`001010000000001`, launched with `--node-number 2`) and the Remote UE IMSI (`001010000000002`, launched with `--node-number 3`) must be provisioned in the Core. The test restarts the Core automatically at the start of each iteration.
 
-> **Note**: We assume that the test script files are located under ~/ci_script folder specified in the alternative way in the [README_sl_test.md](../README_sl_test.md).
+> **Note**: The test scripts live in two directories under the repository (relative to the repo root):
+>
+> - **`doc/episys/test_script/`** — the main test driver and configs: `run_sl_test.sh`, `run_sl_test_config.sh`, and the per-host worker configs `run_sl_test_config_host*.sh`.
+> - **`doc/episys/test_script/bler_test/`** — the BLER-specific tools: `check_test_status.sh`, `process_and_fetch_results.sh`, `merge_runs.sh`, `extract_bler.py`, `plot_results.py`, `process_bler_local.py`.
+>
+> For a default checkout at `~/openairinterface5g`, these resolve to `~/openairinterface5g/doc/episys/test_script` and `~/openairinterface5g/doc/episys/test_script/bler_test`. For example, you **run** the test from the first directory:
+>
+> ```bash
+> cd ~/openairinterface5g/doc/episys/test_script
+> ./run_sl_test.sh
+> ```
+>
+> and **monitor / post-process** from the `bler_test/` subfolder:
+>
+> ```bash
+> cd ~/openairinterface5g/doc/episys/test_script/bler_test
+> ./check_test_status.sh
+> ```
+>
+> See [README_sl_test.md](../README_sl_test.md) for more details.
 
 **Key Features:**
-- **RFSim-based testing**: Uses RF simulator with controlled noise power injection
+- **RFSim or VRTSim backend**: RFSim injects noise via the rfsimulator channel model (supports multi-host); VRTSim injects PC5 noise/path loss via its channel model (local host only, gNB Uu kept clean)
 - Full MCS coverage (0-28) with all modulation schemes (QPSK, 16-QAM, 64-QAM)
 - SNR sweep across 17 noise power levels (-12 to 4 dB)
 - Multiple test iterations for statistical confidence
@@ -157,6 +181,28 @@ grep ENABLE_BLER_INSTRUMENTATION ~/openairinterface5g/cmake_targets/ran_build/bu
 - Smaller binary size
 - No log clutter from BLER statistics
 
+## Requirements / Dependencies
+
+**System tools** (on every host that runs the test):
+- **Docker + `docker compose`** — the 5G Core is torn down and brought back up at the start of each BLER iteration.
+- **`ping`** (iputils) — the per-point measurement traffic.
+- **`python3`** — used for result extraction and plotting.
+- **`ssh`** (openssh-client) — only for distributed/parallel multi-host runs.
+- The OAI build (`nr-softmodem`, `nr-uesoftmodem`) and the OAI 5G Core (`oai-cn5g`) with both IMSIs provisioned (see the Prerequisites sections above).
+
+**Python packages** (for post-processing / plots, listed in [`requirements.txt`](requirements.txt)):
+- `matplotlib`, `numpy`, `pandas`, `scipy` — required by `plot_results.py`.
+- `extract_bler.py` and `process_bler_local.py` use only the Python standard library.
+
+Install the Python packages once with:
+
+```bash
+cd ~/openairinterface5g/doc/episys/test_script/bler_test
+pip3 install -r requirements.txt
+```
+
+`process_and_fetch_results.sh` checks for `python3` and these packages before plotting; if any are missing it prints the `pip3 install -r requirements.txt` command and stops (it does not auto-install, so nothing is fetched from the network without your action).
+
 ## System Performance Configuration
 
 BLER tests adapt to different system speeds (fast servers vs. slow VMs/containers).
@@ -197,14 +243,24 @@ Comprehensive BLER characterization on a single machine using **RFSim (RF Simula
   - UU_RX_SUMMARY: Relay UE downlink BLER (Uu DL from UE perspective)
 - **Pass criteria:** Remote UE registers and completes the full sweep, generating CSV outputs (a ping point passes when at least one packet returns through the relay)
 
+### `vrtsim_slmode1_bler_test_on_local_host`
+PC5 BLER characterization on a single machine using the **VRTSim shared-memory radio**. Same SL Mode 1 U2N relay topology and per-iteration flow as the RFSim test above; the difference is where and how the channel impairment is applied.
+
+- **Test method**: VRTSim with `--vrtsim.chanmod 1`; noise/path loss applied on the **PC5 sidelink only** (Relay + Remote UE) via `--channelmod.modellist_vrtsim.[0/1].noise_power_dB/ploss_dB`. The **gNB Uu is kept clean** (`--vrtsim.chanmod 0`) because VRTSim's cold cell-search breaks under any Uu noise, which would stop the relay from syncing/registering.
+- **Scope**: local host only (VRTSim is a shared-memory radio; no multi-host/parallel variant).
+- **Noise sweep**: uses `vrtsim_noise_power_array` (selected automatically by the dispatcher for `vrtsim_*bler*` tests). VRTSim noise scale: `100` = off, more-negative = less noise, `~-30 dB` breaks sync — so it is **not** the same range as RFSim's `noise_power_array`.
+- **Note**: `--vrtsim.chanmod` is process-global, so the Relay's noise also touches its Uu UL; that side effect is intentionally ignored for this PC5 BLER test.
+- **Statistics**: `bler_test` populates the PSSCH TX/RX figures from each UE's own log (TX from the transmitter, RX from the receiver) so the summary shows both directions (Nearby RX / SyncRef TX and SyncRef RX / Nearby TX).
+
 ## Running BLER Tests Locally
 
 **1. Configure test in `run_sl_test_config.sh`:**
 
 ```bash
-# Enable BLER test
+# Enable BLER test — pick ONE backend:
 enabled_tests=(
     rfsim_slmode1_bler_test_on_local_host
+    #vrtsim_slmode1_bler_test_on_local_host   # local host only; PC5 noise (see note above)
 )
 
 # Use test_profile for BLER configuration
@@ -214,13 +270,15 @@ test_profile="bler"
 # - num_repeat=12                    # Number of iterations (split across machines)
 # - duration=85                      # Duration per test (seconds)
 # - mcs_array=($(seq 0 28))         # Full MCS range: 0 to 28
-# - noise_power_array=($(seq -12 4)) # Noise power: -12 to 4 dB (17 values)
+# - noise_power_array=($(seq -12 4)) # RFSim noise sweep: -12 to 4 dB (17 values)
+# - vrtsim_noise_power_array=(...)   # VRTSim noise sweep (different scale; used when the
+#                                    #   enabled test is vrtsim_*). ~-30 dB breaks sync.
 ```
 
 **2. Run the test:**
 
 ```bash
-cd ~/ci_script
+cd ~/openairinterface5g/doc/episys/test_script
 ./run_sl_test.sh
 ```
 
@@ -231,11 +289,11 @@ After launching `./run_sl_test.sh`, you may monitor the test progress in paralle
 **Use the monitoring script (Optional but recommended):**
 ```bash
 # Check status of all machines with progress details
-cd ~/ci_script
+cd ~/openairinterface5g/doc/episys/test_script/bler_test
 ./check_test_status.sh
 
 # Or watch continuously (updates every 30 seconds)
-watch -n 30 '~/ci_script/check_test_status.sh'
+watch -n 30 '~/openairinterface5g/doc/episys/test_script/bler_test/check_test_status.sh'
 ```
 
 The monitoring script shows:
@@ -348,11 +406,11 @@ Each machine logs independently to its own `~/openairinterface5g/test_<timestamp
 **Use the monitoring script (Optional but recommended):**
 ```bash
 # Check status of all machines with progress details
-cd ~/ci_script
+cd ~/openairinterface5g/doc/episys/test_script/bler_test
 ./check_test_status.sh
 
 # Or watch continuously (updates every 30 seconds)
-watch -n 30 '~/ci_script/check_test_status.sh'
+watch -n 30 '~/openairinterface5g/doc/episys/test_script/bler_test/check_test_status.sh'
 ```
 
 The monitoring script shows:
@@ -379,16 +437,17 @@ ssh l5 "tail -f ~/openairinterface5g/test_*/commands.txt"
 
 After tests complete (locally or distributed), collect results from all machines and generate plots.
 
-**Important:** The `process_and_fetch_results.sh` script automatically finds the **most recent** test directory on each machine using:
+**Important:** The `process_and_fetch_results.sh` script automatically finds the test directory on each machine. It prefers the `latest` symlink that `run_sl_test.sh` repoints to the run it just launched (deterministic), falling back to the newest `test_2026*` by mtime:
 ```bash
-ls -dt ~/openairinterface5g/test_2026* | head -1
+[ -d ~/openairinterface5g/latest ] && readlink -f ~/openairinterface5g/latest \
+  || ls -dt ~/openairinterface5g/test_2026* | head -1
 ```
-You don't need to specify the exact timestamp. The script processes whichever test ran most recently.
+You don't need to specify the exact timestamp. The output folder is named after the data's timestamp (`bler_results_<timestamp>`, parsed from the `latest` target), so re-processing the same run overwrites the same folder instead of piling up new ones.
 
 **Run the collection and plotting script:**
 
 ```bash
-cd ~/ci_script
+cd ~/openairinterface5g/doc/episys/test_script/bler_test
 ./process_and_fetch_results.sh
 ```
 
@@ -415,13 +474,9 @@ Extracting Nearby (RX) BLER Data
 ==========================================
 → Processing host1 (localhost)...
   Test directory: ~/openairinterface5g/test_<timestamp>
-  Using MAX BLER strategy for nearby
-  Step 1: RX method...
-    RX: 234 BLER rows
-  Step 2: Bilateral method...
-    Bilateral: 234 BLER rows
-  Step 3: Merging with MAX...
-    Merged: 234 BLER rows
+  Using RX method for nearby
+  Processing 234 nearby logs...
+  ✓ Saved 234 BLER data points
 
 [... host2, host3, host4 processing ...]
 
@@ -435,7 +490,7 @@ Extracting Syncref RX BLER Data
 ==========================================
 → Processing host1 (localhost)...
   Test directory: ~/openairinterface5g/test_<timestamp>
-  Using MAX BLER strategy for syncref
+  Using RX method for syncref
   [... extraction continues ...]
 
 Combining syncref RX BLER...
@@ -511,7 +566,7 @@ Opening plots...
 2. **Extract Nearby (PC5 RX) BLER data** using `extract_bler.py`:
    - Processes each machine's test logs (on remote or local via SSH)
    - Extracts from `result_nearby_*.log` files
-   - Uses MAX BLER strategy (RX method + bilateral method, taking maximum)
+   - Uses the PC5 method set by `BLER_PC5_METHOD` (default `rx`; see "PC5 BLER Method" below)
    - Combines into:
      - `nearby_bler_combined.csv` - Nearby UE BLER data
      - `nearby_ldpc_combined.csv` - Nearby UE LDPC iterations
@@ -519,7 +574,7 @@ Opening plots...
 3. **Extract Syncref RX (PC5 RX) BLER data** using `extract_bler.py`:
    - Processes each machine's test logs
    - Extracts from `result_nrUE_syncref_*.log` files
-   - Uses MAX BLER strategy
+   - Uses the PC5 method set by `BLER_PC5_METHOD` (default `rx`)
    - Combines into:
      - `syncref_rx_bler_combined.csv` - Syncref RX BLER data
      - `syncref_rx_ldpc_combined.csv` - Syncref RX LDPC iterations
@@ -654,16 +709,60 @@ head uu_dl_bler_combined.csv
 - 44 per-machine CSV files (11 per machine)
 - **Total: 55 files**
 
+## Running Both Backends Together (rfsim + vrtsim, serial)
+
+You may enable **both** BLER backends at once; they run back-to-back (rfsim sweep, then vrtsim sweep) in a single `run_sl_test.sh` invocation:
+
+```bash
+enabled_tests=(
+    rfsim_slmode1_bler_test_on_local_host
+    vrtsim_slmode1_bler_test_on_local_host
+)
+```
+
+Both write into the same `test_<ts>/` dir, but their logs are distinguished by the test-name prefix (`rfsim_…` / `vrtsim_…`). Post-processing handles this automatically: when `process_and_fetch_results.sh` sees both backends enabled, it **splits by backend** — running once per backend, filtering logs by prefix (`BLER_LOG_PREFIX`), each with its own SNR reference — and writes **two** result folders:
+
+```
+bler_results_<ts>_rfsim/     # SNR ref = tx_power_dbm (dBm)
+bler_results_<ts>_vrtsim/    # SNR ref = vrtsim_tx_power_dbfs (dBFS)
+```
+
+This keeps the two backends' SNR mappings correct instead of mixing them under one reference. (Single-backend runs are unchanged — one `bler_results_<ts>/`.)
+
+## Merging Multiple Test Runs
+
+`merge_runs.sh` re-processes several existing `test_<timestamp>` run directories **together (averaged)** into a single set of plots/CSVs. It passes the folder names straight to the extractors — **no log file is copied, renamed, or symlinked**, and the `latest` symlink is not touched. This lets you run more tests later and fold them into the result without losing the earlier runs.
+
+```bash
+cd ~/openairinterface5g
+
+# average two (or more) runs; output -> ~/openairinterface5g/bler_results_merged_<ts>/
+doc/episys/test_script/bler_test/merge_runs.sh test_20260724_140437 test_20260724_142858
+
+# incremental: add a third run later — earlier runs are re-read, not lost
+doc/episys/test_script/bler_test/merge_runs.sh \
+    test_20260724_140437 test_20260724_142858 test_20260724_144424
+
+# custom output parent (default is OAI_BASE_DIR, i.e. where the test_<ts> dirs live)
+doc/episys/test_script/bler_test/merge_runs.sh -d /data/bler_out test_A test_B
+```
+
+- Folder args may be absolute or relative to `~/openairinterface5g`.
+- The output folder `bler_results_merged_<ts>/` is created **next to the input run dirs** (parent = `OAI_BASE_DIR`, overridable with `-d`).
+- This is a **local, single-host** operation (post-processing is forced to localhost); it works by having `extract_bler.py` / `process_bler_local.py` glob across all the listed folders, so every run's per-`(mcs, snr)` points are averaged together in the plot.
+
+Under the hood, `merge_runs.sh` hands the folder list to `process_and_fetch_results.sh` via `BLER_MERGE_DIRS` (a `:`-separated list); the same extractors also accept that list directly if you call them manually.
+
 ## Understanding BLER Plots
 
 Each 4-panel plot provides comprehensive performance analysis:
 
 ### Panel 1: PC5 MAC BLER vs SNR (Top Left)
 - BLER curves for MCS > 7 (filtered for clarity)
-- Modulation order ellipses: QPSK, 16-QAM, 64-QAM
+- Modulation order ellipses: QPSK, 16-QAM, 64-QAM — shown for rfsim/Uu
 - Shows how each MCS performs across SNR range
 - Lower BLER = better performance
-- SNR range: 5 to 25 dB
+- x-axis auto-focuses on the swept SNR range (SNR = TX_ref - ploss - noise)
 
 ### Panel 2: HARQ Rounds Distribution (Top Right)
 - Stacked bar chart showing HARQ retransmission behavior
@@ -719,10 +818,15 @@ The `process_and_fetch_results.sh` script orchestrates two Python scripts in seq
 
 If you need to process logs manually without `process_and_fetch_results.sh`:
 
+> **Tip:** the `<test_dir>` argument to `extract_bler.py` (and `process_bler_local.py`) may be a
+> single directory **or** a `:`-separated list of directories, e.g.
+> `test_A:test_B:test_C` — the extractor globs across all of them and the plot averages the
+> runs. This is what `merge_runs.sh` uses under the hood.
+
 **1. Extract PC5 Nearby UE RX BLER data:**
 
 ```bash
-cd ~/ci_script/bler_test
+cd ~/openairinterface5g/doc/episys/test_script/bler_test
 python3 extract_bler.py \
     ~/openairinterface5g/test_<timestamp> \
     nearby_bler.csv \
@@ -796,9 +900,34 @@ noise_power_array=($(seq -12 4))  # 17 noise levels
 duration=30                       # Seconds per test
 num_repeat=10                     # Iterations per (MCS, noise) combo
 
-# Path loss (RFSim)
-ploss_db=8                        # dB
+# SNR mapping (used by the extractors when plotting):  SNR = TX_ref - ploss_db - noise
+ploss_db=8                        # path loss (dB)
+tx_power_dbm=20                   # RFSim TX reference (dBm)
+vrtsim_tx_power_dbfs=-30          # VRTSim TX reference (dBFS); used instead of tx_power_dbm
+                                  #   when the enabled test is vrtsim_* (vrtsim noise is a
+                                  #   dBFS floor, so SNR is computed in the dBFS domain)
+
+# PC5 BLER extraction method (nearby/syncref only; Uu always uses rx)
+bler_pc5_method="rx"              # rx (default) | rx_preferred | max
 ```
+
+### SNR mapping and the PC5 BLER method
+
+**SNR** is derived from the swept noise power as `SNR = TX_ref − ploss_db − noise`.
+`process_and_fetch_results.sh` detects the backend and exports the TX reference to the
+extractors: RFSim uses `tx_power_dbm` (dBm), VRTSim uses `vrtsim_tx_power_dbfs` (dBFS, since
+VRTSim's `noise_power_dB` is a dBFS floor). The values reach the Python via
+`BLER_TX_POWER_DBM` / `BLER_PLOSS_DB` — there is no hardcoded `20 − 8` any more.
+
+**`bler_pc5_method`** (env `BLER_PC5_METHOD`) selects how PC5 (nearby/syncref) BLER is computed:
+
+| value | meaning | when to use |
+| --- | --- | --- |
+| `rx` (default) | RX-summary only — the PHY's own direct decode-error count, one row per log; the plot averages them. Same method as Uu. | Normal runs; most accurate. |
+| `rx_preferred` | RX-summary, with the two-sided **bilateral** estimator used only as a fallback where RX rows are missing. | To fill coverage gaps. |
+| `max` | Per point, take `max(RX, bilateral)`. | Conservative upper bound. |
+
+(The bilateral estimator is `BLER = (TX_by_peer − RX_ok_by_me) / TX_by_peer`; it is two-sided and artifact-prone, which is why `rx` is the default.)
 
 ## Troubleshooting BLER Tests
 
@@ -872,9 +1001,9 @@ If tests experience timing issues (TUN interface not ready, sync failures):
   ```bash
   ssh l3 "cd ~/openairinterface5g && ./build_oai --nrUE --gNB -w SIMU -c --cmake-opt \"-DENABLE_BLER_INSTRUMENTATION=ON\""
   ```
-- Check if config was copied: `ssh l3 "ls ~/ci_script/run_sl_test_config_host*.sh"`
-- Verify config is executable: `ssh l3 "chmod +x ~/ci_script/run_sl_test_config_host1.sh"`
-- Manually trigger on remote: `ssh l3 "cd ~/ci_script && BLER_CONFIG_FILE=run_sl_test_config_host1.sh ./run_sl_test.sh"`
+- Check if config was copied: `ssh l3 "ls ~/openairinterface5g/doc/episys/test_script/run_sl_test_config_host*.sh"`
+- Verify config is executable: `ssh l3 "chmod +x ~/openairinterface5g/doc/episys/test_script/run_sl_test_config_host1.sh"`
+- Manually trigger on remote: `ssh l3 "cd ~/openairinterface5g/doc/episys/test_script && BLER_CONFIG_FILE=run_sl_test_config_host1.sh ./run_sl_test.sh"`
 
 ### Process script shows wrong MCS display
 - Note: The script displays hardcoded MCS strings (e.g., "MCS 0,4") for visual separation only
