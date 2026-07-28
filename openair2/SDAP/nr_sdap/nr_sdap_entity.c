@@ -289,20 +289,20 @@ static void
 nr_sdap_rx_entity(nr_sdap_entity_t *entity, int drb_id, int is_gnb, int pdusession_id, ue_id_t ue_id, char *buf, int size)
 {
   int qfi = -1;
+  /* SL U2N relay (gNB): the relay-specific DRB (drb_id > 1) carries the remote UE's relayed traffic as raw
+   * IP with NO SDAP header and NO qfi2drb mapping. It must be evaluated BEFORE the map lookup (which returns
+   * NULL for this DRB), must NOT be dropped by the no-mapping check, and must take the no-header path
+   * (delivered raw to GTP; the IP first byte must not be misread as a QFI). The relay's own DRB 1 (headered,
+   * QFI-mapped) is unaffected. (episys SL relay data plane, ported onto develop's refactored qfi2drb API.) */
+  const bool relay_remote_drb = is_gnb && get_softmodem_params()->relay_type > 0 && drb_id > 1;
   const qfi2drb_t *map = nr_sdap_drb_lookup(entity, drb_id);
-  if (!map) {
+  if (!map && !relay_remote_drb) {
     LOG_W(SDAP, "Dropping RX payload: DRB %d has no qfi2drb_table entry (ue=%ld, pdu_session=%d)\n", drb_id, ue_id, pdusession_id);
     return;
   }
-  const int drb_role = map->entity_role;
-  bool sdap_header_rx = is_gnb ? (drb_role & SDAP_UL_RX) : (drb_role & SDAP_DL_RX);
-  /* SL U2N relay (gNB): the relay-specific DRB (drb_id > 1) carries the remote UE's relayed traffic as raw
-   * IP with NO SDAP header (the remote's SL DRB has sl-SDAP-Header absent). Bypass header parsing for it,
-   * else the RX mis-reads the IP first byte (0x45) as QFI=5, finds no mapping, and drops it. The relay's own
-   * DRB 1 traffic (headered, QFI-mapped) is unaffected. (episys SL relay data plane, ported onto develop's
-   * refactored qfi2drb map API.) */
-  if (is_gnb && get_softmodem_params()->relay_type > 0 && drb_id > 1)
-    sdap_header_rx = false;
+  const int drb_role = map ? map->entity_role : 0;
+  bool sdap_header_rx = relay_remote_drb ? false
+                                         : (is_gnb ? (drb_role & SDAP_UL_RX) : (drb_role & SDAP_DL_RX));
 
   if (is_gnb) {
     if (sdap_header_rx) {
