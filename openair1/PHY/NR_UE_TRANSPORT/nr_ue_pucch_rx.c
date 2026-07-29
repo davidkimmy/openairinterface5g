@@ -307,8 +307,6 @@ int8_t nr_ue_decode_pucch0(PHY_VARS_NR_UE *ue,
         temp += squaredMod(corr[aa][0]) + squaredMod(corr[aa][1]);
     }
     else AssertFatal(1==0,"shouldn't happen\n");
-    LOG_D(PHY, "Sequence %d temp %ld vs. xrtmag %ld xrtmag_next %ld, slot %d rx atnennas %u\n",
-          i, temp, xrtmag, xrtmag_next, slot, frame_parms->nb_antennas_rx);
     if (temp > xrtmag) {
       xrtmag_next = xrtmag;
       xrtmag = temp;
@@ -330,10 +328,5 @@ int8_t nr_ue_decode_pucch0(PHY_VARS_NR_UE *ue,
 #endif
   index = maxpos;
   uint8_t ack_nack = !(index&0x01);
-  LOG_D(PHY,
-        "[PSFCH RX] %d.%d HARQ %s\n",
-        frame,
-        slot,
-        ack_nack == 0 ? "ACK" : "NACK");
   return ack_nack;
 }

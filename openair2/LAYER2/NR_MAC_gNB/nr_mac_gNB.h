@@ -657,6 +657,11 @@ typedef struct sl_nr_mac_params {
   uint16_t decoded_DFN;
   uint16_t decoded_slot;
   NR_bler_options_t sl_bler;
+  /* Physical sidelink slot bitmap (one bit per absolute slot), built from the
+   * TDD pattern + UL-slot bitmap + sl_TimeResource so the gNB derives PSFCH
+   * occasions with the same rule as the UE. */
+  BIT_STRING_t phy_sl_bitmap;
+  uint16_t phy_sl_map_size;
 } sl_nr_mac_params_t;
 
 /*! \brief UE list used by gNB to order UEs/CC for scheduling*/

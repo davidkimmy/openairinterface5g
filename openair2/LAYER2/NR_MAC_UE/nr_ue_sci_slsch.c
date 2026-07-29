@@ -524,6 +524,9 @@ void config_pscch_pdu_rx(sl_nr_rx_config_pscch_pdu_t *nr_sl_pscch_pdu,
   nr_sl_pscch_pdu->l_subch=1;
   //number of symbols for Sidelink transmission on PSSCH/PSCCH
   //(Total Sidelink symbols available - number of psfch symbols configured - 2)
+  /* Runs at PSCCH blind-decode time, before SCI is decoded, so the dynamic psfch_overhead
+   * bit is unknown here: this is the static/maximal reservation. Not authoritative for PSSCH
+   * demodulation (the PHY uses nr_sl_pssch_sci_pdu.pssch_numsym); this field is debug-only. */
   int num_psfch_symbols = 0;
   long psfch_period = 0;
   if (sl_has_psfch && sl_res_pool->sl_PSFCH_Config_r16 && sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16) {
@@ -531,8 +534,8 @@ void config_pscch_pdu_rx(sl_nr_rx_config_pscch_pdu_t *nr_sl_pscch_pdu,
     const uint8_t psfch_periods[] = {0,1,2,4};
     uint8_t period_index = *sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
     psfch_period = (period_index < 4) ? psfch_periods[period_index] : 0;
-    // Per 38.214 8.1.3.2: Only period 1 always reserves PSFCH symbols
-    // For periods 2/4, psfch_overhead bit in SCI determines reservation dynamically
+    // A slot with a PSFCH occasion may reserve up to 3 symbols; the actual value for
+    // period 2/4 is confirmed later from the SCI psfch_overhead bit in the PSSCH PDUs.
     if (psfch_period == 1 || psfch_period == 2 || psfch_period == 4) {
       num_psfch_symbols = 3;
     }
@@ -967,6 +970,27 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
                             sl_res_pool,
                             sl_mac_params,
                             sl_has_psfch);
+  /* Freeze TBS across retransmissions: config_pssch_slsch_pdu_rx recomputed tb_size from THIS
+   * slot's symbol count, which on a retx landing on a different-numsym slot than round-0 gives
+   * a different TBS -> different LDPC segmentation -> can't decode/combine. Cache the RV0 TBS
+   * and reuse it on retransmissions (same NDI) so RX segmentation matches the transmitted one. */
+  {
+    sl_nr_rx_config_pssch_pdu_t *pssch = &rx_config.sl_rx_config_list[0].rx_pssch_config_pdu;
+    int hpid = sci_pdu->harq_pid;
+    if (hpid >= 0 && hpid < NR_MAX_HARQ_PROCESSES) {
+      bool new_tb = (sl_mac_params->slsch_rx_ndi[hpid] != (int8_t)sci_pdu->ndi);
+      if (new_tb)
+        sl_mac_params->slsch_rx_ndi[hpid] = (int8_t)sci_pdu->ndi;
+      /* Cache TBS only from RV0 (the self-decodable RV with the true geometry); never seed
+       * from RV1/2/3. On a new TB, invalidate the stale entry until its RV0 is seen. */
+      if (new_tb)
+        sl_mac_params->slsch_rx_tbsize[hpid] = -1;
+      if (sci_pdu->rv_index == 0)
+        sl_mac_params->slsch_rx_tbsize[hpid] = (int32_t)pssch->tb_size;  // authoritative
+      else if (sl_mac_params->slsch_rx_tbsize[hpid] >= 0)
+        pssch->tb_size = (uint32_t)sl_mac_params->slsch_rx_tbsize[hpid]; // retx: reuse RV0 TBS
+    }
+  }
   rx_config.sl_rx_config_list[0].pdu_type =  SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
   if ((!mac->SL_MAC_PARAMS->sl_CSI_Acquisition) && sci_pdu->csi_req) {
     sl_nr_phy_config_request_t *sl_cfg = &sl_mac_params->sl_phy_config.sl_config_req;

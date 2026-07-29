@@ -616,7 +616,6 @@ void configure_psfch_params_tx(int module_idP,
   uint16_t tx_frame = (rx_ind->sfn + (rx_ind->slot + DURATION_RX_TO_TX) / nr_slots_per_frame[scs]) % 1024;
 
   uint8_t ack_nack = (rx_ind->rx_indication_body + pdu_id)->rx_slsch_pdu.ack_nack;
-  LOG_D(NR_MAC, "tx_frame %4u.%2u, ack_nack %d rx: %4u.%2u\n", tx_frame, tx_slot, ack_nack, rx_ind->sfn, rx_ind->slot);
   psfch_params_t *psfch_params = calloc(1, sizeof(psfch_params_t));
   compute_params(module_idP, psfch_params);
   const int nr_slots_frame = nr_slots_per_frame[scs];
@@ -629,8 +628,9 @@ void configure_psfch_params_tx(int module_idP,
 
 int get_psfch_index(int frame, int slot, int n_slots_frame, const NR_TDD_UL_DL_Pattern_t *tdd, int sched_psfch_max_size)
 {
-  // PUCCH structures are indexed by slot in the PUCCH period determined by sched_psfch_max_size number of UL slots
-  // this functions return the index to the structure for slot passed to the function
+  /* Indexed by UL-slot ordinal within the PUCCH period (sched_psfch_max_size UL slots).
+   * On a Mode 1 relay the Uu-reserved UL slots never carry PSFCH, so their index slots
+   * stay unused; get_feedback_frame_slot decides feedback slots against phy_sl_bitmap. */
 
   const int first_ul_slot_period = tdd ? get_first_ul_slot(tdd->nrofDownlinkSlots, tdd->nrofDownlinkSymbols, tdd->nrofUplinkSymbols) : 0;
   const int n_ul_slots_period = tdd ? tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0) : n_slots_frame;
@@ -648,6 +648,8 @@ int get_psfch_index(int frame, int slot, int n_slots_frame, const NR_TDD_UL_DL_P
 }
 
 int get_pssch_to_harq_feedback(uint8_t *pssch_to_harq_feedback, uint8_t psfch_min_time_gap, NR_TDD_UL_DL_Pattern_t *tdd, const int nr_slots_frame) {
+  /* Sized by UL-slot count; over-listing offsets by the Uu-reserved slots (Mode 1 relay)
+   * is harmless since get_feedback_abs_slot picks the real slot against phy_sl_bitmap. */
   int n_ul_slots_period = tdd ? tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0) : nr_slots_frame;
   for (int i = 0; i < n_ul_slots_period; i++) {
     pssch_to_harq_feedback[i] = psfch_min_time_gap + i + 1;
@@ -666,21 +668,27 @@ int get_feedback_frame_slot(NR_UE_MAC_INST_t *mac, NR_TDD_UL_DL_Pattern_t *tdd,
                             long psfch_period, int *psfch_frame, int *psfch_slot) {
 
   AssertFatal(tdd != NULL, "Expecting valid tdd configurations");
-  const int first_ul_slot_period = tdd ? get_first_ul_slot(tdd->nrofDownlinkSlots, tdd->nrofDownlinkSymbols, tdd->nrofUplinkSymbols) : 0;
-  const int nr_slots_period = tdd ? nr_slots_frame / get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity) : nr_slots_frame;
   // can't schedule ACKNACK before minimum feedback time
   if(feedback_offset < psfch_min_time_gap)
     return -1;
 
   *psfch_slot = (slot + feedback_offset) % nr_slots_frame;
-  // check if the slot is UL
-  if(*psfch_slot % nr_slots_period < first_ul_slot_period)
+  *psfch_frame = (frame + ((slot + feedback_offset) / nr_slots_frame)) & 1023;
+
+  // Reject if the candidate is not a physical sidelink slot: excludes DL slots and the
+  // Uu-reserved UL slots (Mode 1 relay), which are UL but cleared in phy_sl_bitmap. A plain
+  // "is UL" test would wrongly accept them. SL Mode 2 / SA reserve nothing (unchanged).
+  SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[0];
+  BIT_STRING_t *phy_sl_bitmap = &sl_tx_rsrc_pool->phy_sl_bitmap;
+  size_t phy_map_sz = (phy_sl_bitmap->size << 3) - phy_sl_bitmap->bits_unused;
+  uint8_t mu = get_softmodem_params()->numerology;
+  frameslot_t cand_fs = {*psfch_frame, *psfch_slot};
+  size_t bit_pos = sl_abs_slot_to_bit_pos(normalize(&cand_fs, mu), phy_map_sz);
+  if (!get_bit_from_map(phy_sl_bitmap->buf, bit_pos))
     return -1;
 
   if (*psfch_slot % psfch_period > 0)
     return -1;
-
-  *psfch_frame = (frame + ((slot + feedback_offset) / nr_slots_frame)) & 1023;
 
   return 0;
 }
@@ -694,22 +702,29 @@ int nr_ue_sl_acknack_scheduling(NR_UE_MAC_INST_t *mac, sl_nr_rx_indication_t *rx
   const int n_ul_slots_period = tdd ? tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0) : nr_slots_frame;
 
   uint16_t num_subch = sl_get_num_subch(mac->sl_tx_res_pool);
+  // Sized by UL-slot count; Uu-reserved slots (Mode 1 relay) only over-allocate here.
   int n_ul_buf_max_size = n_ul_slots_period * num_subch;
 
-  psfch_slot = get_feedback_slot(psfch_period, slot);
+  uint8_t mu = get_softmodem_params()->numerology;
+  uint8_t pool_id = 0;
+  SL_ResourcePool_params_t *sl_tx_rsrc_pool = sl_mac->sl_TxPool[pool_id];
+  size_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
+  // Minimum PSSCH->PSFCH gap in slots (sl-MinTimeGapPSFCH: index 0->sl2, 1->sl3)
+  const uint8_t psfch_time_gaps[] = {2, 3};
+  uint8_t min_time_gap = mac->sl_tx_res_pool->sl_PSFCH_Config_r16
+                             ? psfch_time_gaps[*mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16]
+                             : 0;
+  // Feedback slot = first PSFCH-bearing sidelink slot at/after the PSSCH tx slot + min gap.
+  frameslot_t tx_fs = {frame, slot};
+  uint64_t tx_abs_slot = normalize(&tx_fs, mu);
+  int64_t fb_abs_slot = get_feedback_abs_slot(&sl_tx_rsrc_pool->phy_sl_bitmap, phy_map_sz, mu, tx_abs_slot, min_time_gap, psfch_period);
+  frameslot_t fb_fs;
+  de_normalize(fb_abs_slot, mu, &fb_fs);
+  psfch_frame = fb_fs.frame;
+  psfch_slot = fb_fs.slot;
   const int psfch_index = get_psfch_index(rx_ind->sfn, rx_ind->slot, nr_slots_frame, tdd, n_ul_buf_max_size);
   NR_SL_UE_sched_ctrl_t  *sched_ctrl = &mac->sl_info.list[0]->UE_sched_ctrl;
   SL_sched_feedback_t  *curr_psfch = &sched_ctrl->sched_psfch[psfch_index];
-  psfch_frame = frame;
-  frameslot_t fs;
-  fs.frame = psfch_frame;
-  fs.slot = psfch_slot;
-  uint8_t pool_id = 0;
-  uint64_t tx_abs_slot = normalize(&fs, get_softmodem_params()->numerology);
-  SL_ResourcePool_params_t *sl_tx_rsrc_pool = sl_mac->sl_TxPool[pool_id];
-  size_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
-  bool sl_has_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
-  LOG_D(NR_MAC, "%s %4d.%2d sl_has_psfch %d\n", __FUNCTION__, psfch_frame, psfch_slot, sl_has_psfch);
   curr_psfch->feedback_frame = psfch_frame;
   curr_psfch->feedback_slot = psfch_slot;
   curr_psfch->dai_c = psfch_index;
@@ -767,11 +782,17 @@ void fill_psfch_params_tx(NR_UE_MAC_INST_t *mac, sl_nr_rx_indication_t *rx_ind,
   else
     sched_psfch->hopping_id = *mac->sl_bwp_dedicated->sl_BWP_PoolConfig_r16->sl_TxPoolScheduling_r16->sl_PoolToAddModList_r16->list.array[0]->sl_ResourcePool_r16->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_HopID_r16;
 
-  sched_psfch->prb = psfch_params->prbs_sets->start_prb[rx_ind->slot % psfch_period][0]; // FIXME [0] is based on assumption of number of subchannels = 1; 0 is channel id
+  /* PRB row index (TS 38.213 clause 16.3): PSSCH slot position in the group sharing this
+   * PSFCH occasion. Use the pool-cycle SL-slot ordinal mod psfch_period, not slot-in-frame
+   * parity, which would collapse two slots onto one PRB row. */
+  uint8_t mu = get_softmodem_params()->numerology;
+  SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[0];
+  size_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
+  frameslot_t pssch_fs = {rx_ind->sfn, rx_ind->slot};
+  uint64_t pssch_abs_slot = normalize(&pssch_fs, mu);
+  int prb_row = sl_psfch_pssch_slot_index(&sl_tx_rsrc_pool->phy_sl_bitmap, phy_map_sz, mu, pssch_abs_slot, psfch_period);
+  sched_psfch->prb = psfch_params->prbs_sets->start_prb[prb_row][0]; // FIXME [0] is based on assumption of number of subchannels = 1; 0 is channel id
   print_prb_set_allocation(psfch_params, psfch_period, 1);
-  LOG_D(NR_PHY, "slot %d, slot mode psfch_period %ld, sched_psfch->prb %d, start_prb %d\n",
-        rx_ind->slot, rx_ind->slot%psfch_period, sched_psfch->prb,
-        psfch_params->prbs_sets->start_prb[rx_ind->slot%psfch_period][0]);
   int locbw = sl_bwp_generic->sl_BWP_r16->locationAndBandwidth;
   sched_psfch->sl_bwp_start   = NRRIV2PRBOFFSET(locbw, MAX_BWP_SIZE);
   sched_psfch->freq_hop_flag  = 0;
@@ -855,8 +876,6 @@ void configure_psfch_params_rx(int module_idP,
   NR_SL_PSFCH_Config_r16_t *sl_psfch_config = mac->sl_rx_res_pool->sl_PSFCH_Config_r16->choice.setup;
   long psfch_period = (sl_psfch_config->sl_PSFCH_Period_r16)
                         ? psfch_periods[*sl_psfch_config->sl_PSFCH_Period_r16] : 0;
-  uint16_t num_subch = sl_get_num_subch(mac->sl_rx_res_pool);
-  rx_config->sl_rx_config_list[0].rx_psfch_pdu_list = calloc(psfch_period*num_subch, sizeof(sl_nr_tx_rx_config_psfch_pdu_t));
   NR_SL_UEs_t *UE_info = &mac->sl_info;
 
   if (*(UE_info->list) == NULL) {
@@ -864,6 +883,11 @@ void configure_psfch_params_rx(int module_idP,
     return;
   }
 
+  /* Size the rx PSFCH pdu list by the feedback-queue length (matched_sz), not
+   * psfch_period*num_subch: a whole SL-slot cluster's feedback can converge on one occasion,
+   * which overflowed the old sizing once HARQ combining let every RV decode. */
+  int rx_psfch_cap = NR_MAX_HARQ_PROCESSES;
+  rx_config->sl_rx_config_list[0].rx_psfch_pdu_list = calloc(rx_psfch_cap, sizeof(sl_nr_tx_rx_config_psfch_pdu_t));
   psfch_params_t *psfch_params = calloc(1, sizeof(psfch_params_t));
   compute_params(module_idP, psfch_params);
   SL_UE_iterator(UE_info->list, UE) {
@@ -871,10 +895,11 @@ void configure_psfch_params_rx(int module_idP,
     NR_UE_sl_harq_t **matched_harqs = (NR_UE_sl_harq_t **) calloc(sched_ctrl->feedback_sl_harq.len, sizeof(NR_UE_sl_harq_t *));
     int matched_sz = find_current_slot_harqs(frame, slot, sched_ctrl, matched_harqs);
     LOG_D(NR_MAC, "%s matched_sz %d\n", __FUNCTION__, matched_sz);
+
     rx_config->sl_rx_config_list[0].num_psfch_pdus = 0;
     for (int i = 0; i < matched_sz; i++) {
       AssertFatal(i < UE->UE_sched_ctrl.feedback_sl_harq.len, "k MUST be smaller than feedback_sl_harq length\n");
-      AssertFatal(i < (psfch_period * num_subch), "k MUST be smaller than %ld\n", (psfch_period * num_subch));
+      AssertFatal(i < rx_psfch_cap, "PSFCH pdu index %d exceeds cap %d\n", i, rx_psfch_cap);
       NR_UE_sl_harq_t *cur_harq = matched_harqs[i];
       sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu = &rx_config->sl_rx_config_list[0].rx_psfch_pdu_list[i];
       fill_psfch_params_rx(rx_config, psfch_pdu, psfch_params, cur_harq, mac, psfch_period, slot);
@@ -902,10 +927,18 @@ void fill_psfch_params_rx(sl_nr_rx_config_request_t *rx_config, sl_nr_tx_rx_conf
   else
     psfch_pdu->hopping_id = *mac->sl_bwp_dedicated->sl_BWP_PoolConfig_r16->sl_RxPool_r16->list.array[0]->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_HopID_r16;
 
-  uint8_t index = cur_harq->sched_pssch.slot%psfch_period;
+  /* PRB row index (TS 38.213 clause 16.3): PSSCH slot position in the group sharing this
+   * PSFCH occasion, matching fill_psfch_params_tx. Use the pool-cycle SL-slot ordinal mod
+   * psfch_period; plain slot-in-frame parity collapses two slots onto one PRB row, so
+   * bundled feedbacks decode on the same RE and a NACK can be misread as an ACK. */
+  uint8_t mu = get_softmodem_params()->numerology;
+  SL_ResourcePool_params_t *sl_rx_rsrc_pool = mac->SL_MAC_PARAMS->sl_RxPool[0];
+  size_t phy_map_sz = (sl_rx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_rx_rsrc_pool->phy_sl_bitmap.bits_unused;
+  frameslot_t pssch_fs = {cur_harq->sched_pssch.frame, cur_harq->sched_pssch.slot};
+  uint64_t pssch_abs_slot = normalize(&pssch_fs, mu);
+  int index = sl_psfch_pssch_slot_index(&sl_rx_rsrc_pool->phy_sl_bitmap, phy_map_sz, mu, pssch_abs_slot, psfch_period);
   psfch_pdu->prb = psfch_params->prbs_sets->start_prb[index][0]; // FIXME [0] is based on assumption of number of subchannels = 1; 0 is channel id
   print_prb_set_allocation(psfch_params, psfch_period, 1);
-  LOG_D(NR_PHY, "Rx slot %d, slsch tx slot %d, tx slot mode psfch_period %d, start_prb %d\n", slot, cur_harq->sched_pssch.slot, index, psfch_params->prbs_sets->start_prb[index][0]);
   int locbw = sl_bwp_generic->sl_BWP_r16->locationAndBandwidth;
   psfch_pdu->sl_bwp_start   = NRRIV2PRBOFFSET(locbw, MAX_BWP_SIZE);
   psfch_pdu->freq_hop_flag  = 0;
@@ -1006,6 +1039,19 @@ void nr_ue_process_mac_sl_pdu(int module_idP,
   if (UE == NULL)
     return;
 
+  /* Duplicate-TB suppression for blind HARQ retransmissions: SL cycles RV {0,2,3,1} for the
+   * same TB, so later RVs re-decode and would re-deliver the identical SDU (PDCP then discards
+   * them, with noisy warnings). Deliver to RLC only on the first decode per (source, harq_pid,
+   * NDI); HARQ/PSFCH feedback below still runs so the transmitter is ACKed. */
+  int sl_hpid = mac->sci_pdu_rx.harq_pid;
+  int sl_ndi  = mac->sci_pdu_rx.ndi;
+  bool sl_dup_tb = false;
+  if (sl_hpid >= 0 && sl_hpid < NR_MAX_HARQ_PROCESSES) {
+    sl_dup_tb = (UE->sl_delivered_ndi[sl_hpid] == (int8_t)sl_ndi);
+    if (!sl_dup_tb)
+      UE->sl_delivered_ndi[sl_hpid] = (int8_t)sl_ndi;   // first decode of this TB
+  }
+
   if (pdu_type == SL_NR_RX_PDU_TYPE_SLSCH_PSFCH) {
     handle_nr_ue_sl_harq(module_idP, frame, slot, rx_slsch_pdu, sl_sch_subheader->SRC);
     int r0 = UE->mac_sl_stats.cumul_round[0];
@@ -1100,6 +1146,13 @@ void nr_ue_process_mac_sl_pdu(int module_idP,
   pdu_len -= sizeof(*sl_sch_subheader);
   if (frame % 20 == 0)
     LOG_D(NR_PHY, "%4d.%2d Rx V %d R %d SRC %d DST %d\n", frame, slot, sl_sch_subheader->V, sl_sch_subheader->R, sl_sch_subheader->SRC, sl_sch_subheader->DST);
+  /* Duplicate TB already delivered (blind HARQ retx): skip the RLC delivery loop; feedback
+   * handling above already ran. Prevents re-delivery and PDCP duplicate-discard warnings. */
+  if (sl_dup_tb) {
+    LOG_D(NR_MAC, "%4d.%2d SLSCH dup TB (pid %d ndi %d) already delivered, skipping RLC deliver\n",
+          frame, slot, sl_hpid, sl_ndi);
+    done = 1;
+  }
   while (!done && pdu_len > 0) {
     uint16_t mac_len = 0x0000;
     uint16_t mac_subheader_len = 0x0001; //  default to fixed-length subheader = 1-oct
@@ -1281,16 +1334,21 @@ int get_csi_reporting_frame_slot(NR_UE_MAC_INST_t *mac,
                                  uint32_t *csi_report_frame,
                                  uint32_t *csi_report_slot) {
   AssertFatal(tdd != NULL, "Expecting valid tdd configurations");
-  const int first_ul_slot_period = tdd ? get_first_ul_slot(tdd->nrofDownlinkSlots, tdd->nrofDownlinkSymbols, tdd->nrofUplinkSymbols) : 0;
-  const int nr_slots_period = tdd ? nr_slots_frame / get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity) : nr_slots_frame;
 
   *csi_report_slot = (slot + csi_offset) % nr_slots_frame;
-
-  // check if the slot is UL
-  if(*csi_report_slot % nr_slots_period < first_ul_slot_period)
-    return -1;
-
   *csi_report_frame = (frame + ((slot + csi_offset) / nr_slots_frame)) & 1023;
+
+  /* Reject if the candidate is not a physical sidelink slot: excludes DL slots and the
+   * Uu-reserved UL slots (Mode 1 relay), which are UL but cleared in phy_sl_bitmap. A plain
+   * "is UL" test would wrongly place a CSI report there. SL Mode 2 / SA unchanged. */
+  SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[0];
+  BIT_STRING_t *phy_sl_bitmap = &sl_tx_rsrc_pool->phy_sl_bitmap;
+  size_t phy_map_sz = (phy_sl_bitmap->size << 3) - phy_sl_bitmap->bits_unused;
+  uint8_t mu = get_softmodem_params()->numerology;
+  frameslot_t cand_fs = {*csi_report_frame, *csi_report_slot};
+  size_t bit_pos = sl_abs_slot_to_bit_pos(normalize(&cand_fs, mu), phy_map_sz);
+  if (!get_bit_from_map(phy_sl_bitmap->buf, bit_pos))
+    return -1;
 
   return 0;
 }

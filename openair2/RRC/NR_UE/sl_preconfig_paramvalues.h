@@ -68,6 +68,8 @@
 /*Sidelink Resource pool related parameters in SL-Preconfig */
 #define SL_CONFIG_STRING_SL_RX_RPOOL_LIST                     "sl_RxResPools"
 #define SL_CONFIG_STRING_SL_TX_RPOOL_LIST                     "sl_TxResPools"
+#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP        "sl_TimeResourceBitmap"
+#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN    "sl_TimeResourceBitmapLen"
 #define SL_CONFIG_STRING_RESPOOL_PSCCH_NUMSYM                 "sl_TimeResourcePSCCH"
 #define SL_CONFIG_STRING_RESPOOL_PSCCH_NUMRBS                 "sl_FreqResourcePSCCH"
 #define SL_CONFIG_STRING_RESPOOL_SUBCH_SIZE_IN_RBS            "sl_SubchannelSize"
@@ -180,6 +182,15 @@
 {SL_CONFIG_STRING_RESPOOL_PSFCH_MINTIMEGAP,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16,.defint64val=1,TYPE_INT64,0}, \
 {SL_CONFIG_STRING_RESPOOL_PSFCH_HOPID,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_HopID_r16,.defint64val=1,TYPE_INT64,0}, \
 {SL_CONFIG_STRING_RESPOOL_PSFCH_CANDIDATERESOURCETYPE,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_CandidateResourceType_r16,.defint64val=0,TYPE_INT64,0}}
+
+/* Per-pool sl_TimeResourceBitmap: a hex string (MSB of byte0 = first UL slot) parsed into the
+   pool's sl_TimeResource_r16 BIT_STRING, and an optional explicit valid-bit length. Unlike the
+   other resource-pool params these read into caller-owned locals (hexptr/lenptr) rather than
+   straight into the ASN.1 struct, because the hex string needs post-processing (hex->bytes,
+   deriving bits_unused from the UL-slots-per-period) done in the .c after config_get. */
+#define SL_TIMERESPARAMS_DESC(hexptr, lenptr) { \
+{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP,NULL,0,.strptr=(hexptr),.defstrval=NULL,TYPE_STRING,0}, \
+{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN,NULL,0,.iptr=(lenptr),.defintval=0,TYPE_INT,0}}
 
 #define SL_RSRCSELPARAMS_DESC(sl_res_pool) { \
 {SL_CONFIG_STRING_RSRC_SEL_PRIORITY,NULL,0,.i64ptr=&sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SelectionWindowList_r16->list.array[0]->sl_Priority_r16,.defint64val=7,TYPE_INT64,0}, \

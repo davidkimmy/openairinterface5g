@@ -221,22 +221,72 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
 
   sl_res_pool->ext1 = calloc(1, sizeof(*sl_res_pool->ext1));
   sl_res_pool->ext1->sl_TimeResource_r16 = calloc(1, sizeof(*sl_res_pool->ext1->sl_TimeResource_r16));
-  sl_res_pool->ext1->sl_TimeResource_r16->size = 8;
-  sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = 4;
-  sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(sl_res_pool->ext1->sl_TimeResource_r16->size, sizeof(uint8_t));
-  // EX: BITMAP 10101010.. indicating every alternating slot supported for sidelink
-  for (int i=0;i<sl_res_pool->ext1->sl_TimeResource_r16->size;i++) {
-    if (is_txpool) {
-        sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = (is_sl_syncsource) ? 0xF0 //0x88;//0xAA;
-                                                                            : 0x0F;//0x11;//0x55;
-    } else {
-        sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = (is_sl_syncsource) ? 0x0F //0x88;//0xAA;
-                                                                            : 0xF0;//0x11;//0x55;
-    }
-  }
 
-  // mask out unused bits
-  sl_res_pool->ext1->sl_TimeResource_r16->buf[sl_res_pool->ext1->sl_TimeResource_r16->size - 1] &= (0 - (1 << (sl_res_pool->ext1->sl_TimeResource_r16->bits_unused)));
+  /* Optional per-pool sl_TimeResourceBitmap from the .conf: a hex string (MSB of first byte =
+   * first UL slot, e.g. "FC00" = first 6 UL slots). Valid bits are auto-derived as the largest
+   * multiple of the UL-slots-per-period that fits the bytes; sl_TimeResourceBitmapLen may
+   * override. When absent, fall back to the hardcoded alternating default. Must match the peer
+   * (gNB/UE) bitmap so both ends derive the same SL slot map. */
+  char sl_time_res_prefix[MAX_OPTNAME_SIZE * 2 + 8];
+  sprintf(sl_time_res_prefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0,
+          is_txpool ? SL_CONFIG_STRING_SL_TX_RPOOL_LIST : SL_CONFIG_STRING_SL_RX_RPOOL_LIST, 0);
+  char *sl_time_res_hex = NULL;
+  int sl_time_res_len = 0;
+  paramdef_t SL_TIMERES_PARAM[] = SL_TIMERESPARAMS_DESC(&sl_time_res_hex, &sl_time_res_len);
+  config_get(SL_TIMERES_PARAM, sizeof(SL_TIMERES_PARAM) / sizeof(paramdef_t), sl_time_res_prefix);
+
+  if (sl_time_res_hex != NULL && strlen(sl_time_res_hex) > 0) {
+    // UL slots per period; the bitmap must be a whole number of periods.
+    long sl_nrof_ul_slots = 0, sl_nrof_ul_symbols = 0;
+    paramdef_t SL_ULCNT_PARAM[] = {
+      {SL_CONFIG_STRING_NROFUPLINKSLOTS,   NULL, 0, .i64ptr = &sl_nrof_ul_slots,   .defint64val = 0, TYPE_INT64, 0},
+      {SL_CONFIG_STRING_NROFUPLINKSYMBOLS, NULL, 0, .i64ptr = &sl_nrof_ul_symbols, .defint64val = 0, TYPE_INT64, 0}
+    };
+    char sl_tdd_prefix[MAX_OPTNAME_SIZE * 2 + 8];
+    sprintf(sl_tdd_prefix, "%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0);
+    config_get(SL_ULCNT_PARAM, sizeof(SL_ULCNT_PARAM) / sizeof(paramdef_t), sl_tdd_prefix);
+    int n_ul_slots_period = (int)sl_nrof_ul_slots + (sl_nrof_ul_symbols > 0 ? 1 : 0);
+    if (n_ul_slots_period <= 0)
+      n_ul_slots_period = 1; // guard; real value validated later in config_ue_sl.c
+
+    size_t hexlen = strlen(sl_time_res_hex);
+    int nbytes = (hexlen + 1) / 2;
+    int raw_bits = nbytes * 8;
+    // Valid bits = largest multiple of UL-slots-per-period that fits; len overrides.
+    int nbits = (sl_time_res_len > 0) ? sl_time_res_len
+                                      : (raw_bits / n_ul_slots_period) * n_ul_slots_period;
+    if (nbits <= 0 || nbits > raw_bits)
+      nbits = raw_bits;
+    sl_res_pool->ext1->sl_TimeResource_r16->size = nbytes;
+    sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = raw_bits - nbits;
+    sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(nbytes, sizeof(uint8_t));
+    for (int b = 0; b < nbytes; b++) {
+      char byte_str[3] = {0};
+      byte_str[0] = sl_time_res_hex[2 * b];
+      byte_str[1] = (2 * b + 1 < (int)hexlen) ? sl_time_res_hex[2 * b + 1] : '0';
+      sl_res_pool->ext1->sl_TimeResource_r16->buf[b] = (uint8_t)strtoul(byte_str, NULL, 16);
+    }
+    LOG_D(NR_RRC, "SL %s pool sl_TimeResourceBitmap \"%s\": %d bytes, %d valid bits (ul_slots/period %d, bits_unused %d)\n",
+          is_txpool ? "TX" : "RX", sl_time_res_hex, nbytes, nbits, n_ul_slots_period,
+          (int)sl_res_pool->ext1->sl_TimeResource_r16->bits_unused);
+  } else {
+    sl_res_pool->ext1->sl_TimeResource_r16->size = 8;
+    sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = 4;
+    sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(sl_res_pool->ext1->sl_TimeResource_r16->size, sizeof(uint8_t));
+    // EX: BITMAP 10101010.. indicating every alternating slot supported for sidelink
+    for (int i=0;i<sl_res_pool->ext1->sl_TimeResource_r16->size;i++) {
+      if (is_txpool) {
+          sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = (is_sl_syncsource) ? 0xF0 //0x88;//0xAA;
+                                                                              : 0x0F;//0x11;//0x55;
+      } else {
+          sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = (is_sl_syncsource) ? 0x0F //0x88;//0xAA;
+                                                                              : 0xF0;//0x11;//0x55;
+      }
+    }
+
+    // mask out unused bits
+    sl_res_pool->ext1->sl_TimeResource_r16->buf[sl_res_pool->ext1->sl_TimeResource_r16->size - 1] &= (0 - (1 << (sl_res_pool->ext1->sl_TimeResource_r16->bits_unused)));
+  }
 
   char aprefix[MAX_OPTNAME_SIZE*2 + 8];
   paramdef_t SL_POOLPARAMS[] = SL_RESPOOLPARAMS_DESC(sl_res_pool);

@@ -1025,6 +1025,15 @@ void sl_ue_phy_init(PHY_VARS_NR_UE *UE) {
     LOG_I(PHY, "Allocating Transport Channel Buffers for SLSCH %d/%d\n", i, UE->max_nb_slsch);
     UE->slsch[i] = new_gNB_ulsch(UE->max_ldpc_iterations, sl_fp->N_RB_UL);
   }
+  /* Per-HARQ-process soft buffers so SLSCH reception can soft-combine blind
+   * retransmissions (RV cycle {0,2,3,1}) across rounds. new_gNB_ulsch allocates a
+   * full HARQ context (b/c[]/d[]/d_to_be_cleared[]); we keep its harq_process and
+   * discard the outer ULSCH wrapper. slsch_last_ndi=-1 forces a clear on first RX. */
+  for (int pid = 0; pid < NR_MAX_SLSCH_HARQ_PROCESSES; pid++) {
+    NR_gNB_ULSCH_t tmp = new_gNB_ulsch(UE->max_ldpc_iterations, sl_fp->N_RB_UL);
+    UE->slsch_harq[pid] = tmp.harq_process;
+    UE->slsch_last_ndi[pid] = -1;
+  }
 
   int Prx=sl_fp->nb_antennas_rx;
   int N_RB_UL = sl_fp->N_RB_UL;

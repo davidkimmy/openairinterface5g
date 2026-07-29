@@ -1432,12 +1432,27 @@ void nr_sl_harq_fb_report_frame_slot(gNB_MAC_INST *mac,
 
   uint8_t remote_tx_slot = (relay_ue_tx_slot + DURATION_RX_TO_TX) % n_slots_frame; // relay_ue_tx_slot is rx slot of remote UE
   uint16_t remote_tx_frame = (relay_ue_tx_frame + (relay_ue_tx_slot + DURATION_RX_TO_TX) / n_slots_frame) % 1024; // relay_ue_tx_frame is rx frame of remote UE
-  long sl_psfch_period = *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+  /* sl_PSFCH_Config/Period/MinTimeGap are OPTIONAL ASN.1 fields; guard the chain. */
+  NR_SL_PSFCH_Config_r16_t *psfch_cfg =
+      (UE->NR_SL_MAC_PARAMS && UE->NR_SL_MAC_PARAMS->sl_tx_res_pool
+       && UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16)
+          ? UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup
+          : NULL;
+  long sl_psfch_period = (psfch_cfg && psfch_cfg->sl_PSFCH_Period_r16) ? *psfch_cfg->sl_PSFCH_Period_r16 : 0;
 
   uint8_t sl_PSFCH_ToPUCCH = *UE->sl_CG_Config[UE->active_cg_id]->rrc_ConfiguredSidelinkGrant_r16->sl_PSFCH_ToPUCCH_CG_Type1_r16;
 
-  uint8_t remote_ue_psfch_slot = get_feedback_slot(sl_psfch_period, remote_tx_slot);
-  uint16_t remote_ue_psfch_frame = remote_ue_psfch_slot < remote_tx_slot ? remote_tx_frame + 1 : remote_tx_frame;
+  /* PSFCH feedback slot from the gNB-side physical sidelink bitmap, so the gNB agrees
+   * with the UE by construction. */
+  const uint8_t psfch_time_gaps[] = {2, 3};
+  uint8_t min_time_gap = (psfch_cfg && psfch_cfg->sl_MinTimeGapPSFCH_r16)
+                             ? psfch_time_gaps[*psfch_cfg->sl_MinTimeGapPSFCH_r16] : psfch_time_gaps[0];
+  BIT_STRING_t *gnb_phy_sl_bitmap = &UE->NR_SL_MAC_PARAMS->phy_sl_bitmap;
+  size_t phy_map_sz = UE->NR_SL_MAC_PARAMS->phy_sl_map_size;
+  uint64_t remote_tx_abs = (uint64_t)remote_tx_frame * n_slots_frame + remote_tx_slot;
+  int64_t remote_ue_psfch_abs = get_feedback_abs_slot(gnb_phy_sl_bitmap, phy_map_sz, mu, remote_tx_abs, min_time_gap, sl_psfch_period);
+  uint8_t remote_ue_psfch_slot = (remote_ue_psfch_abs >= 0) ? (uint8_t)(remote_ue_psfch_abs % n_slots_frame) : remote_tx_slot;
+  uint16_t remote_ue_psfch_frame = (remote_ue_psfch_abs >= 0) ? (uint16_t)((remote_ue_psfch_abs / n_slots_frame) & 1023) : remote_tx_frame;
 
   const int sl_fb_pucch_slot = (remote_ue_psfch_slot + sl_PSFCH_ToPUCCH) % n_slots_frame;
 

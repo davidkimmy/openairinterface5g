@@ -398,6 +398,52 @@ static void  sl_prepare_phy_config(int module_id,
   return;
 }
 
+/* Cache the canonicalized preconfigured sl-TimeResource-r16 (TX and RX) so the dedicated
+ * (RRC-received) path can reuse it instead of the over-the-air bitmap: an 8-bit "F0"/"0F"
+ * is below the BIT STRING (SIZE(10..160)) minimum, so uPER pads it on the wire and a relay
+ * would build a larger physical pool than the gNB's, desyncing phy_map_sz and SL HARQ. */
+static void sl_cache_preconf_sl_time_rsrc(sl_nr_ue_mac_params_t *sl_mac,
+                                          const BIT_STRING_t *tx_rsrc,
+                                          const BIT_STRING_t *rx_rsrc)
+{
+  if (!sl_mac || !tx_rsrc || !tx_rsrc->buf || !rx_rsrc || !rx_rsrc->buf)
+    return;
+  if (tx_rsrc->size > sizeof(sl_mac->preconf_sl_time_rsrc_tx_buf)
+      || rx_rsrc->size > sizeof(sl_mac->preconf_sl_time_rsrc_rx_buf)) {
+    LOG_E(NR_MAC, "preconf sl-TimeResource too large to cache (tx %zu rx %zu bytes)\n",
+          tx_rsrc->size, rx_rsrc->size);
+    return;
+  }
+  memcpy(sl_mac->preconf_sl_time_rsrc_tx_buf, tx_rsrc->buf, tx_rsrc->size);
+  sl_mac->preconf_sl_time_rsrc_tx_size = tx_rsrc->size;
+  sl_mac->preconf_sl_time_rsrc_tx_bits_unused = tx_rsrc->bits_unused;
+  memcpy(sl_mac->preconf_sl_time_rsrc_rx_buf, rx_rsrc->buf, rx_rsrc->size);
+  sl_mac->preconf_sl_time_rsrc_rx_size = rx_rsrc->size;
+  sl_mac->preconf_sl_time_rsrc_rx_bits_unused = rx_rsrc->bits_unused;
+  sl_mac->preconf_sl_time_rsrc_valid = true;
+}
+
+/* Overwrite a decoded sl-TimeResource-r16 in place with the cached preconfigured value
+ * (see sl_cache_preconf_sl_time_rsrc) so the relay's physical pool matches the gNB's.
+ * No-op if nothing was cached. */
+static void sl_apply_preconf_sl_time_rsrc(const sl_nr_ue_mac_params_t *sl_mac,
+                                          BIT_STRING_t *dst,
+                                          bool is_tx)
+{
+  if (!sl_mac || !sl_mac->preconf_sl_time_rsrc_valid || !dst)
+    return;
+  const uint8_t *src_buf = is_tx ? sl_mac->preconf_sl_time_rsrc_tx_buf : sl_mac->preconf_sl_time_rsrc_rx_buf;
+  const uint16_t src_size = is_tx ? sl_mac->preconf_sl_time_rsrc_tx_size : sl_mac->preconf_sl_time_rsrc_rx_size;
+  const uint8_t src_unused = is_tx ? sl_mac->preconf_sl_time_rsrc_tx_bits_unused : sl_mac->preconf_sl_time_rsrc_rx_bits_unused;
+  if (src_size == 0)
+    return;
+  dst->buf = realloc(dst->buf, src_size);
+  AssertFatal(dst->buf, "realloc of sl-TimeResource buf failed\n");
+  memcpy(dst->buf, src_buf, src_size);
+  dst->size = src_size;
+  dst->bits_unused = src_unused;
+}
+
 // RRC calls this API when RRC is configured with Sidelink PRE-configuration I.E
 int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
                                        NR_SL_PreconfigurationNR_r16_t *sl_preconfiguration,
@@ -581,6 +627,10 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
     }
 
     BIT_STRING_t *sl_tx_time_rsrc = mac->sl_tx_res_pool->ext1->sl_TimeResource_r16;
+    /* Pad TX/RX to the canonical over-the-air length, then cache it for the dedicated path. */
+    sl_canonical_time_resource_len(sl_tx_time_rsrc, n_ul_slots_period, nr_slots_period, nr_slots_frame);
+    sl_canonical_time_resource_len(mac->sl_rx_res_pool->ext1->sl_TimeResource_r16, n_ul_slots_period, nr_slots_period, nr_slots_frame);
+    sl_cache_preconf_sl_time_rsrc(sl_mac, sl_tx_time_rsrc, mac->sl_rx_res_pool->ext1->sl_TimeResource_r16);
     int total_downlink_slots_in_bitmap = (((sl_tx_time_rsrc->size << 3) - sl_tx_time_rsrc->bits_unused) / n_ul_slots_period) * (nr_slots_period - n_ul_slots_period);
     int total_uplink_slots_in_bitmap = (((sl_tx_time_rsrc->size << 3) - sl_tx_time_rsrc->bits_unused) / n_ul_slots_period) * (n_ul_slots_period);
     AssertFatal(((sl_tx_time_rsrc->size << 3) - sl_tx_time_rsrc->bits_unused) == total_uplink_slots_in_bitmap, "The computation for total uplink slots is invalid. %ld != %d\n",
@@ -843,6 +893,12 @@ int nr_rrc_mac_config_req_sl_dedicated_config(module_id_t module_id,
             (mac->ulsch_slot_bitmap[slot / 64] & ((uint64_t)1 << (slot % 64))) != 0);
     }
     BIT_STRING_t *sl_tx_time_rsrc = mac->sl_tx_res_pool->ext1->sl_TimeResource_r16;
+    /* The dedicated pool arrived uPER-padded over the air; overwrite it with the locally
+     * preconfigured value so both ends build the identical pool, then canonicalize. */
+    sl_apply_preconf_sl_time_rsrc(sl_mac, sl_tx_time_rsrc, true);
+    sl_apply_preconf_sl_time_rsrc(sl_mac, mac->sl_rx_res_pool->ext1->sl_TimeResource_r16, false);
+    sl_canonical_time_resource_len(sl_tx_time_rsrc, n_ul_slots_period, nr_slots_period, nr_slots_frame);
+    sl_canonical_time_resource_len(mac->sl_rx_res_pool->ext1->sl_TimeResource_r16, n_ul_slots_period, nr_slots_period, nr_slots_frame);
     int total_downlink_slots_in_bitmap = (((sl_tx_time_rsrc->size << 3) - sl_tx_time_rsrc->bits_unused) / n_ul_slots_period) * (nr_slots_period - n_ul_slots_period);
     int total_uplink_slots_in_bitmap = (((sl_tx_time_rsrc->size << 3) - sl_tx_time_rsrc->bits_unused) / n_ul_slots_period) * (n_ul_slots_period);
     int phy_sl_size = ((sl_tx_time_rsrc->size << 3) - sl_tx_time_rsrc->bits_unused) + total_downlink_slots_in_bitmap;
@@ -1065,6 +1121,9 @@ void nr_rrc_mac_config_req_sl_mib(module_id_t module_id,
     }
 
     BIT_STRING_t *sl_time_rsrc = mac->sl_tx_res_pool->ext1->sl_TimeResource_r16;
+    // Pad TX/RX sl-TimeResource to the canonical over-the-air length so their map sizes match.
+    sl_canonical_time_resource_len(sl_time_rsrc, n_ul_slots_period, nr_slots_period, nr_slots_frame);
+    sl_canonical_time_resource_len(mac->sl_rx_res_pool->ext1->sl_TimeResource_r16, n_ul_slots_period, nr_slots_period, nr_slots_frame);
     int total_downlink_slots = ((sl_time_rsrc->size << 3) - sl_time_rsrc->bits_unused) / n_ul_slots_period * (nr_slots_period - n_ul_slots_period);
     int phy_sl_size = ((sl_time_rsrc->size << 3) - sl_time_rsrc->bits_unused) + total_downlink_slots;
     LOG_D(NR_MAC, "size of phy_sl_map  %d total_downlink_slots %d, sl_time_rsrc->size %ld, n_ul_slots_period %d, (nr_slots_period - n_ul_slots_period) %d\n", phy_sl_size, total_downlink_slots, ((sl_time_rsrc->size << 3) - sl_time_rsrc->bits_unused), n_ul_slots_period, (nr_slots_period - n_ul_slots_period));

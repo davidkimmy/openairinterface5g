@@ -5497,77 +5497,246 @@ void create_nr_list(NR_list_t *list, int len)
   list->len = len;
 }
 
-int16_t get_feedback_slot(long psfch_period, uint16_t slot) {
-  int16_t feedback_slot = -1;
-  if (psfch_period == 1) {
-    switch(slot) {
-      case 0:
-        feedback_slot = 6;
-      break;
-      case 1:
-        feedback_slot = 7;
-      break;
-      case 2:
-        feedback_slot = 8;
-      break;
-      case 3:
-        feedback_slot = 9;
-      break;
-      case 10:
-        feedback_slot = 16;
-      break;
-      case 11:
-        feedback_slot = 17;
-      break;
-      case 12:
-        feedback_slot = 18;
-      break;
-      case 13:
-        feedback_slot = 19;
-      break;
-      default:
-        AssertFatal(1 == 0, "Invalid slot %d\n", slot);
-    }
-  } else if (psfch_period == 2) {
-    switch(slot) {
-      case 0:
-      case 1:
-        feedback_slot = 7;
-      break;
-      case 2:
-      case 3:
-        feedback_slot = 9;
-      break;
-      case 10:
-      case 11:
-        feedback_slot = 17;
-      break;
-      case 12:
-      case 13:
-        feedback_slot = 19;
-      break;
-      default:
-        AssertFatal(1 == 0, "Invalid slot %d\n", slot);
-    }
-  } else if (psfch_period == 4) {
-    switch(slot) {
-      case 0:
-      case 1:
-      case 2:
-      case 3:
-        feedback_slot = 9;
-      break;
-      case 10:
-      case 11:
-      case 12:
-      case 13:
-        feedback_slot = 19;
-      break;
-      default:
-        AssertFatal(1 == 0, "Invalid slot %d\n", slot);
-    }
+int get_bit_from_map(const uint8_t *buf, size_t bit_pos) {
+  size_t byte_index = bit_pos / 8;
+  uint8_t bit_index = bit_pos % 8;
+  return (buf[byte_index] >> (7 - bit_index)) & 1;
+}
+
+void append_bit(uint8_t *buf, size_t bit_pos, int bit_value) {
+  size_t byte_index = bit_pos / 8;
+  uint8_t bit_index = bit_pos % 8;
+  if (bit_value) {
+    buf[byte_index] |= (1 << (7 - bit_index));
+  } else {
+    buf[byte_index] &= ~(1 << (7 - bit_index));
   }
-  return feedback_slot;
+}
+
+/* Normalize an sl-TimeResource BIT STRING to the single canonical UL-bit length every node
+ * must agree on. sl-TimeResource-r16 is ASN.1 BIT STRING (SIZE(10..160)): a bitmap shorter
+ * than the minimum (e.g. an 8-bit "F0") is padded by the uPER codec, so a peer receiving it
+ * over RRC always sees the padded length. Both endpoints (gNB build, relay-decoded, remote
+ * local preconfig) MUST call this before deriving phy_map_sz or their PSFCH occasions
+ * desync. Rule: smallest whole number of ul_slots_period-sized periods that also spans more
+ * than the TDD pattern (nr_slots_period). Idempotent: an already-canonical bitmap is
+ * unchanged. Returns the resulting valid-bit count. */
+int sl_canonical_time_resource_len(BIT_STRING_t *sl_time_rsrc, int ul_slots_period, int nr_slots_period, int n_slots_frame)
+{
+  if (!sl_time_rsrc || ul_slots_period <= 0)
+    return 0;
+  /* The physical SL pool repeats every (periods * nr_slots_period) slots, laid out from
+   * absolute slot 0. The half-duplex TX/RX role split (is_selected_sl_slot) labels each
+   * TDD period TX or RX by its index *within a frame* (slot_in_frame / nr_slots_period),
+   * so a given pool bit MUST always map to the same slot-in-frame. That holds only when the
+   * pool spans a whole number of frames. Otherwise the pool bit drifts across slots-in-frame
+   * on alternate pool cycles (6DL4UL/mu=1: 3 periods = 30 slots = 1.5 frames -> a PSFCH
+   * occasion lands on a TX-period slot on every other cycle), the sender arms feedback
+   * reception in a slot where it is transmitting, PSFCH is never decoded, SL HARQ processes
+   * are never freed, the pool exhausts ("no free SL HARQ process") and throughput drops to
+   * zero. Whole-frame alignment also makes the pool SFN-continuous (phy_map_sz divides the
+   * 1024-frame SFN period), so the phase no longer jumps at the SFN wrap.
+   *
+   * The alignment target is a whole number of FRAMES, computed in physical slots, and we take
+   * the SMALLEST such length (>= 1 frame) that still covers the configured bitmap. Working in
+   * physical slots is what makes it efficient: 6DL4UL's natural bitmap "F0" is 8 UL bits = 2
+   * periods = 20 physical slots = exactly 1 frame (4 usable SL slots), so it needs NO padding.
+   * The earlier rule compared the UL-BIT count to nr_slots_period (a physical-slot count) and
+   * over-padded 6DL4UL to 4 periods / 40 slots / 2 frames, halving sidelink density for no
+   * reason. Idempotent: an already whole-frame bitmap is returned unchanged. */
+  const int periods_per_frame = (nr_slots_period > 0 && n_slots_frame > 0 && n_slots_frame % nr_slots_period == 0)
+                                    ? n_slots_frame / nr_slots_period
+                                    : 1;
+  int cur_bits = (sl_time_rsrc->size << 3) - sl_time_rsrc->bits_unused;
+  int cur_periods = cur_bits / ul_slots_period;
+  if (cur_bits % ul_slots_period != 0)
+    cur_periods += 1; // round a partial period up before frame alignment
+  // Round the period count up to a whole number of frames, at least one frame.
+  int frames = (cur_periods + periods_per_frame - 1) / periods_per_frame;
+  if (frames < 1)
+    frames = 1;
+  const int target_periods = frames * periods_per_frame;
+  const int aligned = target_periods * ul_slots_period;
+  if (aligned != cur_bits) {
+    int need_bytes = (aligned + 7) / 8;
+    sl_time_rsrc->buf = realloc(sl_time_rsrc->buf, need_bytes);
+    for (int b = sl_time_rsrc->size; b < need_bytes; b++)
+      sl_time_rsrc->buf[b] = 0x00;
+    sl_time_rsrc->size = need_bytes;
+    sl_time_rsrc->bits_unused = (need_bytes << 3) - aligned;
+    cur_bits = aligned;
+  }
+  return cur_bits;
+}
+
+/* Build the physical sidelink slot bitmap from sl_TimeResource, the UL-slot bitmap and the
+   TDD pattern. Layer-agnostic: the caller passes its own ulsch_slot_bitmap and TDD pattern,
+   so gNB and UE derive identical physical SL slots. A physical SL slot is a UL slot also
+   marked in sl_TimeResource; DL slots are never SL slots. Returns the number of bits written. */
+int build_physical_sl_pool(const NR_TDD_UL_DL_Pattern_t *tdd,
+                           uint8_t mu,
+                           const uint64_t *ulsch_slot_bitmap,
+                           BIT_STRING_t *sl_time_rsrc,
+                           BIT_STRING_t *phy_sl_bitmap,
+                           int uu_reserved_sl_slots)
+{
+  int n_slots_frame = nr_slots_per_frame[mu]; // tdd pattern len
+  int ul_slots_period = tdd ? tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0) : n_slots_frame;
+  const int nr_slots_period = tdd ? n_slots_frame / get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity) : n_slots_frame;
+
+  /* Optional --sl-slots override: pin the usable sidelink slots per TDD period; the
+   * reserved (Uu-uplink) slots are then the remaining UL slots. sl_slots == 0 keeps the
+   * caller's value (built-in relay reservation). Resolved here so UE and gNB derive the
+   * identical grid and keep their PSFCH occasions aligned. */
+  const uint8_t sl_slots_cfg = get_softmodem_params()->sl_slots;
+  if (sl_slots_cfg > 0) {
+    AssertFatal(sl_slots_cfg <= ul_slots_period,
+                "sl_slots %u exceeds the %d UL slots per TDD period",
+                sl_slots_cfg, ul_slots_period);
+    uu_reserved_sl_slots = ul_slots_period - sl_slots_cfg;
+  }
+
+  int tdd_pattern_len = nr_slots_period;
+  /* Pad the sl-TimeResource to the canonical over-the-air length so gNB, relay and remote
+   * all build the identical physical pool (see sl_canonical_time_resource_len). Idempotent. */
+  sl_canonical_time_resource_len(sl_time_rsrc, ul_slots_period, nr_slots_period, n_slots_frame);
+
+  int8_t sl_bitmap_num_bits = ((sl_time_rsrc->size << 3) - sl_time_rsrc->bits_unused);
+  int phy_sl_bits = sl_bitmap_num_bits + (sl_bitmap_num_bits / ul_slots_period * (nr_slots_period - ul_slots_period));
+  AssertFatal(ul_slots_period > 0, "No UL slot found in the given TDD pattern");
+  AssertFatal(uu_reserved_sl_slots == 0 || ul_slots_period >= uu_reserved_sl_slots + 1,
+              "uu_reserved_sl_slots %d requires at least %d UL slots per period, have %d",
+              uu_reserved_sl_slots, uu_reserved_sl_slots + 1, ul_slots_period);
+  AssertFatal(sl_bitmap_num_bits % ul_slots_period == 0, "SL bit map size should be multiple of number of UL slots in the TDD pattern");
+  /* The pool must span at least one full TDD period. Compare in PHYSICAL slots (phy_sl_bits),
+   * not the UL-bit count: for 6DL4UL the canonical bitmap is 8 UL bits (2 periods) = 20
+   * physical slots, which correctly covers the 10-slot period even though 8 < 10. Comparing
+   * the UL-bit count here previously forced a spurious 3rd period (1.5 frames). */
+  AssertFatal(phy_sl_bits >= tdd_pattern_len, "Physical SL pool size %d should be at least the TDD pattern size %d", phy_sl_bits, tdd_pattern_len);
+
+  int tdd_bit_idx = 0;
+  bool is_UL = 0;
+  int phy_sl_bit_pos = 0;
+  int sl_bitmap_pos = 0;
+  bool is_sidelink_slot;
+  int sl_in_period = 0; // sidelink-slot index within the current TDD period
+  do {
+    is_sidelink_slot = get_bit_from_map(sl_time_rsrc->buf, sl_bitmap_pos);
+    is_UL = (ulsch_slot_bitmap[tdd_bit_idx / 64] & ((uint64_t)1 << (tdd_bit_idx % 64)));
+    if (is_UL == false) {
+      append_bit(phy_sl_bitmap->buf, phy_sl_bit_pos, 0);
+      phy_sl_bit_pos++;
+    } else if (is_sidelink_slot) {
+      /* Reserve the first uu_reserved_sl_slots sidelink slots of each TDD period for the
+       * relay's Uu uplink (SL Mode 1): clear their bit but still consume the
+       * sl_TimeResource bit. uu_reserved_sl_slots == 0 leaves every SL slot set. */
+      int bit = (sl_in_period < uu_reserved_sl_slots) ? 0 : 1;
+      append_bit(phy_sl_bitmap->buf, phy_sl_bit_pos, bit);
+      phy_sl_bit_pos++;
+      sl_bitmap_pos++;
+      sl_in_period++;
+    } else {
+      append_bit(phy_sl_bitmap->buf, phy_sl_bit_pos, 0);
+      phy_sl_bit_pos++;
+      sl_bitmap_pos++;
+    }
+    if (tdd_bit_idx == (tdd_pattern_len - 1)) {
+      if (sl_bitmap_pos == sl_bitmap_num_bits) {
+        break;
+      } else {
+        tdd_bit_idx = 0;
+        sl_in_period = 0;
+      }
+    } else {
+      tdd_bit_idx++;
+    }
+  } while (tdd_bit_idx != (tdd_pattern_len));
+  AssertFatal(phy_sl_bit_pos == phy_sl_bits, "Physical bitmap length and increment counter are not matching!!!");
+
+  return phy_sl_bit_pos;
+}
+
+/* Map an absolute slot to its bit position inside phy_sl_bitmap, the single
+   normalization used by all PSFCH-occasion helpers so TX/RX/gNB agree on which
+   pool bit a slot maps to. build_physical_sl_pool lays the bitmap out from absolute
+   slot 0 as a whole number of TDD periods (phy_sl_bits = periods * nr_slots_period),
+   so the physical SL-slot/PSFCH pattern is periodic with period phy_map_sz and the
+   bit for an absolute slot is simply (abs_slot % phy_map_sz). The pattern is
+   bitmap-periodic, NOT frame-periodic: it does not realign every slots_per_frame,
+   so no slot-in-frame phase correction is applied (an earlier frame-phase adjustment
+   returned the wrong bit whenever phy_map_sz was not a whole number of frames, e.g.
+   6DL4UL/mu=1 where phy_map_sz = 30 = 1.5 frames).
+   NOTE: the pool phase still shifts at the 1024-frame SFN wrap, but identically on
+   every time-synchronized node; making the pool SFN-continuous is tracked separately. */
+size_t sl_abs_slot_to_bit_pos(uint64_t abs_slot, size_t phy_map_sz)
+{
+  if (phy_map_sz == 0)
+    return 0;
+  /* The bitmap is periodic with period phy_map_sz (a whole number of TDD periods laid
+   * out from absolute slot 0), so a plain modulo gives the correct bit position. */
+  return (size_t)(abs_slot % phy_map_sz);
+}
+
+/* Return the absolute slot carrying the PSFCH feedback for a PSSCH transmitted in
+   absolute slot tx_abs_slot: the first physical sidelink slot that carries PSFCH
+   resources (per sl_slot_carries_psfch, TS 38.213 clause 16.3) at or after
+   tx_abs_slot + min_time_gap. Scans at most one full bitmap cycle. Returns -1 if
+   no PSFCH occasion exists (psfch_period == 0 or empty pool). Bitmap-driven, so it
+   works for any DL/UL split, PSFCH period and sl_TimeResource pattern, and agrees
+   with slot_has_psfch by construction (both use sl_abs_slot_to_bit_pos +
+   sl_slot_carries_psfch). */
+int64_t get_feedback_abs_slot(const BIT_STRING_t *phy_sl_bitmap, size_t phy_map_sz, uint8_t mu,
+                              uint64_t tx_abs_slot, uint8_t min_time_gap, uint8_t psfch_period)
+{
+  if (psfch_period == 0 || phy_map_sz == 0)
+    return -1;
+  uint64_t first = tx_abs_slot + min_time_gap;
+  for (size_t i = 0; i < phy_map_sz; i++) {
+    uint64_t cand = first + i;
+    size_t bit_pos = sl_abs_slot_to_bit_pos(cand, phy_map_sz);
+    if (sl_slot_carries_psfch(phy_sl_bitmap, phy_map_sz, bit_pos, psfch_period))
+      return (int64_t)cand;
+  }
+  return -1;
+}
+
+/* PSFCH-occasion authority (TS 38.213 clause 16.3): a physical sidelink slot carries
+   PSFCH iff its index among the pool's sidelink slots is a multiple of sl-PSFCH-Period.
+   Returns false when psfch_period == 0 or the slot is not a sidelink slot. */
+bool sl_slot_carries_psfch(const BIT_STRING_t *phy_sl_bitmap, size_t phy_map_sz, size_t bit_pos, uint8_t psfch_period)
+{
+  if (psfch_period == 0)
+    return false;
+  if (bit_pos >= phy_map_sz || !get_bit_from_map(phy_sl_bitmap->buf, bit_pos))
+    return false; // not a sidelink slot
+  // count sidelink slots strictly before this one in the current bitmap cycle
+  size_t sl_index = 0;
+  for (size_t p = 0; p < bit_pos; p++) {
+    if (get_bit_from_map(phy_sl_bitmap->buf, p))
+      sl_index++;
+  }
+  return (sl_index % psfch_period) == 0;
+}
+
+/* Position i (0 <= i < psfch_period) of the PSSCH slot at abs_slot within the group of
+   PSSCH slots sharing one PSFCH occasion (TS 38.213 clause 16.3): the pool-cycle
+   sidelink-slot ordinal mod psfch_period, selecting the start_prb[i][j] PRB row so that
+   distinct PSSCH slots feeding a common PSFCH slot land on distinct resources. Using the
+   plain slot-in-frame would collapse two such slots onto the same PRB row (slots/frame is
+   a multiple of psfch_period), so a NACK could be misread as an ACK. */
+int sl_psfch_pssch_slot_index(const BIT_STRING_t *phy_sl_bitmap, size_t phy_map_sz, uint8_t mu, uint64_t abs_slot, uint8_t psfch_period)
+{
+  if (psfch_period == 0 || phy_map_sz == 0)
+    return 0;
+  size_t bit_pos = sl_abs_slot_to_bit_pos(abs_slot, phy_map_sz);
+  if (bit_pos >= phy_map_sz)
+    return 0;
+  size_t sl_index = 0;
+  for (size_t p = 0; p < bit_pos; p++) {
+    if (get_bit_from_map(phy_sl_bitmap->buf, p))
+      sl_index++;
+  }
+  return (int)(sl_index % psfch_period);
 }
 
 /*
@@ -5750,9 +5919,25 @@ int get_nr_sl_psfch_to_pucch_offset(module_id_t module_id, rnti_t sl_rnti)
 
       uint8_t remote_tx_slot = (relay_ue_tx_slot + DURATION_RX_TO_TX) % n_slots_frame; // relay_ue_tx_slot is rx slot of remote UE
 
-      long sl_psfch_period = *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+      /* sl_PSFCH_Config_r16 and its inner sl_PSFCH_Period_r16 / sl_MinTimeGapPSFCH_r16 are
+       * OPTIONAL ASN.1 fields (NULL when absent, e.g. during RRC pre-configuration before
+       * the pool is populated), so guard the whole chain rather than deref blindly. */
+      NR_SL_PSFCH_Config_r16_t *psfch_cfg =
+          (UE->NR_SL_MAC_PARAMS && UE->NR_SL_MAC_PARAMS->sl_tx_res_pool
+           && UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16)
+              ? UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup
+              : NULL;
+      long sl_psfch_period = (psfch_cfg && psfch_cfg->sl_PSFCH_Period_r16)
+                                 ? *psfch_cfg->sl_PSFCH_Period_r16 : 0;
 
-      uint8_t remote_ue_psfch_slot = get_feedback_slot(sl_psfch_period, remote_tx_slot);
+      /* K_offset derivation is period-relative, so evaluate the PSFCH occasion within
+       * the first bitmap cycle from the gNB physical SL bitmap. */
+      const uint8_t psfch_time_gaps[] = {2, 3};
+      uint8_t min_time_gap = (psfch_cfg && psfch_cfg->sl_MinTimeGapPSFCH_r16)
+                                 ? psfch_time_gaps[*psfch_cfg->sl_MinTimeGapPSFCH_r16] : psfch_time_gaps[0];
+      int64_t remote_ue_psfch_abs = get_feedback_abs_slot(&UE->NR_SL_MAC_PARAMS->phy_sl_bitmap, UE->NR_SL_MAC_PARAMS->phy_sl_map_size,
+                                                          ul_bwp->scs, remote_tx_slot, min_time_gap, sl_psfch_period);
+      uint8_t remote_ue_psfch_slot = (remote_ue_psfch_abs >= 0) ? (uint8_t)(remote_ue_psfch_abs % n_slots_frame) : remote_tx_slot;
 
       static const uint8_t psfch_to_pucch_offset[MAX_PSFCH_TO_PUCCH_OFFSET] = {0, 1, 2, 3, 4, 5, 6, 7, 8,
                                                                                9, 10, 11, 12, 13, 14, 15};
@@ -5805,6 +5990,49 @@ void nr_rrc_mac_config_req_sl_config(module_id_t module_id,
       UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = CALLOC(1, sizeof(long));
       if (sl_Tx_ResourcePool->sl_PSFCH_Config_r16)
         *UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16 = *sl_Tx_ResourcePool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
+
+      /* Build the gNB-side physical sidelink slot bitmap from the same inputs the UE uses
+       * (TDD pattern + UL-slot bitmap + sl_TimeResource) so both derive PSFCH occasions
+       * identically. The TDD pattern MUST be the sidelink DL/UL split (sl_RxParametersNcell),
+       * NOT the Uu cellular TDD: the Uu split (e.g. 7DL/2UL) would mismatch sl_TimeResource
+       * (sized for the sidelink UL-slot count) and trip the ul_slots_period assertion. */
+      const NR_TDD_UL_DL_Pattern_t *sl_tdd =
+          (sl_Tx_ResourcePool->sl_RxParametersNcell_r16
+           && sl_Tx_ResourcePool->sl_RxParametersNcell_r16->sl_TDD_Configuration_r16)
+              ? &sl_Tx_ResourcePool->sl_RxParametersNcell_r16->sl_TDD_Configuration_r16->pattern1
+              : NULL;
+      const int n_slots_frame = nr_slots_per_frame[mu];
+      const int nr_slots_period = sl_tdd ? n_slots_frame / get_nb_periods_per_frame(sl_tdd->dl_UL_TransmissionPeriodicity) : n_slots_frame;
+      const int n_ul_slots_period = sl_tdd ? sl_tdd->nrofUplinkSlots + (sl_tdd->nrofUplinkSymbols > 0 ? 1 : 0) : n_slots_frame;
+      /* Derive the sidelink UL-slot bitmap from the sidelink TDD (a slot is UL when its
+       * index within the period is at or after the first UL slot); gNB->ulsch_slot_bitmap
+       * describes the Uu carrier and would place UL slots at the wrong positions. */
+      const int sl_ulstart_slot = sl_tdd
+          ? get_first_ul_slot(sl_tdd->nrofDownlinkSlots, sl_tdd->nrofDownlinkSymbols, sl_tdd->nrofUplinkSymbols)
+          : 0;
+      uint64_t sl_ulsch_slot_bitmap[3] = {0};
+      for (int slot = 0; slot < n_slots_frame; ++slot) {
+        if (!sl_tdd || (slot % nr_slots_period) >= sl_ulstart_slot)
+          sl_ulsch_slot_bitmap[slot / 64] |= (uint64_t)1 << (slot % 64);
+      }
+      BIT_STRING_t *gnb_sl_time_rsrc = UE->NR_SL_MAC_PARAMS->sl_tx_res_pool->ext1->sl_TimeResource_r16;
+      /* Pad to the canonical over-the-air length before sizing the physical bitmap so the
+       * gNB buffer matches what build_physical_sl_pool writes and the relay derives the same
+       * phy_map_sz from the RRC-encoded bitmap. */
+      const int sl_time_bits = sl_canonical_time_resource_len(gnb_sl_time_rsrc, n_ul_slots_period, nr_slots_period, n_slots_frame);
+      const int total_dl_slots = sl_time_bits / n_ul_slots_period * (nr_slots_period - n_ul_slots_period);
+      const int phy_sl_size = sl_time_bits + total_dl_slots;
+      BIT_STRING_t *gnb_phy_sl_bitmap = &UE->NR_SL_MAC_PARAMS->phy_sl_bitmap;
+      if (gnb_phy_sl_bitmap->buf)
+        free(gnb_phy_sl_bitmap->buf);
+      gnb_phy_sl_bitmap->buf = (uint8_t *)calloc((phy_sl_size + 7) / 8, sizeof(uint8_t));
+      gnb_phy_sl_bitmap->size = (phy_sl_size + 7) >> 3;
+      gnb_phy_sl_bitmap->bits_unused = ((gnb_phy_sl_bitmap->size << 3) - phy_sl_size) % 8;
+      /* Mirror the UE-side reservation (first 2 UL slots per period for the relay's Uu
+       * uplink) so the gNB builds the same reduced grid; this path only runs for a
+       * Mode 1 relay UE's sidelink pool, so reserve 2. */
+      UE->NR_SL_MAC_PARAMS->phy_sl_map_size =
+          build_physical_sl_pool(sl_tdd, mu, sl_ulsch_slot_bitmap, gnb_sl_time_rsrc, gnb_phy_sl_bitmap, 2);
     }
   }
 }

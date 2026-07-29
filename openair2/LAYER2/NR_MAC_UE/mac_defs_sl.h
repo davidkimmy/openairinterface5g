@@ -241,6 +241,34 @@ typedef struct sl_nr_ue_mac_params {
   uint16_t decoded_slot;
   NR_bler_options_t sl_bler;
 
+  /* Per-HARQ-process RX transport-block size, frozen at the round-0 (new-TB)
+   * reception and reused for all retransmissions of that TB. HARQ requires the TBS
+   * (and thus the LDPC segmentation K/C/Z) to stay constant across retransmissions.
+   * The SL RX otherwise recomputes TBS from each retx slot's symbol count, so a
+   * retransmission landing on a numsym-12 slot (no PSFCH) derives a larger TBS than
+   * the numsym-9 round-0 slot, producing an incompatible mother code (K=8448/Z=384
+   * vs the transmitted K=6336/Z=288) that never decodes. Keyed by SCI harq_pid;
+   * refreshed when the SCI NDI toggles. -1 = unset. */
+  int32_t slsch_rx_tbsize[NR_MAX_HARQ_PROCESSES];
+  int8_t  slsch_rx_ndi[NR_MAX_HARQ_PROCESSES];
+
+  /* Preconfigured sl-TimeResource-r16 (canonicalized), cached from the local .conf
+   * preconfiguration for the TX and RX pools. sl-TimeResource-r16 is an ASN.1
+   * BIT STRING (SIZE(10..160)); an 8-bit "F0"/"0F" is below the 10-bit minimum, so the
+   * uPER codec pads it and a relay decoding the dedicated pool over RRC sees a longer
+   * (16-bit) bitmap that frame-aligns to a 40-slot physical pool, while the gNB keeps its
+   * local 8-bit bitmap and a 20-slot pool. The nodes then disagree on phy_map_sz, their
+   * PSFCH occasions desync and SL HARQ feedback is never decoded. Reuse the preconfigured
+   * value on the dedicated path so both endpoints build the identical physical pool.
+   * sl-TimeResource-r16 is at most 160 bits = 20 bytes. valid=false until preconfig runs. */
+  uint8_t  preconf_sl_time_rsrc_tx_buf[20];
+  uint16_t preconf_sl_time_rsrc_tx_size;
+  uint8_t  preconf_sl_time_rsrc_tx_bits_unused;
+  uint8_t  preconf_sl_time_rsrc_rx_buf[20];
+  uint16_t preconf_sl_time_rsrc_rx_size;
+  uint8_t  preconf_sl_time_rsrc_rx_bits_unused;
+  bool     preconf_sl_time_rsrc_valid;
+
 } sl_nr_ue_mac_params_t;
 
 

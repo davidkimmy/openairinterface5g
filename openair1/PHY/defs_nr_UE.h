@@ -680,8 +680,21 @@ typedef struct PHY_VARS_NR_UE_s {
   struct PHY_MEASUREMENTS_gNB_s *sl_measurements;
   int max_nb_slsch;
   // we use the gNB ULSCH context for SLSCH reception
-  struct NR_gNB_ULSCH_s   *slsch; 
+  struct NR_gNB_ULSCH_s   *slsch;
   struct NR_gNB_PUSCH_s   *pssch_vars;
+  /* Per-HARQ-process soft buffers for SLSCH reception. SL HARQ uses blind
+   * retransmissions cycling RV {0,2,3,1} across rounds; RV1/RV2 are NOT
+   * self-decodable and require Chase/IR soft-combining with earlier RVs. The
+   * decode path historically reused a single shared harq_process (slsch[0]) and
+   * cleared it on every reception, so combining never happened and every RV1/RV2
+   * transmission NAK'd. These per-pid buffers persist soft bits across rounds;
+   * they are selected by harq_pid in nr_ulsch_decoding and cleared only when the
+   * SCI NDI toggles (new TB). slsch_last_ndi tracks the last NDI seen per pid. */
+  /* void* to avoid the defs_gNB.h<->defs_nr_UE.h circular-include ordering issue
+   * (NR_UL_gNB_HARQ_t is an anonymous-struct typedef, not forward-declarable).
+   * Cast to NR_UL_gNB_HARQ_t* at use in nr_slsch_procedures. */
+  void                    *slsch_harq[NR_MAX_SLSCH_HARQ_PROCESSES];
+  int8_t                   slsch_last_ndi[NR_MAX_SLSCH_HARQ_PROCESSES];
   bool phy_config_request_sent;
   int pscch_dmrs_gold_init;
   /// PDCCH DMRS for TX

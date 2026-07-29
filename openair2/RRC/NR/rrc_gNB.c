@@ -712,16 +712,6 @@ static int rrc_gNB_generate_RRCSetup_for_RRCReestablishmentRequest(module_id_t m
   LOG_D(NR_RRC, "RRC_gNB --- MAC_CONFIG_REQ  (SRB1) ---> MAC_gNB for rnti %04x\n", rnti);
   freeSRBlist(SRBs);
 
-  // update SCC and MIB/SIB (two calls)
-  nr_mac_config_scc(RC.nrmac[rrc_instance_p->module_id],
-                    rrc_instance_p->configuration.pdsch_AntennaPorts,
-                    rrc_instance_p->configuration.pusch_AntennaPorts,
-                    rrc_instance_p->configuration.sib1_tda,
-                    rrc_instance_p->configuration.minRXTXTIME,
-                    rrc_instance_p->carrier.servingcellconfigcommon);
-  nr_mac_config_mib(RC.nrmac[rrc_instance_p->module_id], rrc_instance_p->carrier.mib);
-  nr_mac_config_sib1(RC.nrmac[rrc_instance_p->module_id], rrc_instance_p->carrier.siblock1);
-
   LOG_I(NR_RRC, " [RAPROC] rnti: %04x Logical Channel DL-CCCH, Generating RRCSetup (bytes %d)\n", rnti, size);
   // configure MAC
   protocol_ctxt_t ctxt = {0};

@@ -64,7 +64,21 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, int frame_rx, int slot_rx, int SLSCH
   uint16_t nb_re_dmrs;
   uint16_t start_symbol = 1;
   uint16_t number_symbols = pssch_pdu->pssch_numsym;
-  ue->slsch[SLSCH_id].harq_process->harq_to_be_cleared=true;
+  /* Select this pid's persistent soft buffer and clear it only on a new TB, so blind
+   * retransmissions (RV cycle {0,2,3,1}) soft-combine across rounds. A new TB is a
+   * toggled NDI or RV0 (always systematic); RV!=0 with unchanged NDI is a retx. */
+  if (harq_pid >= 0 && harq_pid < NR_MAX_SLSCH_HARQ_PROCESSES && ue->slsch_harq[harq_pid]) {
+    ue->slsch[SLSCH_id].harq_process = (NR_UL_gNB_HARQ_t *)ue->slsch_harq[harq_pid];
+    bool new_tb = (ue->slsch_last_ndi[harq_pid] != (int8_t)slsch_pdu->ndi) || (slsch_pdu->rv_index == 0);
+    if (new_tb) {
+      ue->slsch[SLSCH_id].harq_process->harq_to_be_cleared = true;
+      ue->slsch_last_ndi[harq_pid] = (int8_t)slsch_pdu->ndi;
+    }
+  } else {
+    ue->slsch[SLSCH_id].harq_process->harq_to_be_cleared = true;
+  }
+  /* Re-point pssch_pdu on the (possibly swapped) per-pid harq_process. */
+  ue->slsch[SLSCH_id].harq_process->pssch_pdu = pssch_pdu;
   uint8_t number_dmrs_symbols = 0;
   for (int l = start_symbol; l < start_symbol + number_symbols; l++)
     number_dmrs_symbols += ((pssch_pdu->dmrs_symbol_position)>>l)&0x01;
@@ -474,7 +488,6 @@ void psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue,
                 &is_csi_rs_slot);
     if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH) {
       ack_nack_rcvd = calloc(phy_data->num_psfch_pdus, sizeof(ack_nack_rcvd));
-      LOG_D(NR_PHY, "num_psfch_pdus: %d\n", phy_data->num_psfch_pdus);
       for (int k = 0; k < phy_data->num_psfch_pdus; k++) {
         sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu = &phy_data->psfch_pdu_list[k];
         LOG_D(NR_PHY, "%s start_symbol_index %d, sl_bwp_start %d, sequence_hop_flag %d, \

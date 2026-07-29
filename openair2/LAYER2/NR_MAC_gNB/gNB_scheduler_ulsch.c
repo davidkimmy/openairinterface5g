@@ -439,8 +439,13 @@ static int nr_process_mac_pdu(instance_t module_idP,
         break;
 
       default:
-        LOG_E(NR_MAC, "Received unknown MAC header (LCID = 0x%02x)\n", rx_lcid);
-        return -1;
+        /* Reserved/unknown LCID (TS 38.321 Table 6.2.1-2, 35..51). When the grant exceeds
+         * the queued data, the trailing TB bytes after the last SDU aren't always a
+         * well-formed 0x3F padding sub-PDU, so the parser eventually reads a reserved LCID.
+         * The real SDUs before it already parsed, so stop here instead of erroring per TB. */
+        LOG_I(NR_MAC, "%4d.%2d: stopping UL MAC PDU parse at reserved/unknown LCID 0x%02x (treated as end of PDU)\n",
+              frameP, slot, rx_lcid);
+        done = 1;
         break;
       }
 

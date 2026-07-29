@@ -459,6 +459,12 @@ typedef struct {
   uint16_t feedback_slot;
   uint16_t feedback_frame;
   int8_t sl_harq_pid;
+  /* PSFCH geometry (PSSCH symbol count) of the round-0 transmission. On
+   * sl_PSFCH_Period {2,4} a PSFCH slot carries 3 fewer PSSCH symbols, giving a
+   * different TBS. Retransmissions must land on a slot with the SAME geometry so
+   * the receiver derives an identical TBS across all RVs and can soft-combine.
+   * true  = round-0 was sent on a PSFCH (overhead) slot, false = non-PSFCH slot. */
+  bool round0_psfch_overhead;
 
   // Transport block to be sent using this HARQ process, its size is in sched_pssch
   uint32_t transportBlock[38016]; // valid up to 4 layers
@@ -478,6 +484,9 @@ typedef struct SL_CSI_Report {
   uint8_t slot_offset;
   uint8_t slot_periodicity;
   NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR slot_periodicity_offset;
+  /* false when no PSFCH-free sidelink slot exists in the assigned TDD period, so
+     CSI-RS must not be scheduled for this UE (avoids overlap with PSFCH). */
+  bool slot_valid;
 } SL_CSI_Report_t;
   //
 
@@ -548,6 +557,12 @@ typedef struct {
   nr_sl_csi_report_t csi_report_template[MAX_SL_CSI_REPORTCONFIG];
   NR_SL_UE_sched_ctrl_t UE_sched_ctrl;
   NR_UE_sl_mac_stats_t mac_sl_stats;
+  /* Per-HARQ-process NDI of the last TB already delivered upward for this source.
+     SL uses blind HARQ retransmissions (RV cycle {0,2,3,1}); once a TB decodes, its
+     remaining RVs also decode and would re-deliver the identical SDU, which PDCP then
+     discards as duplicates ("discard NR PDU rcvd_count=N rx_deliv N+1"). Deliver a TB
+     to RLC only on the first successful decode per (source, harq_pid, NDI). -1 = none. */
+  int8_t sl_delivered_ndi[NR_MAX_HARQ_PROCESSES];
 } NR_SL_UE_info_t;
 
 

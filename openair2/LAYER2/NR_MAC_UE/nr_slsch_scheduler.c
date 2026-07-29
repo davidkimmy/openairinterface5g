@@ -160,6 +160,7 @@ void handle_nr_ue_sl_harq(module_id_t mod_id,
   NR_UE_sl_harq_t **matched_harqs = (NR_UE_sl_harq_t **) calloc(sched_ctrl->feedback_sl_harq.len, sizeof(NR_UE_sl_harq_t *));
   int k = find_current_slot_harqs(frame, slot, sched_ctrl, matched_harqs);
   LOG_D(NR_MAC, "Found %d matching HARQ processes vs. num. of received acks %d\n", k, num_ack_rcvd);
+
   for (int i = 0; i < num_ack_rcvd; i++) {
     uint8_t ack_nack = rx_slsch_pdu->ack_nack_rcvd[i];
     uint8_t rx_harq_id = matched_harqs[i]->sl_harq_pid;
@@ -249,6 +250,39 @@ void handle_nr_ue_sl_harq(module_id_t mod_id,
   NR_UE_SL_SCHED_UNLOCK(&mac->sl_sched_lock);
 }
 
+/* Single source of truth for the PSFCH-overhead geometry of a given SL TX slot.
+ * Returns true when a PSSCH transmitted in (frameP,slotP) reserves 3 PSFCH
+ * symbols (=> fewer PSSCH symbols => smaller TBS). This is exactly the condition
+ * that drives sci_pdu->psfch_overhead.val below, factored out so the scheduler
+ * can compare a retransmission slot's geometry against the round-0 slot's and
+ * keep the TBS identical across all RVs of a HARQ process (required for the
+ * receiver to soft-combine). Mirrors the relay vs non-relay split used when
+ * filling the SCI. */
+bool sl_slot_psfch_overhead(NR_UE_MAC_INST_t *mac, int frameP, int slotP, bool is_fdbk_scheduled) {
+  uint8_t psfch_period = 0;
+  const uint8_t psfch_periods[] = {0, 1, 2, 4};
+  if (mac->sl_tx_res_pool && mac->sl_tx_res_pool->sl_PSFCH_Config_r16 &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup &&
+      mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16)
+    psfch_period = psfch_periods[*mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16];
+
+  bool overhead;
+  if (get_softmodem_params()->relay_type != 0) {
+    overhead = is_fdbk_scheduled;
+  } else {
+    SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[0];
+    uint16_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
+    uint8_t mu = mac->SL_MAC_PARAMS->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+    frameslot_t fs = {frameP, slotP};
+    uint64_t tx_abs_slot = normalize(&fs, mu);
+    bool periodic_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
+    overhead = periodic_psfch || is_fdbk_scheduled;
+  }
+  /* Only periods {2,4} carry the overhead bit; period 1 has PSFCH in every slot
+   * (geometry constant, no divergence) and period 0 has none. */
+  return (psfch_period == 2 || psfch_period == 4) && overhead;
+}
+
 void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_t *sci_pdu,
                        nr_sci_pdu_t *sci2_pdu, nr_sci_format_t format2,
                        NR_SL_UE_info_t *UE,
@@ -276,8 +310,8 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
   nr_ue_sl_csi_period_offset(sl_csi_report,
                              &period,
                              &offset);
-  // Determine current slot is csi-rs schedule slot
-  bool csi_req_slot = !((slots_per_frame * frameP + slotP - offset) % period);
+  // Determine current slot is csi-rs schedule slot (only if a PSFCH-free slot was found)
+  bool csi_req_slot = sl_csi_report->slot_valid && !((slots_per_frame * frameP + slotP - offset) % period);
 
   uint8_t ri = 0;
   uint8_t cqi_Table = 0;
@@ -382,23 +416,10 @@ void nr_schedule_slsch(NR_UE_MAC_INST_t *mac, int frameP, int slotP, nr_sci_pdu_
     Relay scenarios: Use is_fdbk_scheduled (dynamic feedback scheduling)
     Non-relay Mode 2: Use slot_has_psfch (periodic slot-based PSFCH allocation)
   */
-  bool psfch_overhead_indicator = false;
-  if (get_softmodem_params()->relay_type != 0) {
-    // Relay case: PSFCH overhead only if feedback is actually scheduled in this slot
-    psfch_overhead_indicator = is_fdbk_scheduled;
-  } else {
-    // Non-relay case: Check if THIS slot has PSFCH overhead that reduces PSSCH symbols
-    SL_ResourcePool_params_t *sl_tx_rsrc_pool = mac->SL_MAC_PARAMS->sl_TxPool[0];
-    uint16_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
-    frameslot_t fs = {frameP, slotP};
-    uint64_t tx_abs_slot = normalize(&fs, mu);
-
-    // Check if THIS slot has PSFCH symbols (which reduce PSSCH symbols)
-    // Two sources: 1) Periodic PSFCH from bitmap, 2) Dynamic HARQ feedback
-    bool periodic_psfch = slot_has_psfch(mac, &sl_tx_rsrc_pool->phy_sl_bitmap, tx_abs_slot, psfch_period, phy_map_sz, mac->SL_MAC_PARAMS->sl_TDD_config);
-    psfch_overhead_indicator = periodic_psfch || is_fdbk_scheduled;
-  }
-  sci_pdu->psfch_overhead.val = ((psfch_period == 2 || psfch_period == 4) && psfch_overhead_indicator) ? 1 : 0;
+  // PSFCH overhead geometry for THIS slot, via the single source of truth shared
+  // with the retransmission-parity guard in the scheduler. (Relay: dynamic
+  // feedback scheduling; non-relay Mode 2: periodic slot-based PSFCH allocation.)
+  sci_pdu->psfch_overhead.val = sl_slot_psfch_overhead(mac, frameP, slotP, is_fdbk_scheduled) ? 1 : 0;
 
   sci_pdu->reserved.val = mac->is_synced_sl ? 1 : 0;
   sci_pdu->conflict_information_receiver.val = 0;
@@ -455,29 +476,39 @@ SL_CSI_Report_t* set_nr_ue_sl_csi_meas_periodicity(const NR_TDD_UL_DL_Pattern_t 
 
   SL_CSI_Report_t *csi_report = &sched_ctrl->sched_csi_report;
 
-  // In Mode 2, each UE is assigned to a specific TDD period for transmission
-  // Use uid (destination UE ID) to determine which period to use (inverted assignment observed in logs)
-  // uid=0 → period 1 (slot 16), uid=1 → period 0 (slot 6)
+  // In Mode 2, each UE is assigned to a specific TDD period for transmission.
+  // Use uid (destination UE ID) to pick the period (inverted assignment observed in logs):
+  // uid=0 -> last period, uid=1 -> first period, etc.
   const int nb_periods_per_frame = get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity);
   const int period_index = (nb_periods_per_frame - 1 - (uid % nb_periods_per_frame));
-  int offset = first_ul_slot_period + (period_index * nr_slots_period);
+  const int period_start = period_index * nr_slots_period;
 
-  // Verify CSI-RS offset doesn't conflict with PSFCH slots (period 2 or 4)
-  // PSFCH slots are at: (first_ul_slot + k*psfch_period - 1) for k=1,2,3...
-  // By using first UL slot of each period, we automatically avoid PSFCH slots
-  // For period 2: PSFCH at slots 7,9 (not 6), 17,19 (not 16)
-  // For period 4: PSFCH at slot 9 (not 6), 19 (not 16)
-  if (psfch_period == 2 || psfch_period == 4) {
-    int slot_in_period = offset % nr_slots_period;
-    for (int k = 1; k * psfch_period <= n_ul_slots_period; k++) {
-      int psfch_slot_offset = (first_ul_slot_period + k * psfch_period - 1) % nr_slots_period;
-      if (slot_in_period == psfch_slot_offset) {
-        LOG_E(NR_MAC, "ERROR: CSI-RS offset=%d conflicts with PSFCH slot (psfch_period=%d)! This should not happen.\n",
-              offset, psfch_period);
-        break;
-      }
+  // Adaptive CSI-RS slot selection: pick the first UL slot in the assigned period
+  // that does NOT carry PSFCH. PSFCH-bearing slots depend on sl-PSFCH-Period and the
+  // sl_TimeResource pattern, so rather than assume the first UL slot is always free
+  // (only true for some periods), scan the UL slots and skip PSFCH occasions using the
+  // shared authority. This adapts to any PSFCH period and works for every TDD period.
+  SL_ResourcePool_params_t *sl_tx_rsrc_pool = sl_mac->sl_TxPool[0];
+  size_t phy_map_sz = (sl_tx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_tx_rsrc_pool->phy_sl_bitmap.bits_unused;
+  int offset = first_ul_slot_period + period_start; // default: first UL slot of the period
+  bool slot_found = false;
+  for (int s = first_ul_slot_period; s < nr_slots_period; s++) {
+    int cand = s + period_start;
+    size_t bit_pos = sl_abs_slot_to_bit_pos((uint64_t)cand, phy_map_sz);
+    // A candidate is usable if it is a sidelink slot that does not carry PSFCH.
+    if (get_bit_from_map(sl_tx_rsrc_pool->phy_sl_bitmap.buf, bit_pos)
+        && !sl_slot_carries_psfch(&sl_tx_rsrc_pool->phy_sl_bitmap, phy_map_sz, bit_pos, psfch_period)) {
+      offset = cand;
+      slot_found = true;
+      break;
     }
   }
+  // If no PSFCH-free sidelink slot exists in the assigned period, do not schedule
+  // CSI-RS for this UE (rather than placing it on a PSFCH slot).
+  csi_report->slot_valid = slot_found;
+  if (!slot_found)
+    LOG_D(NR_MAC, "No PSFCH-free sidelink slot in period %d (psfch_period=%d): CSI-RS not scheduled for uid %d\n",
+          period_index, psfch_period, uid);
 
   AssertFatal(offset < 320, "Not enough UL slots to accomodate all possible UEs. Need to rework the implementation\n");
   csi_report->slot_offset = offset;

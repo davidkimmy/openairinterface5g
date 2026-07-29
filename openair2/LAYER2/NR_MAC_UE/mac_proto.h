@@ -764,9 +764,13 @@ NR_SL_ResourcePool_r16_t* get_resource_pool(NR_UE_MAC_INST_t *mac, uint16_t pool
 
 bool slot_has_psfch(NR_UE_MAC_INST_t *mac, BIT_STRING_t *phy_sl_bitmap, uint64_t abs_index_cur_slot, uint8_t psfch_period, size_t phy_sl_map_size, NR_TDD_UL_DL_ConfigCommon_t *conf);
 
-void append_bit(uint8_t *buf, size_t bit_pos, int bit_value);
+/* True when a PSSCH transmitted in (frameP,slotP) reserves PSFCH overhead symbols
+ * (=> smaller TBS). Single source of truth for sci_pdu->psfch_overhead.val and for
+ * the retransmission-slot parity guard that keeps a HARQ process's TBS identical
+ * across all RVs so the receiver can soft-combine. */
+bool sl_slot_psfch_overhead(NR_UE_MAC_INST_t *mac, int frameP, int slotP, bool is_fdbk_scheduled);
 
-int get_bit_from_map(const uint8_t *buf, size_t bit_pos);
+/* append_bit() and get_bit_from_map() moved to LAYER2/NR_MAC_COMMON/nr_mac_common.h */
 
 void init_vector(vec_of_list_t* vec, size_t initial_capacity);
 

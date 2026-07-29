@@ -186,6 +186,11 @@ void nr_ue_init_mac(module_id_t module_idP, ueinfo_t* ueinfo)
   mac->si_window_start = -1;
   mac->SL_MAC_PARAMS = CALLOC(1, sizeof(sl_nr_ue_mac_params_t));
   mac->SL_MAC_PARAMS->sl_bler.harq_round_max = HARQ_ROUND_MAX;
+  // Per-pid RX TBS freeze cache: -1 = unset (calloc leaves 0, which is a valid ndi/tbs).
+  for (int i = 0; i < NR_MAX_HARQ_PROCESSES; i++) {
+    mac->SL_MAC_PARAMS->slsch_rx_tbsize[i] = -1;
+    mac->SL_MAC_PARAMS->slsch_rx_ndi[i] = -1;
+  }
   init_list(&mac->sl_sensing_data, sizeof(sensing_data_t), 1);
   init_list(&mac->sl_transmit_history, sizeof(frameslot_t), 1);
   mac->sl_candidate_resources = (List_t*)malloc16_clear(sizeof(List_t*));
@@ -206,6 +211,9 @@ void nr_ue_init_mac(module_id_t module_idP, ueinfo_t* ueinfo)
 	  continue;
     mac->sl_info.list[k] = calloc(1, sizeof(NR_SL_UE_info_t));
     mac->sl_info.list[k]->uid = i;
+    // No TB delivered yet for any HARQ pid of this source (calloc leaves 0, a valid NDI).
+    for (int h = 0; h < NR_MAX_HARQ_PROCESSES; h++)
+      mac->sl_info.list[k]->sl_delivered_ndi[h] = -1;
     NR_SL_UE_sched_ctrl_t *UE_sched_ctrl = &mac->sl_info.list[k]->UE_sched_ctrl;
     UE_sched_ctrl->rx_csi_report.RI = 0;
     UE_sched_ctrl->rx_csi_report.CQI = 0;
@@ -1778,6 +1786,26 @@ bool check_overlapping_resources(int curr_start, int curr_length, int next_start
 void merge_resources(PUCCH_sched_t *res, int num_res, NR_PUCCH_Config_t *pucch_Config)
 {
   PUCCH_sched_t empty = {0};
+
+  /* SL Mode 1 relay only: an SL-HARQ-only resource (n_harq==n_csi==n_sr==0) would trip the
+   * §9.2.5 merge's AssertFatals, which know nothing about n_sl_harq. Pull it out before the
+   * Uu merge and re-attach its bits afterwards. No-op when there is no SL-HARQ resource. */
+  const int orig_num_res = num_res;
+  int n_sl_harq_saved = 0;
+  uint32_t sl_harq_payload_saved = 0;
+  for (int i = 0; i < num_res; i++) {
+    if (res[i].n_sl_harq > 0 && res[i].n_harq == 0 && res[i].n_csi == 0 && res[i].n_sr == 0) {
+      n_sl_harq_saved = res[i].n_sl_harq;
+      sl_harq_payload_saved = res[i].sl_harq_payload;
+      // remove it from the set, shifting the remaining resources down
+      for (int k = i; k < num_res - 1; k++)
+        res[k] = res[k + 1];
+      res[num_res - 1] = empty;
+      num_res--;
+      break; // the scheduler emits at most one SL-HARQ summary per slot
+    }
+  }
+
   for (int i = 0; i < num_res - 1; i++) {
     NR_PUCCH_Resource_t *curr_resource = res[i].pucch_resource;
     NR_PUCCH_Resource_t *next_resource = res[i + 1].pucch_resource;
@@ -2100,6 +2128,18 @@ void merge_resources(PUCCH_sched_t *res, int num_res, NR_PUCCH_Config_t *pucch_C
       default:
         AssertFatal(false, "Invalid PUCCH format %d\n", curr_resource->format.present);
     }
+  }
+
+  /* Re-attach the SL-HARQ summary pulled out above. The caller keeps res[orig_num_res-1];
+   * the merge left its single Uu survivor at res[num_res-1], so move it up to that slot and
+   * fold the sidelink bits onto it. num_res>=1 here (caller only merges >=2 resources). */
+  if (n_sl_harq_saved > 0) {
+    if (num_res - 1 != orig_num_res - 1) {
+      res[orig_num_res - 1] = res[num_res - 1];
+      res[num_res - 1] = empty;
+    }
+    res[orig_num_res - 1].n_sl_harq = n_sl_harq_saved;
+    res[orig_num_res - 1].sl_harq_payload = sl_harq_payload_saved;
   }
 }
 

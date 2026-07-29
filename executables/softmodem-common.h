@@ -112,6 +112,7 @@ extern "C"
 #define CONFIG_HLP_RELAY_TYPE    "Set Relay type to represent No Relay (0), U2N (1) and U2U (2) cases. Later this will be properly configured from RRC."
 #define CONFIG_HLP_REMOTE_UE_ID  "Set Remote UE ID to fill in SRAP header"
 #define CONFIG_HLP_IS_RELAY_UE   "Set to configure a UE Relay role"
+#define CONFIG_HLP_SL_SLOTS      "Number of usable sidelink slots per TDD period (must be <= UL slots per period). 0 (default) keeps the built-in behaviour: reserve 2 UL slots for the Uu uplink on a U2N relay, none otherwise."
 
 /*-----------------------------------------------------------------------------------------------------------------------------------------------------*/
 /*                                            command line parameters common to eNodeB and UE                                                          */
@@ -149,6 +150,7 @@ extern "C"
 #define RELAY_TYPE          softmodem_params.relay_type
 #define REMOTE_UE_ID        softmodem_params.remote_ue_id
 #define IS_RELAY_UE         softmodem_params.is_relay_ue
+#define SL_SLOTS            softmodem_params.sl_slots
 
 #define REORDER_THREAD_DISABLE    softmodem_params.reorder_thread_disable
 #define DEFAULT_RFCONFIG_FILE    "/usr/local/etc/syriq/ue.band7.tm1.PRB100.NR40.dat";
@@ -199,6 +201,7 @@ extern int usrp_tx_thread;
   {"relay-type",            CONFIG_HLP_RELAY_TYPE,    0,              .u8ptr=&RELAY_TYPE,                     .defintval=0,             TYPE_UINT8,  0},  \
   {"remote-ue-id",          CONFIG_HLP_REMOTE_UE_ID,  0,              .u8ptr=&REMOTE_UE_ID,                   .defintval=0,             TYPE_UINT8,  0},  \
   {"is-relay-ue",           CONFIG_HLP_IS_RELAY_UE,   0,              .u8ptr=&IS_RELAY_UE,                    .defintval=0,             TYPE_UINT8,  0},  \
+  {"sl-slots",              CONFIG_HLP_SL_SLOTS,      0,              .u8ptr=&SL_SLOTS,                       .defintval=0,             TYPE_UINT8,  0},  \
 }
 // clang-format on
 
@@ -365,6 +368,7 @@ typedef struct {
   uint8_t        relay_type;
   uint8_t        remote_ue_id;
   uint8_t        is_relay_ue;
+  uint8_t        sl_slots;
 } softmodem_params_t;
 
 extern uint64_t get_softmodem_optmask(void);

@@ -45,6 +45,28 @@ RELAY_UE_USRP_SN_FOR_UU="340EA03"
 RELAY_UE_USRP_SN_FOR_SL="340EA3B"
 
 #############################################################
+# Sidelink TDD Configuration
+#############################################################
+# Preset token format: "DL<dl>UL<ul>SL<sl>" where dl+ul is the slots-per-period
+# (10 at SCS index 1) and sl is the usable sidelink slots per period (plumbed via
+# --sl-slots). Example: DL6UL4SL4 = 6 DL / 4 UL slots, 4 of the UL slots usable for SL.
+# Used when tdd_sweep_enable=0.
+tdd_config_default="DL6UL4SL4"
+
+# tdd_sweep_enable=1 sweeps the two mode preset arrays below index-by-index: pass i
+# applies tdd_configs_mode1[i] to SL Mode 1 (relay) / Uu tests and tdd_configs_mode2[i]
+# to SL Mode 2 (peer-to-peer) tests, so every test runs under a preset matched to its
+# mode. Each pass rewrites the sidelink .conf, validates the preset, and suffixes results
+# with _ul<ul>sl<sl>. =0 uses tdd_config_default with no suffix. Each entry is a
+# "DL<dl>UL<ul>SL<sl>" token, so any DL/UL split and usable-SL count works without
+# editing run_sl_test.sh. The two arrays are index-aligned; keep them the same length.
+tdd_sweep_enable=0
+#   Mode 1 (relay): usable SL slots < UL slots, leaving UL headroom for the relay's Uu uplink.
+tdd_configs_mode1=("DL2UL8SL6" "DL4UL6SL4")
+#   Mode 2 (peer-to-peer, no Uu): usable SL slots == UL slots, every UL slot to the SL pool.
+tdd_configs_mode2=("DL4UL6SL6" "DL6UL4SL4")
+
+#############################################################
 # Default Configuration Values
 #############################################################
 # These values are read from config files but can be overridden here

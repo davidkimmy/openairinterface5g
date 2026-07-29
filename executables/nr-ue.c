@@ -1240,15 +1240,12 @@ void update_curMsg(PHY_VARS_NR_UE *UE, nr_rxtx_thread_data_t *curMsg, int absolu
       SL_ResourcePool_params_t *sl_rx_rsrc_pool = mac->SL_MAC_PARAMS->sl_RxPool[pool_id];
       uint16_t phy_map_sz_rx = ((sl_rx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_rx_rsrc_pool->phy_sl_bitmap.bits_unused);
       bool sl_rx_slot = is_sl_slot(mac, &sl_rx_rsrc_pool->phy_sl_bitmap, phy_map_sz_rx, absolute_slot);
-      if (sl_rx_slot) {
-        frameslot_t frame_slot_rx;
-        frame_slot_rx.frame = curMsg->proc.frame_rx;
-        frame_slot_rx.slot = curMsg->proc.nr_slot_rx;
-        LOG_D(NR_PHY, "Setting 2 SL slot type to RX %d.%d %d\n",
-            curMsg->proc.frame_rx, curMsg->proc.nr_slot_rx, curMsg->proc.rx_slot_type);
-        if (is_selected_sl_slot(false, true, mac->SL_MAC_PARAMS->sl_TDD_config, frame_slot_rx))
-          curMsg->proc.rx_slot_type = NR_SIDELINK_SLOT;
-      }
+      frameslot_t frame_slot_rx;
+      frame_slot_rx.frame = curMsg->proc.frame_rx;
+      frame_slot_rx.slot = curMsg->proc.nr_slot_rx;
+      bool sel_rx = is_selected_sl_slot(false, true, mac->SL_MAC_PARAMS->sl_TDD_config, frame_slot_rx);
+      if (sl_rx_slot && sel_rx)
+        curMsg->proc.rx_slot_type = NR_SIDELINK_SLOT;
 
       LOG_D(NR_PHY, "Setting SL slot type to TX %d.%d %d, RX %d.%d %d\n",
             curMsg->proc.frame_tx, curMsg->proc.nr_slot_tx, curMsg->proc.tx_slot_type, curMsg->proc.frame_rx, curMsg->proc.nr_slot_rx, curMsg->proc.rx_slot_type);
