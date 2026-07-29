@@ -792,10 +792,19 @@ bool nr_srap_data_req_srb(protocol_ctxt_t *ctxt,
        * differs from the header bearer for control plane: over Uu (gNB->relay) send on the relay's SRB1;
        * over PC5 (remote->relay) send on the matching remote SL-SRB. Mirror of recv_pdu's fwd_rb_id rule. */
       rb_id_t transport_rb_id = (intf_type == UU) ? 1 : rb_id;
+      /* On PC5 the RLC transport is keyed by the LOCAL SL src id (nr_rlc_ue_t is looked up by src_id and its
+       * sl_srb[]/sl_drb[] were created with the conf's sl_UEINFO srcid), which is a DIFFERENT namespace from
+       * the SRAP header's Remote UE id (--remote-ue-id, filled in by process_sdu). Callers only know the
+       * latter, so pin the transport key to the src id this SRAP entity was created with - exactly what the
+       * relay's forward path does (nr_srap_entity_recv_pdu). Without this, a remote UE whose conf srcid !=
+       * --remote-ue-id silently loses every SL-SRB SDU ("SDU sent to unknown sl_srb") and never registers. */
+      protocol_ctxt_t tx_ctxt = *ctxt;
+      if (intf_type == PC5)
+        tx_ctxt.rntiMaybeUEid = srap_entity->rnti;
       srap_entity->process_sdu(sdu_buffer, sdu_buffer_size, relay_type, rb_id, pdu_buf,
                               (relay_type == U2N) ? sizeof(u2n_header) : sizeof(u2u_header),
                               (relay_type == U2N) ? (void*)&u2n_header : (void*)&u2u_header);
-      deliver_pdu_cb(ctxt, transport_rb_id, pdu_buf, srap_pdu_size, sdu_id, intf_type);
+      deliver_pdu_cb(&tx_ctxt, transport_rb_id, pdu_buf, srap_pdu_size, sdu_id, intf_type);
       return true;
    }
   return false;

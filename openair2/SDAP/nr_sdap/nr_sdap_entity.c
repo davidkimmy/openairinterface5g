@@ -922,8 +922,13 @@ void nr_reconfigure_sdap_entity(NR_SDAP_Config_t *sdap_config, ue_id_t ue_id, in
 }
 
 /* SL mode-1 U2N relay Remote UE: its SDAP entity is the PC5 SL data-plane one keyed on (src_id, pdu 10),
- * recorded in nr_sdap.c. The NAS drives set_qfi/create_ue_ip_if with the registration keys (ue 0, pdu 1),
- * so redirect them onto the SL entity. */
+ * recorded in nr_sdap.c. The NAS drives set_qfi/create_ue_ip_if with the registration keys (NAS ue id +
+ * the PDU session id from the accept), so redirect them onto the SL entity. That entity is the remote UE's
+ * ONLY user-plane SDAP entity, so redirect on the recorded keys alone - do NOT discriminate on the
+ * incoming pduid. The requested PDU session id is conf-dependent (sl_ue1.conf's legacy UICC section asks
+ * for id 10, the same id the SL bring-up uses, while --uicc0.pdu_sessions.[0] asks for 1), so a
+ * `pduid != 10` guard here silently skipped the redirect and asserted on the missing (ue 0, pdu 10)
+ * entity. When the keys already match, the redirect is a no-op. */
 extern int g_relay_remote_sl_ueid;
 extern int g_relay_remote_sl_pduid;
 
@@ -931,7 +936,7 @@ void set_qfi(uint8_t qfi, uint8_t pduid, ue_id_t ue_id)
 {
   DevAssert(qfi < SDAP_MAX_QFI);
   if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue
-      && pduid != 10 && g_relay_remote_sl_ueid >= 0) {
+      && g_relay_remote_sl_ueid >= 0) {
     ue_id = g_relay_remote_sl_ueid;
     pduid = g_relay_remote_sl_pduid;
   }

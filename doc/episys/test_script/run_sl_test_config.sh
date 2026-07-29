@@ -212,8 +212,8 @@ stress_tests=(
 )
 pilot_tests=(
     #uu_basic_tests[3]
-    #slmode2_basic_tests[3]
-    slmode1_basic_tests[1]
+    #slmode2_basic_tests[0]
+    slmode1_basic_tests[2:3]
     #slmode2_csi_psfch_tests[1]
     #slmode1_csi_psfch_tests[2]
     #slmode2_iperf3_tests[2]
@@ -244,7 +244,7 @@ test_profile='pilot'
 #############################################################
 if [[ $test_profile == "pilot" ]]; then
     enabled_tests=("${pilot_tests[@]}")
-    num_repeat=3
+    num_repeat=1
     mcs_array=(9)
     duration=30
     iperf3_bw_array=(6M)

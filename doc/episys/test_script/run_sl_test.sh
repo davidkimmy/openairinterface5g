@@ -1703,7 +1703,7 @@ run_syncref_cmd() {
                 syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                             -O $CONF_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 \
+                            --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs"
@@ -1712,7 +1712,7 @@ run_syncref_cmd() {
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --relay-type 1 --is-relay-ue 1 \
+                            --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info $mcs"
@@ -1722,7 +1722,7 @@ run_syncref_cmd() {
                 syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                             -O $CONF_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
+                            -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 --remote-ue-id 1 \
                             --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200,num_recv_frames=64,num_send_frames=64' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200,num_recv_frames=64,num_send_frames=64' \
                             $ext_clock_flag \
                             --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
@@ -1731,7 +1731,7 @@ run_syncref_cmd() {
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
-                            -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 \
+                            -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 --remote-ue-id 1 \
                             --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200,num_recv_frames=64,num_send_frames=64' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200,num_recv_frames=64,num_send_frames=64' \
                             $ext_clock_flag \
                             --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
@@ -1793,14 +1793,14 @@ run_nearby_cmd() {
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                             -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
-                            --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
+                            --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
-                            --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 \
+                            --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
             fi
@@ -1808,7 +1808,7 @@ run_nearby_cmd() {
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                         sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                         -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
-                        -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 $ext_clock_flag $mcs \
+                        -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 --remote-ue-id 1 $ext_clock_flag $mcs \
                         --usrp-args 'type=b200,num_recv_frames=64,num_send_frames=64' \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
         elif [[ $test_type == "vrtsim" ]]; then

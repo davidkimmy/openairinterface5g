@@ -311,11 +311,15 @@ int g_relay_remote_sl_pduid = -1;
 void create_ue_ip_if(const char *ipv4, const char *ipv6, int ue_id, int pdu_session_id, bool is_default)
 {
   /* For the relay Remote UE, the user plane rides the PC5 SL-DRB (not a Uu air DRB), and its IP must come
-   * from real core registration (no --ip-demo). Two calls reach here: (1) the SL data-plane bring-up
-   * (pdu_session_id 10) — create the PC5-backed TUN but DEFER the IP; (2) the NAS PDU Session
-   * Establishment Accept (pdu_session_id != 10) — re-address that same SL TUN with the real core IP. */
+   * from real core registration (no --ip-demo). Two calls reach here: (1) the SL data-plane bring-up at SL
+   * preconfig (pdu_session_id 10) — create the PC5-backed TUN but DEFER the IP; (2) later, the NAS PDU
+   * Session Establishment Accept — re-address that same SL TUN with the real core IP.
+   * Tell them apart by ORDER (have we recorded the SL keys yet?), not by pdu_session_id: the id the NAS
+   * reports is conf-dependent and may itself be 10 (sl_ue1.conf's legacy UICC section requests session 10,
+   * whereas --uicc0.pdu_sessions.[0] requests 1), in which case an id-based test sent the core IP down the
+   * "defer" branch and the TUN never got an address. The bring-up always runs first, before registration. */
   if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue) {
-    if (pdu_session_id == 10) {
+    if (g_relay_remote_sl_ueid < 0 && pdu_session_id == 10) {
       g_relay_remote_sl_ueid = ue_id;
       g_relay_remote_sl_pduid = pdu_session_id;
       ipv4 = NULL; /* defer: the real IP arrives with the PDU session accept */
