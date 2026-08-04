@@ -143,6 +143,18 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
                  c16_t rxdataF[][rxFsize],
                  uint8_t slsch_id);
 int nr_slsch_procedures(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data, uint8_t slsch_id);
+/* SCI-1A (PSCCH) receive: decodes the control channel that carries the PSSCH configuration, and returns
+   the Nid the transmitter derived from the PSCCH CRC (38.211 8.3.1.1) for PSSCH DMRS + SLSCH scrambling.
+   Defined in nr_pscch_pssch_rx.c. 0 = CRC OK. */
+int nr_rx_pscch(PHY_VARS_NR_UE *ue,
+                const UE_nr_rxtx_proc_t *proc,
+                const NR_DL_FRAME_PARMS *fp,
+                const sl_nr_rx_config_pscch_pdu_t *pscch,
+                int rxFsize,
+                c16_t rxdataF[][rxFsize],
+                uint64_t *sci1_payload,
+                uint16_t *pssch_Nid,
+                int16_t *pscch_rsrp_dBm);
 /* episys SL data-plane port: PSCCH SCI-1 encode (PC5). Defined in nr_pscch_tx.c. Returns pscch Nid (low 16b). */
 uint32_t nr_generate_sci1(const PHY_VARS_NR_UE *ue,
                           c16_t *txdataF,

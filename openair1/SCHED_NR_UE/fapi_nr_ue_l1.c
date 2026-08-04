@@ -441,19 +441,36 @@ void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
         phy_data->sl_rx_action = SL_NR_CONFIG_TYPE_RX_PSBCH;
         LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSBCH\n");
         break;
+      /* Staged SL receive pipeline: one PDU per request, and sl_rx_action is the state variable. Each
+       * decode stage raises an indication, MAC programs the next stage from what it actually decoded, and
+       * the PHY re-reads sl_rx_action to advance:
+       *     RX_PSCCH --(SCI-1A)--> RX_PSSCH_SCI --(SCI-2)--> RX_PSSCH_SLSCH
+       * Only the union member matching pdu_type is valid, so each case copies exactly one. */
+      case SL_NR_CONFIG_TYPE_RX_PSCCH:
+        // stage 1: where SCI-1A sits in this slot and how to descramble it (from the scheduler).
+        phy_data->sl_rx_action = SL_NR_CONFIG_TYPE_RX_PSCCH;
+        phy_data->nr_sl_pscch_pdu = sl_rx_config->sl_rx_config_list[0].rx_pscch_config_pdu;
+        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSCCH (numrbs %d, sci_1a_len %d)\n",
+              phy_data->nr_sl_pscch_pdu.pscch_numrbs, phy_data->nr_sl_pscch_pdu.sci_1a_length);
+        break;
       case SL_NR_CONFIG_TYPE_RX_PSSCH_SCI:
+        // stage 2: SCI-2/demod config built from the decoded SCI-1A, carrying the Nid from the PSCCH CRC.
+        phy_data->sl_rx_action = SL_NR_CONFIG_TYPE_RX_PSSCH_SCI;
+        phy_data->nr_sl_pssch_sci_pdu = sl_rx_config->sl_rx_config_list[0].rx_sci2_config_pdu;
+        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSSCH_SCI (pssch_numsym %d, Nid %x)\n",
+              phy_data->nr_sl_pssch_sci_pdu.pssch_numsym, phy_data->nr_sl_pssch_sci_pdu.Nid);
+        break;
       case SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH:
       case SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH:
-        // episys SL data-plane port: carry PSSCH RX config to PHY. The scheduler fills list[0] with the SCI-2/PSSCH
-        // demod config and list[1] with the SLSCH transport-block config (see nr_ue_scheduler_sl.c).
+        // stage 3: SLSCH transport config built from the decoded SCI-2 (real harq_pid / ndi / rv_index).
         phy_data->sl_rx_action = sl_rx_config->sl_rx_config_list[0].pdu_type;
-        phy_data->nr_sl_pssch_sci_pdu = sl_rx_config->sl_rx_config_list[0].rx_sci2_config_pdu;
-        phy_data->nr_sl_pssch_pdu = sl_rx_config->sl_rx_config_list[1].rx_pssch_config_pdu;
+        phy_data->nr_sl_pssch_pdu = sl_rx_config->sl_rx_config_list[0].rx_pssch_config_pdu;
         // episys SL PSFCH port (Stage 4d): also carry the PSFCH decode config (list[0].psfch_pdu_list).
         phy_data->psfch_pdu_list = (sl_nr_tx_rx_config_psfch_pdu_t *)sl_rx_config->sl_rx_config_list[0].psfch_pdu_list;
         phy_data->num_psfch_pdus = sl_rx_config->sl_rx_config_list[0].num_psfch_pdus;
-        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSSCH (pssch_numsym %d, psfch %d)\n",
-              phy_data->nr_sl_pssch_sci_pdu.pssch_numsym, phy_data->num_psfch_pdus);
+        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSSCH_SLSCH (harq %d rv %d ndi %d, psfch %d)\n",
+              phy_data->nr_sl_pssch_pdu.harq_pid, phy_data->nr_sl_pssch_pdu.rv_index,
+              phy_data->nr_sl_pssch_pdu.ndi, phy_data->num_psfch_pdus);
         break;
       default:
         AssertFatal(0, "Incorrect sl_rx config req pdutype \n");

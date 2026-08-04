@@ -96,6 +96,8 @@ typedef struct {
 uint32_t compute_FRIV(uint8_t sl_max_num_per_reserve, uint8_t L_sub_chan, uint8_t n_start_subch1,
                       uint8_t n_start_subch2, uint8_t N_sl_subch);
 uint32_t compute_TRIV(uint8_t N, uint8_t t1, uint8_t t2);
+// Inverse of compute_TRIV: recover t1/t2 from a received TRIV. In nr_ue_sci_slsch.c.
+int inverse_TRIV(uint8_t N, uint32_t triv, uint8_t *t1, uint8_t *t2);
 void convNRFRIV(int FRIV, int N_subch, long sl_MaxNumPerReserve, uint16_t *Lsc, uint16_t *startsc, uint16_t *startsc2);
 // SCI bit-length (fills per-field nbits) + MSB-first packers into the PSCCH/PSSCH SCI payloads. In nr_ue_sci_slsch.c.
 struct NR_SL_ResourcePool_r16; // ASN.1 (avoid pulling the generated header into this MAC header)
@@ -131,6 +133,19 @@ int config_pssch_sci_pdu_rx(struct sl_nr_rx_config_pssch_sci_pdu *nr_sl_pssch_sc
                             int pscch_subchannel_index,
                             const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic,
                             const struct NR_SL_ResourcePool_r16 *sl_res_pool);
+// PSCCH (SCI-1A) receive config: the region + scrambling id the transmitter used, so the RX can decode
+// SCI-1A and take the PSSCH Nid from its CRC instead of guessing. In nr_ue_sci_slsch.c.
+struct sl_nr_rx_config_pscch_pdu;
+void config_pscch_pdu_rx(struct sl_nr_rx_config_pscch_pdu *nr_sl_pscch_pdu,
+                         nr_sci_pdu_t *sci_pdu,
+                         const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic,
+                         const struct NR_SL_ResourcePool_r16 *sl_res_pool);
+// Unpack a received SCI-1A payload into sci_pdu (inverse of nr_pack_sci1). In nr_ue_sci_slsch.c.
+void extract_pscch_pdu(uint64_t *sci1_payload,
+                       int len,
+                       const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic,
+                       const struct NR_SL_ResourcePool_r16 *sl_res_pool,
+                       nr_sci_pdu_t *sci_pdu);
 // Minimal F1 SLSCH scheduler: populate SCI-1 + SCI-2 field values (fixed resource/MCS). In nr_ue_sci_slsch.c.
 void nr_schedule_slsch(const struct NR_SL_ResourcePool_r16 *sl_tx_res_pool,
                        nr_sci_pdu_t *sci_pdu,

@@ -375,7 +375,7 @@ uint16_t sl_get_subchannel_size(NR_SL_ResourcePool_r16_t *rpool)
 
   subch_size = num_rbs/num_subch;
 
-  LOG_I(NR_MAC, "Subch_size:%d, numRBS:%d, num_subch:%d\n",
+  LOG_D(NR_MAC, "Subch_size:%d, numRBS:%d, num_subch:%d\n",
                                           subch_size,num_rbs,num_subch);
 
   return (subch_size);
@@ -849,8 +849,8 @@ int configure_psfch_params_rx(int module_idP, NR_UE_MAC_INST_t *mac, int frame, 
     // ZERO the SCI/PSSCH configs so pssch_numsym=0 and the PHY does NOT attempt a PSSCH decode with garbage
     // params (would drive nr_slot_fep past the slot -> assert).
     if (rx_config->number_pdus == 0) {
+      // The list holds ONE PDU now that the receive path is staged, so there is no list[1] to clear.
       memset(&rx_config->sl_rx_config_list[0], 0, sizeof(rx_config->sl_rx_config_list[0]));
-      memset(&rx_config->sl_rx_config_list[1], 0, sizeof(rx_config->sl_rx_config_list[1]));
       rx_config->number_pdus = 1;
     }
     rx_config->sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH;

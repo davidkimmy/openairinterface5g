@@ -43,7 +43,6 @@
 #include "PHY/CODING/coding_defs.h"                       // crc24c
 #include "PHY/MODULATION/nr_modulation.h"                 // nr_modulation, DMRS_MOD_ORDER
 #include "PHY/NR_REFSIG/nr_refsig.h"                       // nr_gold_pdcch, gold_cache
-#include "PHY/NR_REFSIG/sl_refsig_defs.h"                  // nr_init_pssch_dmrs_oneshot
 #include "PHY/NR_REFSIG/dmrs_nr.h"                          // get_dmrs_freq_idx_ul
 #include "PHY/NR_TRANSPORT/nr_sch_dmrs.h"                   // get_Wt, get_Wf, get_delta
 #include "PHY/NR_UE_TRANSPORT/nr_transport_ue.h"            // NR_UE_ULSCH_t
@@ -126,7 +125,12 @@ uint32_t nr_generate_sci1(const PHY_VARS_NR_UE *ue,
     const int l = start_symb + symbol_idx;
     int k = cset_start_sc;
     for (int reg = 0; reg < num_regs; reg++) {
-      int dmrs_idx = reg * 3;
+      /* A PRB's DMRS are indexed by its ABSOLUTE position in the grid, not by its position within the
+       * PSCCH allocation (38.211 7.4.1.3.2, reference point k = 0) - which is why the sequence above spans
+       * rb_offset + n_rb PRBs. The receiver offsets into it the same way (nr_pscch_channel_estimation), as
+       * does the reference implementation on both sides. No-op while rb_offset is 0, which is the case for
+       * a single subchannel starting at RB 0. */
+      int dmrs_idx = (rb_offset + reg) * 3;
       int k_prime = 0;
       for (int m = 0; m < NR_NB_SC_PER_RB; m++) {
         const int re = l * frame_parms->ofdm_symbol_size + k;
@@ -287,8 +291,11 @@ void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr
     int n = 0, k_prime = 0;
     int16_t mod_dmrs[((nb_rb + start_rb) * 6) << 1] __attribute__((aligned(16)));
     if (is_dmrs_sym) {
-      uint32_t pssch_dmrs[((fp->N_RB_UL * 12) >> 5) + 1];
-      nr_init_pssch_dmrs_oneshot(fp, Nid, pssch_dmrs, slot, l);
+      /* PSSCH DMRS, 38.211 8.4.1.1.1. Must be the SAME function the receiver uses
+       * (nr_pssch_channel_estimation -> nr_gold_pusch), not an equivalent one: the SL-local generator that
+       * used to be here built c_init in 32-bit arithmetic, wrapping mod 2^32 where the spec takes mod 2^31,
+       * so the two ends used different DMRS on every slot whose product had bit 31 set. */
+      const uint32_t *pssch_dmrs = nr_gold_pusch(fp->N_RB_UL, fp->symbols_per_slot, Nid, 0 /* nscid */, slot, l);
       nr_modulation(pssch_dmrs, (nb_rb + start_rb) * 6 * 2, DMRS_MOD_ORDER, mod_dmrs);
     }
     for (int i = 0; i < nb_rb * NR_NB_SC_PER_RB; i++) {

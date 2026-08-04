@@ -19,6 +19,15 @@
 
 // #define SL_DEBUG
 
+/* Which time-domain buffer holds the PC5 samples. A live UE always uses rxdata_sl (UE_thread_sl fills it for
+ * every sl_mode != 0). Reading the Uu rxdata correlates against a buffer nobody fills - the symptom is
+ * "SLSS ID: 0 metric 0, psbch CRC NOT OK" while a PSS peak is still reported. Offline benches (psbchsim)
+ * synthesise into the Uu rxdata and never set sl_mode, so fall back for them. */
+static inline c16_t **sl_rx_buf(const PHY_VARS_NR_UE *ue)
+{
+  return ue->common_vars.rxdata_sl ? ue->common_vars.rxdata_sl : ue->common_vars.rxdata;
+}
+
 static int sl_nr_pss_correlation(PHY_VARS_NR_UE *UE, int frame_index)
 {
   sl_nr_ue_phy_params_t *sl_ue = &UE->SL_UE_PHY_PARAMS;
@@ -27,7 +36,7 @@ static int sl_nr_pss_correlation(PHY_VARS_NR_UE *UE, int frame_index)
   int16_t **pss_for_correlation = (int16_t **)sl_ue->init_params.sl_pss_for_correlation;
 
   uint32_t length = (frame_index == 0) ? sl_fp->samples_per_frame + (2 * sl_fp->ofdm_symbol_size) : sl_fp->samples_per_frame;
-  int32_t **rxdata = (int32_t **)UE->common_vars.rxdata;
+  int32_t **rxdata = (int32_t **)sl_rx_buf(UE);
 
 #ifdef SL_DEBUG
   char fname[50], sname[25];
@@ -244,7 +253,7 @@ static void sl_nr_extract_sss(PHY_VARS_NR_UE *ue,
 
   #ifdef SL_DEBUG
 
-    write_output("rxsig0.m","rxs0",&ue->common_vars.rxdata[0][0],ue->frame_parms.samples_per_subframe,1,1);
+    write_output("rxsig0.m","rxs0",&sl_rx_buf(ue)[0][0],ue->frame_parms.samples_per_subframe,1,1);
     write_output("rxdataF0_pss.m","rxF0_pss",&ue->common_vars.rxdataF[0][0],frame_parms->ofdm_symbol_size,1,1);
     write_output("rxdataF0_sss.m","rxF0_sss",&ue->common_vars.rxdataF[0][(SSS_SYMBOL_NB-PSS_SYMBOL_NB)*frame_parms->ofdm_symbol_size],frame_parms->ofdm_symbol_size,1,1);
     write_output("pss_ext.m","pss_ext",pss_ext,LENGTH_PSS_NR,1,1);
@@ -419,10 +428,10 @@ nr_initial_sync_t sl_nr_slss_search(PHY_VARS_NR_UE *UE, UE_nr_rxtx_proc_t *proc,
                 end);
           for (int n = start; n < end; n++) {
             for (int ar = 0; ar < sl_fp->nb_antennas_rx; ar++) {
-              re = ((double)(((short *)UE->common_vars.rxdata[ar]))[2 * n]);
-              im = ((double)(((short *)UE->common_vars.rxdata[ar]))[2 * n + 1]);
-              ((short *)UE->common_vars.rxdata[ar])[2 * n] = (short)(round(re * cos(n * off_angle) - im * sin(n * off_angle)));
-              ((short *)UE->common_vars.rxdata[ar])[2 * n + 1] = (short)(round(re * sin(n * off_angle) + im * cos(n * off_angle)));
+              re = ((double)(((short *)sl_rx_buf(UE)[ar]))[2 * n]);
+              im = ((double)(((short *)sl_rx_buf(UE)[ar]))[2 * n + 1]);
+              ((short *)sl_rx_buf(UE)[ar])[2 * n] = (short)(round(re * cos(n * off_angle) - im * sin(n * off_angle)));
+              ((short *)sl_rx_buf(UE)[ar])[2 * n + 1] = (short)(round(re * sin(n * off_angle) + im * cos(n * off_angle)));
             }
           }
         }
@@ -444,7 +453,7 @@ nr_initial_sync_t sl_nr_slss_search(PHY_VARS_NR_UE *UE, UE_nr_rxtx_proc_t *proc,
                       rxdataF,
                       link_type_sl,
                       sync_params->ssb_offset,
-                      UE->common_vars.rxdata);
+                      sl_rx_buf(UE));
         }
 
         /* TODO: change this function to use new rxdataF format */

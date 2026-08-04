@@ -1223,17 +1223,19 @@ void *UE_thread_sl(void *arg)
   // starves the Uu initial-sync on the shared sample/time clock, so the relay's Uu never locks (synch
   // Failed). This applies even though the relay is the PC5 SyncRef: UE_thread_sl is spawned only for the
   // dual-card mode-1 relay, so a mode-2 standalone SyncRef never reaches this thread.
-  NR_UE_MAC_INST_t *uu_mac = get_mac_inst(UE->Mod_id);
-  while (!oai_exit && uu_mac->state != UE_CONNECTED)
-    usleep(1000);
-  if (oai_exit)
-    return NULL;
+  if (UE->sl_dual_card) {
+    NR_UE_MAC_INST_t *uu_mac = get_mac_inst(UE->Mod_id);
+    while (!oai_exit && uu_mac->state != UE_CONNECTED)
+      usleep(1000);
+    if (oai_exit)
+      return NULL;
 
   // Uu is UE_CONNECTED: open + start the DEFERRED PC5 (SL) device now (nrue_ru_start left it unopened so the
   // Uu initial-sync ran with only the Uu device present). From here the two devices run in parallel, no
   // priority. Must precede any PC5 device access (readFrame_sl / the steady loop below).
-  LOG_I(NR_PHY, "Uu UE_CONNECTED; bringing up the PC5 (SL) device on card %d\n", UE->rf_map_sl.card);
-  nrue_ru_start_sl(UE->rf_map_sl.card);
+    LOG_I(NR_PHY, "Uu UE_CONNECTED; bringing up the PC5 (SL) device on card %d\n", UE->rf_map_sl.card);
+    nrue_ru_start_sl(UE->rf_map_sl.card);
+  }
 
   if (is_sync_ref) {
     UE->is_synchronized_sl = 1;
@@ -1293,6 +1295,15 @@ void *UE_thread_sl(void *arg)
 
     // ---- steady state: one SL slot ----
     absolute_slot++;
+
+    /* Advance the IQ-sample time source when this thread is the ONLY slot loop (sl_mode 2). Under rfsim the
+     * time manager runs on TIME_SOURCE_IQ_SAMPLES and its ticks drive nr_rlc_ms_tick / nr_pdcp_ms_tick.
+     * UE_thread does this at its own slot boundary; without it here, RLC accepted every SDU but its
+     * reassembly timers never expired, so nothing reached PDCP/SDAP/TUN (PSSCH healthy, ping 0%).
+     * Gated on sl_mode == 2: in mode-1 UE_thread already ticks, and rfsim needs exactly ONE caller. */
+    if (UE->sl_mode == 2)
+      time_manager_iq_samples(1, nb_slot_frame * 100);
+
     const int slot_nr = absolute_slot % nb_slot_frame;
     UE_nr_rxtx_proc_t proc = {0};
     proc.nr_slot_rx = slot_nr;
@@ -1398,11 +1409,13 @@ void init_NR_UE(int nb_inst, char *uecap_file, char *reconfig_file, char *rbconf
 }
 
 void init_NR_UE_threads(PHY_VARS_NR_UE *UE) {
+  const uint8_t sl_mode = UE->sl_mode;
   char thread_name[16];
-  sprintf(thread_name, "UEthread_%d", UE->Mod_id);
-  threadCreate(&UE->main_thread, UE_thread, (void *)UE, thread_name, -1, OAI_PRIORITY_RT_MAX);
-  // mode-1 dual-card relay: launch the independent sidelink (PC5) driving thread on the second card.
-  if (UE->sl_dual_card) {
+  if (sl_mode == 0 || sl_mode == 1) {
+    sprintf(thread_name, "UEthread_%d", UE->Mod_id);
+    threadCreate(&UE->main_thread, UE_thread, (void *)UE, thread_name, -1, OAI_PRIORITY_RT_MAX);
+  }
+  if (sl_mode == 1 || sl_mode == 2) {
     sprintf(thread_name, "UEthreadSL_%d", UE->Mod_id);
     threadCreate(&UE->sl_thread, UE_thread_sl, (void *)UE, thread_name, -1, OAI_PRIORITY_RT_MAX);
   }

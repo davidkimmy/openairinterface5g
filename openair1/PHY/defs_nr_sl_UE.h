@@ -125,13 +125,21 @@ typedef struct SL_NR_UE_PSSCH {
   uint32_t num_pssch_tx;
   // STATS - SCI2 transmissions of PSSCH by the UE
   uint32_t num_pssch_sci2_tx;
+  // Residual-CFO tracker (rad/symbol), filtered across slots. A single slot's DMRS-pair estimate is too
+  // noisy to correct with directly - consecutive slots measured 92 and 245 Hz on the same link - and its
+  // unambiguous range is limited by the DMRS spacing. Carrying it across slots both averages the noise down
+  // and gives later slots a reference to unwrap against. cfo_samples counts contributing slots (lock state).
+  double cfo_rad_per_sym;
+  uint32_t cfo_samples;
 } SL_NR_UE_PSSCH_t;
 
-// episys SL PHY stats port: PSCCH (SCI-1). NOTE: on this branch the RX does a blind PSSCH decode with
-// SCI-1 decoding deferred, so rx_ok stays 0 for now (TX side is counted).
+// episys SL PHY stats port: PSCCH (SCI-1). The RX decodes SCI-1A (nr_rx_pscch) and takes the PSSCH
+// scrambling Nid from its CRC, so rx_ok/rx_errors now track real decodes.
 typedef struct SL_NR_UE_PSCCH {
   uint32_t num_pscch_tx; // STATS - PSCCH (SCI-1) transmissions by the UE
-  uint32_t rx_ok;        // STATS - PSCCH (SCI-1) receptions with CRC OK (deferred RX -> 0 for now)
+  uint32_t rx_ok;        // STATS - PSCCH (SCI-1) receptions accepted
+  uint32_t rx_errors;    // STATS - CRC passed but rejected as a false positive. NOT plain CRC mismatches:
+                         // every SL RX slot is decoded, so most simply carry no PSCCH.
 } SL_NR_UE_PSCCH_t;
 
 // episys SL PHY stats port: PSFCH (HARQ feedback). TX side counted; RX decode counted (Stage 2).

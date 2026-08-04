@@ -52,6 +52,20 @@
 #define SL_CONFIG_STRING_RESPOOL_NUM_RBS                      "sl_RB_Number"
 #define SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS                   "sl_NumSubchannel"
 
+/* Sensing-based resource selection parameters (TS 38.214 8.1.4).
+   Read from the "rsrc_selection_params" list of the SL preconfiguration. Without these the pool's
+   sl_UE_SelectedConfigRP_r16 carries only sl_MaxNumPerReserve and the sensing/selection windows,
+   RSRP threshold and reservation period are all unset. */
+#define SL_CONFIG_STRING_RSRC_SEL_PRIORITY                    "sl_Priority"
+#define SL_CONFIG_STRING_RSRC_SEL_PARAMS_LIST                 "rsrc_selection_params"
+#define SL_CONFIG_STRING_RSRC_SEL_SELECTION_WINDOW            "sl_SelectionWindow"
+#define SL_CONFIG_STRING_RSRC_SEL_SENSING_WINDOW              "sl_SensingWindow"
+#define SL_CONFIG_STRING_RSRC_SEL_TRESHOLD_RSRP               "sl_Thres_RSRP"
+#define SL_CONFIG_STRING_RSRC_SEL_MAXNUM_PER_RESERVE          "sl_MaxNumPerReserve"
+#define SL_CONFIG_STRING_RSRC_SEL_RESOURCE_RESERVED_PERIOD    "sl_ResourceReservePeriod"
+#define SL_CONFIG_STRING_RSRC_SEL_RS_FOR_SENSING              "sl_RS_ForSensing"
+#define SL_CONFIG_STRING_RSRC_SEL_TX_PERCENTAGE               "sl_TxPercentage"
+
 
 
 /*-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -131,5 +145,18 @@
 {SL_CONFIG_STRING_RESPOOL_NUM_RBS,NULL,0,.i64ptr=sl_res_pool->sl_RB_Number_r16,.defint64val=106,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS,NULL,0,.i64ptr=sl_res_pool->sl_NumSubchannel_r16,.defint64val=10,TYPE_INT64,0}}
 
+/* Sensing-based resource selection parameters.
+   Note sl_SensingWindow is consumed as MILLISECONDS by config_ue_sl.c (time_to_slots), not as an enum
+   index - that is the reference implementation's reading of the field and is kept for parity. */
+#define SL_RSRCSELPARAMS_DESC(sl_res_pool) { \
+{SL_CONFIG_STRING_RSRC_SEL_PRIORITY,NULL,0,.i64ptr=&sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SelectionWindowList_r16->list.array[0]->sl_Priority_r16,.defint64val=7,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_SELECTION_WINDOW,NULL,0,.i64ptr=&sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SelectionWindowList_r16->list.array[0]->sl_SelectionWindow_r16,.defint64val=5,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_SENSING_WINDOW,NULL,0,.i64ptr=sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SensingWindow_r16,.defint64val=6,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_TRESHOLD_RSRP,NULL,0,.i64ptr=sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_Thres_RSRP_List_r16->list.array[0],.defint64val=-128,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_MAXNUM_PER_RESERVE,NULL,0,.i64ptr=sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16,.defint64val=1,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_RESOURCE_RESERVED_PERIOD,NULL,0,.i64ptr=&sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_ResourceReservePeriodList_r16->list.array[0]->choice.sl_ResourceReservePeriod1_r16,.defint64val=100,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_RS_FOR_SENSING,NULL,0,.i64ptr=&sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_RS_ForSensing_r16,.defint64val=1,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RSRC_SEL_TX_PERCENTAGE,NULL,0,.i64ptr=&sl_res_pool->sl_TxPercentageList_r16->list.array[0]->sl_TxPercentage_r16,.defint64val=0,TYPE_INT64,0}, \
+}
 
 #endif

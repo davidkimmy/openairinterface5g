@@ -7,10 +7,19 @@
 
 #include "fapi_nr_ue_interface.h"
 
-// episys SL data-plane port: PSSCH RX needs 2 config PDUs (SCI-2/demod cfg + SLSCH transport cfg); PSBCH uses 1.
-#define SL_NR_RX_CONFIG_LIST_NUM 2
+/* One RX config PDU per request, discriminated by pdu_type - the members are a union, so an element can
+ * only ever carry one of them. The SL receive path is a staged pipeline: each decode stage raises an
+ * indication to MAC, MAC programs the next stage's single PDU from what was actually decoded, and the PHY
+ * re-reads sl_rx_action to advance:
+ *     RX_PSCCH --(SCI-1A)--> RX_PSSCH_SCI --(SCI-2)--> RX_PSSCH_SLSCH
+ * Packing several PDUs into one request at fixed indices instead forces the SLSCH transport config to be
+ * built before SCI-2 is known, i.e. with guessed harq_pid/ndi/rv_index. */
+#define SL_NR_RX_CONFIG_LIST_NUM 1
 #define SL_NR_TX_CONFIG_LIST_NUM 1
 #define SL_NR_RX_IND_MAX_PDU 1
+// SL sensing: one SL slot can raise more than one SCI to MAC - the SCI-1A decoded on PSCCH
+// and the SCI-2 decoded on the PSSCH it scheduled.
+#define SL_NR_SCI_IND_MAX_PDU 2
 #define SL_NR_MAX_PSCCH_SCI_LENGTH_IN_BYTES 8
 #define SL_NR_MAX_PSSCH_SCI_LENGTH_IN_BYTES 8
 #define SL_NR_MAX_SCI_LENGTH_IN_BYTES 8
@@ -78,7 +87,7 @@ typedef struct {
   uint8_t sensing_result;
   //in case pssch sensing is requested.
   int16_t pssch_rsrp;
-  sl_nr_sci_indication_pdu_t sci_pdu;
+  sl_nr_sci_indication_pdu_t sci_pdu[SL_NR_SCI_IND_MAX_PDU];
 } sl_nr_sci_indication_t;
 
 // IF UE Rx PSBCH, PHY indicates MAC with received MIB and PSBCH RSRP

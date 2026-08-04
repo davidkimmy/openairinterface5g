@@ -274,12 +274,41 @@ if [[ "$test_profile" == "bler" && "$parallel_mode" == "true" ]]; then
     exit 0
 fi
 
+# Optional per-layer debug logging: --debug <layer>
+#
+# Appends "--log_config.<layer>_log_level debug" to every softmodem command line, and nothing at all when
+# the option is absent. OAI builds that option name from the log component name lowercased
+# (common/utils/LOG/log.c: "%s_log_level" then tolower), so the layer is passed straight through in lower
+# case:  --debug hw -> hw_log_level,  --debug nr_mac -> nr_mac_log_level,  --debug phy -> phy_log_level.
+# Handled here rather than in getopts, which supports short options only; the remaining arguments are put
+# back so getopts below still sees -d/-g.
+debug_log_arg=""
+_prescan_args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --debug)
+            if [[ -z "$2" || "$2" == -* ]]; then
+                echo "Error: --debug requires a layer name, e.g. --debug hw" >&2
+                exit 1
+            fi
+            debug_log_arg="--log_config.$(echo "$2" | tr '[:upper:]' '[:lower:]')_log_level debug"
+            shift 2
+            ;;
+        *)
+            _prescan_args+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- ${_prescan_args[@]+"${_prescan_args[@]}"}
+[[ -n "$debug_log_arg" ]] && echo "Debug logging enabled for softmodems: $debug_log_arg"
+
 # Override from command line (highest priority)
 while getopts "d:g:" opt; do
     case $opt in
         d) base_dir="$OPTARG" ;;
         g) USE_GNOME="$OPTARG" ;;
-        *) echo "Usage: $0 [-d <base_dir>] [-g <0|1>]"; exit 1 ;;
+        *) echo "Usage: $0 [-d <base_dir>] [-g <0|1>] [--debug <layer>]"; exit 1 ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -737,6 +766,12 @@ wait_for_tun_interface() {
     return 1
 }
 
+# Block until the sync-ee has ACQUIRED PC5 sync, so traffic is not sent into a link with no receiver.
+# Marker: "Sidelink UE synchronized", LOG_A(PHY) from UE_thread_sl (executables/nr-ue.c) - emitted once,
+# after SLSS search succeeded and the SL-MIB was decoded. LOG_A always prints, so no --debug is needed.
+# It previously matched "RX SLSS REQ", which is LOG_I(NR_MAC) from config_ue_sl.c: an RRC->MAC request to
+# *configure* SLSS reception, emitted at startup. That returned in ~1s while sync actually takes ~8s over
+# two hosts, so the ping began before the peer could receive (icmp_seq 1-8 lost, 9-15 all fine).
 wait_for_pc5_sync() {
     local log_file="/tmp/result_nearby.log"
     local timeout=${1:-60}
@@ -744,7 +779,7 @@ wait_for_pc5_sync() {
     echo "Waiting for PC5 sync (timeout: ${timeout}s)..."
     local elapsed=0
     while [ $elapsed -lt $timeout ]; do
-        if [ -f "$log_file" ] && grep -q "RX SLSS REQ" "$log_file"; then
+        if [ -f "$log_file" ] && grep -q "Sidelink UE synchronized" "$log_file"; then
             echo "PC5 Sync Achieved (${elapsed}s elapsed)"
             return 0
         fi
@@ -819,15 +854,18 @@ print_test_summary() {
         local ping_rate_str="N/A"
     fi
 
-    # Calculate PSSCH pass rates (RX/TX format for success rate).
-    # RX and TX counts come from each node's last "PSSCH Stats" log line, which
-    # are sampled at slightly different times across nodes. This can make a
-    # receiver's count exceed the paired transmitter's (RX > TX), producing
-    # impossible >100% rates. Clamp each RX to its paired TX to avoid that.
+    # Calculate PSSCH pass rates (RX/TX format).
+    # Report the counters as logged - do NOT clamp RX to its paired TX. The clamp used to be here to hide
+    # "impossible" >100% rates, but RX exceeding TX is a genuine signal that something is wrong, and hiding
+    # it cost real debugging time: PSSCH stats were being counted twice (decode completion AND the SLSCH
+    # indication), and the clamp turned 28/22 into a tidy 22/22 = 100%, so a 56% link read as perfect for
+    # weeks. Fixed in dfe48cafd5; if a rate ever exceeds 100% again, that is a counting bug to chase, not a
+    # display glitch to suppress.
+    # NOTE these rates are still not link quality: RX and TX are snapshots of each node's last periodic
+    # "PSSCH Stats" line, and a node that transmits in a slot cannot receive in it (PC5 is half-duplex), so
+    # RX ok is legitimately below the peer's TX. Use "RX not ok" for PHY quality and ping for delivery.
     local rx_nearby_c=${LAST_PSSCH_RX_NEARBY:-0}
-    [ "$rx_nearby_c" -gt "${LAST_PSSCH_TX_SYNCREF:-0}" ] && rx_nearby_c=${LAST_PSSCH_TX_SYNCREF:-0}
     local rx_syncref_c=${LAST_PSSCH_RX_SYNCREF:-0}
-    [ "$rx_syncref_c" -gt "${LAST_PSSCH_TX_NEARBY:-0}" ] && rx_syncref_c=${LAST_PSSCH_TX_NEARBY:-0}
 
     # Rate1: syncref TX -> nearby RX
     if [ -n "$LAST_PSSCH_TX_SYNCREF" ] && [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
@@ -1092,25 +1130,41 @@ save_softmodem_logs() {
 GNOME_WIN_IDX=0
 GNOME_WIN_POS=("80x20+0+0" "80x20+960+0" "80x20+0+540" "80x20+960+540" "80x10+480+780")
 
+# Final command line as actually launched: the command string plus the optional --debug <layer> argument.
+# Single source of truth, used by BOTH run_cmd and the commands.txt records, so what is logged is exactly
+# what ran. Restricted to softmodem launches - run_cmd also runs ping and iperf3, which reject
+# --log_config.*. The separator is written explicitly rather than padded into debug_log_arg.
+final_cmd() {
+    local c="$1"
+    if [[ -n "$debug_log_arg" && "$c" == *softmodem* ]]; then
+        printf '%s %s' "$c" "$debug_log_arg"
+    else
+        printf '%s' "$c"
+    fi
+}
+
 run_cmd() {
     [[ $# -ge 1 ]] && host_name=$1
     [[ $# -ge 2 ]] && cmd=$2
     [[ $# -ge 3 ]] && log_file=$3
+
+    local launch_cmd
+    launch_cmd=$(final_cmd "$cmd")
 
     local geom="${GNOME_WIN_POS[$((GNOME_WIN_IDX % ${#GNOME_WIN_POS[@]}))]}"
     GNOME_WIN_IDX=$((GNOME_WIN_IDX + 1))
 
     if [[ $host_name == "local" ]] || [[ $host_name == "" ]] ; then
         if [ $USE_GNOME -ge 1 ]; then
-            gnome-terminal --geometry=$geom -- bash -c "source ~/.bashrc 2>/dev/null; eval \"$cmd\" 2>&1 | tee $log_file" &
+            gnome-terminal --geometry=$geom -- bash -c "source ~/.bashrc 2>/dev/null; eval \"$launch_cmd\" 2>&1 | tee $log_file" &
         else
-            eval "$cmd" 2>&1 | tee $log_file &
+            eval "$launch_cmd" 2>&1 | tee $log_file &
         fi
     else
         if [ $USE_GNOME -ge 1 ]; then
-            gnome-terminal --geometry=$geom -- bash -c "ssh $host_name '$cmd' 2>&1 | tee $log_file" &
+            gnome-terminal --geometry=$geom -- bash -c "ssh $host_name '$launch_cmd' 2>&1 | tee $log_file" &
         else
-            bash -c "ssh $host_name '$cmd'" 2>&1 | tee $log_file &
+            bash -c "ssh $host_name '$launch_cmd'" 2>&1 | tee $log_file &
         fi
     fi
 }
@@ -1636,7 +1690,7 @@ run_gNB_cmd() {
 
     # Save command to commands.txt
     echo "=== gNB Command (host: $host_name) ===" >> "$log_dir/commands.txt"
-    echo "$gNB_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$gNB_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$gNB_cmd" $log_file
@@ -1656,27 +1710,27 @@ run_nrUE_cmd() {
         if [[ $host_name == 'local' ]]; then
             nrUE_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                     ./nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
                     --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         else
             nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                     sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
                     --rfsimulator.serveraddr $LOCAL_HOST_IP --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         fi
     elif [[ $test_type == "usrp" ]]; then
         nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                     sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
                     -E $sa_flag --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
                     --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
     elif [[ $test_type == "vrtsim" ]]; then
         # vrtsim (shared-memory radio) is local-host only; UE is the Uu client.
         nrUE_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                     ./nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --ssb 516 --uicc0.imsi 001010000000001 \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --ssb 516 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
                     $sa_flag --device.name vrtsim --vrtsim.role client --vrtsim.chanmod 0 \
                     --log_config.global_log_level info"
     fi
@@ -1685,7 +1739,7 @@ run_nrUE_cmd() {
 
     # Save command to commands.txt
     echo "=== nrUE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
-    echo "$nrUE_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$nrUE_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$nrUE_cmd" $log_file
@@ -1776,7 +1830,7 @@ run_syncref_cmd() {
 
     # Save command to commands.txt
     echo "=== Syncref UE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
-    echo "$syncref_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$syncref_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$syncref_cmd" $log_file
@@ -1841,7 +1895,8 @@ run_nearby_cmd() {
                         sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                         -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf -E $sa_flag --sl-mode 2 \
                         $ext_clock_flag \
-                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs"
+                        --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif $mcs \
+                        --log_config.global_log_level info"
         elif [[ $test_type == "vrtsim" ]]; then
             # vrtsim Nearby (sl_mode 2): PC5 client, local host only.
             nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
@@ -1854,7 +1909,7 @@ run_nearby_cmd() {
 
     # Save command to commands.txt
     echo "=== Nearby UE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
-    echo "$nearby_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$nearby_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$nearby_cmd" $log_file
@@ -1934,7 +1989,11 @@ slmode1_srap_ping_test() {
         [[ $remaining -lt 16 ]] && remaining=16
         duration=$remaining
     else
-        [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
+        # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
+        # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
+        # the gate was skipped altogether, so the ping started before the peer could receive.
+        [[ $remaining -lt 20 ]] && remaining=20
+        wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
         [[ $duration -lt 0 ]] && duration=0
     fi
@@ -1948,13 +2007,24 @@ slmode1_srap_ping_test() {
     # Gate the ping on remote UE Core registration (SL mode-1 relay). PC5 sync
     # alone is not enough: the remote UE's oaitun_ue2 keeps its pre-registration
     # default IP until the PDU Session Establishment Accept arrives via the relay.
-    if wait_for_remote_ue_core_ip 40; then
-        evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
+    # Gate the ping on remote UE Core registration - SL MODE-1 RELAY ONLY. There, PC5 sync alone is not
+    # enough: the remote UE's oaitun_ue2 keeps its pre-registration default IP until the PDU Session
+    # Establishment Accept arrives via the relay.
+    #
+    # SL mode-2 has no gNB, no core and no registration - its TUN IP comes from the SL preconfiguration.
+    # Running this there blocked for the full 40s on a marker ("applying core IP") that a mode-2 UE never
+    # logs, then took the else branch and forced FAIL with the ping skipped entirely.
+    if [[ $sl_mode -eq 1 ]]; then
+        if wait_for_remote_ue_core_ip 40; then
+            evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
+        else
+            LAST_TEST_RESULT="FAIL"
+            LAST_TX_PACKETS=0
+            LAST_RX_PACKETS=0
+            echo "Skipping ping: remote UE registration did not complete (no Core IP)."
+        fi
     else
-        LAST_TEST_RESULT="FAIL"
-        LAST_TX_PACKETS=0
-        LAST_RX_PACKETS=0
-        echo "Skipping ping: remote UE registration did not complete (no Core IP)."
+        evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
     fi
 
     # Cleanup all processes (nearby_host_name was cleaned up in the evaluate_ping_test)
@@ -2225,7 +2295,7 @@ run_gNB_cmd_with_noise() {
     log_file="/tmp/result_gNB.log"
 
     echo "=== gNB Command (noise=${noise_power}dB, ploss=${ploss}dB, config=${bler_conf_tag}) ===" >> "$log_dir/commands.txt"
-    echo "$gNB_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$gNB_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$gNB_cmd" $log_file
@@ -2282,7 +2352,7 @@ run_syncref_cmd_with_noise() {
     log_file="/tmp/result_nrUE_syncref.log"
 
     echo "=== Relay UE Command (noise=${noise_power}dB, mcs=${mcs}) ===" >> "$log_dir/commands.txt"
-    echo "$syncref_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$syncref_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$syncref_cmd" $log_file
@@ -2340,7 +2410,7 @@ run_nearby_cmd_with_noise() {
     log_file="/tmp/result_nearby.log"
 
     echo "=== Remote UE Command (noise=${noise_power}dB, mcs=${mcs}) ===" >> "$log_dir/commands.txt"
-    echo "$nearby_cmd" >> "$log_dir/commands.txt"
+    echo "$(final_cmd "$nearby_cmd")" >> "$log_dir/commands.txt"
     echo "" >> "$log_dir/commands.txt"
 
     run_cmd $host_name "$nearby_cmd" $log_file
@@ -2667,7 +2737,11 @@ pc5_ping_test() {
         [[ $remaining -lt 16 ]] && remaining=16
         duration=$remaining
     else
-        [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
+        # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
+        # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
+        # the gate was skipped altogether, so the ping started before the peer could receive.
+        [[ $remaining -lt 20 ]] && remaining=20
+        wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
         [[ $duration -lt 0 ]] && duration=0
     fi
@@ -2821,7 +2895,11 @@ pc5_csi_acquisition_psfch_period_test() {
         [[ $remaining -lt 16 ]] && remaining=16
         duration=$remaining
     else
-        [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
+        # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
+        # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
+        # the gate was skipped altogether, so the ping started before the peer could receive.
+        [[ $remaining -lt 20 ]] && remaining=20
+        wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
         [[ $duration -lt 0 ]] && duration=0
     fi
@@ -3008,7 +3086,11 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
         [[ $remaining -lt 16 ]] && remaining=16
         duration=$remaining
     else
-        [[ $remaining -gt 0 ]] && wait_for_pc5_sync $remaining
+        # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
+        # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
+        # the gate was skipped altogether, so the ping started before the peer could receive.
+        [[ $remaining -lt 20 ]] && remaining=20
+        wait_for_pc5_sync $remaining
         duration=$(( duration - $(date +%s) + wait_start ))
         [[ $duration -lt 0 ]] && duration=0
     fi

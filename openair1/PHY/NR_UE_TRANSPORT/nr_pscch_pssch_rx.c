@@ -21,9 +21,12 @@
 
 #define _GNU_SOURCE
 
+// Fixed-point scale used by the RSRP conversion, matching nr_dl_channel_estimation.c and csi_rx.c
+// (both define pow_2_30_dB as 90).
+#define PSCCH_POW_2_30_DB 90
+
 #include "PHY/defs_nr_UE.h"
 #include "PHY/nr_phy_common/inc/nr_sl_decode_defs.h"  // episys SL port: shared LDPC decode/HARQ/ULSCH/PUSCH structs (no gNB coupling)
-#include "PHY/gold.h"       // episys SL port: gold_generic (was lte_gold_generic on the old branch)
 #include "NR_IF_Module.h"
 #include "openair1/SCHED_NR_UE/defs.h"
 #include "PHY/NR_UE_TRANSPORT/nr_transport_proto_ue.h"
@@ -34,12 +37,20 @@
 #include "PHY/NR_UE_ESTIMATION/nr_estimation.h"                 // nr_pssch_channel_estimation (UE-native SL DMRS ch-est)
 #include "PHY/nr_phy_common/inc/nr_phy_common.h"                // nr_scale_channel, nr_channel_level, nr_compute_llr
 #include "PHY/nr_phy_common/inc/nr_channel_compensation.h"      // nr_channel_compensation
+#include "PHY/NR_REFSIG/nr_refsig.h"                            // nr_gold_pdcch/nr_pdcch_dmrs_ref (PSCCH DMRS), gold_cache
+#include "PHY/NR_UE_ESTIMATION/filt16a_32.h"                    // filt16a_1 (PSCCH per-PRB channel estimate)
+#include "PHY/sse_intrin.h"                                     // simde intrinsics (PSCCH MRC)
+#include "common/platform_types.h"                               // ceil_mod
+#include "PHY/MODULATION/nr_modulation.h"                       // nr_modulation (QPSK DMRS/SCI mapping)
+#include "PHY/CODING/nrPolar_tools/nr_polar_defs.h"             // polar_decoder_int16
+#include "PHY/CODING/nrPolar_tools/nr_polar_dci_defs.h"         // NR_POLAR_SCI_MESSAGE_TYPE
+#include "PHY/CODING/coding_defs.h"                             // crc24c (PSCCH CRC -> PSSCH Nid)
 
 /* episys SL data-plane port (develop-way reconciliation): nr_fill_sl_indication and
    nr_fill_sl_rx_indication are provided by develop's SCHED_NR_UE/phy_procedures_nr_ue_sl.c
    (already wired into develop's SL threads + PSBCH/SSB path). The SLSCH-fill logic that used
    to live in episys's nr_fill_sl_rx_indication has been grafted into develop's version there.
-   Only the PSSCH-specific helpers (nr_pdcch_unscrambling, nr_postDecode_slsch) remain here. */
+   Only the PSCCH/PSSCH-specific helpers (nr_postDecode_slsch and the PSCCH receive chain) remain here. */
 
 // nr_get_code_rate_ul lives in LAYER2/NR_MAC_COMMON/nr_mac_common.h; forward-declare here to avoid a PHY->MAC include.
 extern uint32_t nr_get_code_rate_ul(uint8_t Imcs, uint8_t table_idx);
@@ -108,35 +119,13 @@ void nr_sl_unscrambling(int16_t *llr, uint32_t size, uint32_t Nid, uint32_t n_RN
   nr_codeword_unscrambling(llr, size, 0, Nid, n_RNTI);
 }
 
-void nr_pdcch_unscrambling(int16_t *e_rx,
-                           uint16_t scrambling_RNTI,
-                           uint32_t length,
-                           uint16_t pdcch_DMRS_scrambling_id,
-                           int16_t *z2,
-                           int sci_flag) {
-  int i;
-  uint8_t reset;
-  uint32_t x1 = 0, x2 = 0, s = 0;
-  uint16_t n_id; //{0,1,...,65535}
-  uint32_t rnti = (uint32_t) scrambling_RNTI;
-  reset = 1;
-  // x1 is set in first call to lte_gold_generic
-  n_id = pdcch_DMRS_scrambling_id;
-  x2 = sci_flag == 0 ? ((rnti<<16) + n_id) : ((n_id<<15) + 1010); //mod 2^31 is implicit //this is c_init in 38.211 v15.1.0 Section 7.3.2.3
-
-  LOG_D(PHY,"PDCCH Unscrambling x2 %x : scrambling_RNTI %x\n", x2, rnti);
-
-  for (i = 0; i < length; i++) {
-    if ((i & 0x1f) == 0) {
-      s = gold_generic(&x1, &x2, reset);
-      reset = 0;
-    }
-
-    if (((s >> (i % 32)) & 1) == 1)
-      z2[i] = -e_rx[i];
-    else
-      z2[i]=e_rx[i];
-  }
+/* PSCCH LLR descrambling, 38.211 8.3.3.1: inverse of nr_pscch_scrambling(), same
+ * c_init = (1010 << 16) + Nid, so a set sequence bit flips the sign of the soft bit. */
+static void nr_pscch_unscrambling(const int16_t *llr, uint32_t length, uint16_t Nid, int16_t *e_rx)
+{
+  const uint32_t *seq = gold_cache((1010u << 16) + Nid, (length + 31) / 32);
+  for (uint32_t i = 0; i < length; i++)
+    e_rx[i] = ((seq[i >> 5] >> (i & 31)) & 1) ? -llr[i] : llr[i];
 }
 
 void nr_postDecode_slsch(PHY_VARS_NR_UE *UE, notifiedFIFO_elt_t *req,UE_nr_rxtx_proc_t *proc,nr_phy_data_t *phy_data, int8_t *ack_nack_rcvd, uint8_t num_acks)
@@ -154,8 +143,12 @@ void nr_postDecode_slsch(PHY_VARS_NR_UE *UE, notifiedFIFO_elt_t *req,UE_nr_rxtx_
         slsch_harq->processedSegments,
         rdata->nbSegments);
   if (decodeSuccess) {
-    memcpy(slsch_harq->b + rdata->offset, slsch_harq->c[r], rdata->Kr_bytes - (slsch_harq->F >> 3) - ((slsch_harq->C > 1) ? 3 : 0));
-
+    /* develop refactor: NR_UL_gNB_HARQ_t.c is a FLAT aggregated code-block buffer (nr_sl_decode_defs.h),
+     * not the old uint8_t** array of per-segment pointers, so segment r starts at a byte offset of
+     * r * (K >> 3) - matching develop's own reassembly in nr_ulsch_decoding.c:282. The previous
+     * slsch_harq->c[r] passed the r-th BYTE as the source address. */
+    const uint32_t seg_len = rdata->Kr_bytes - (slsch_harq->F >> 3) - ((slsch_harq->C > 1) ? 3 : 0);
+    memcpy(slsch_harq->b + rdata->offset, slsch_harq->c + r * (slsch_harq->K >> 3), seg_len);
   } else {
     LOG_D(NR_PHY, "ULSCH %d in error\n", rdata->ulsch_id);
   }
@@ -416,6 +409,275 @@ static int nr_sl_extract_rbs(int rxFsize,
   return j;
 }
 
+/* ---- SCI-1A (PSCCH) receive ---------------------------------------------------------------------
+ * The reference has no bespoke PSCCH receiver: it drives the SCI-1A decode through the PDCCH chain -
+ * per-symbol channel estimate, RE extraction, channel level, compensation, MRC, clipped LLRs, descrambling,
+ * polar decode, false-detection. The helpers below are PC5-local copies of that chain in develop's c16_t
+ * DSP; no Uu function is modified for sidelink.
+ *
+ * What differs from PDCCH, all of it a property of PSCCH (38.211 8.3): the PRBs are contiguous, so there is
+ * no CORESET bitmap and no REG-bundle interleaving (REs in linear order, demapping is the identity); the
+ * aggregation level is PRBs * symbols, so the coded length is agg * 18 bits not agg * 108; the polar message
+ * type is NR_POLAR_SCI_MESSAGE_TYPE with n_RNTI 0, so a pass is crc == 0; and the DMRS REs are measured for
+ * RSRP, which sensing needs (TS 38.214 8.1.4). */
+
+#define PSCCH_DATA_RE_PER_RB 9 // 12 REs per PRB less the 3 DMRS REs
+
+/* A decode is kept if fewer than encoded_length / PSCCH_FALSE_DETECTION_DIVISOR coded bits disagree with the
+ * re-encoded codeword. DELIBERATE DIVERGENCE from the reference, which compares against an absolute
+ * `thres + 30` where thres is a running average over ACCEPTED decodes only: 30 bits is 7% of this 432-bit
+ * codeword, so it rejects every genuine SCI-1A below about 9 dB, and since the average never sees a rejected
+ * decode it cannot recover. Relative and stateless instead; recalibrate with nr_pscchsim. */
+#define PSCCH_FALSE_DETECTION_DIVISOR 4
+
+/* Channel estimate for one PSCCH symbol: per PRB, the mean of its 3 DMRS REs (k % 12 == 1) held flat across
+ * the PRB. Same estimator as develop's nr_pdcch_channel_estimation (CH_INTERP == 0); copied rather than
+ * called because that one takes its rxdataF row stride from ue->frame_parms, while the sidelink path runs on
+ * SL_UE_PHY_PARAMS.sl_frame_params with a full-slot rxdataF. Also accumulates the sensing RSRP. */
+static void nr_pscch_channel_estimation(const NR_DL_FRAME_PARMS *fp,
+                                        int nb_rb,
+                                        int start_rb,
+                                        int symbol,
+                                        int est_size,
+                                        c16_t ch_est[][est_size],
+                                        int rxFsize,
+                                        c16_t rxdataF[][rxFsize],
+                                        const c16_t *pilot,
+                                        int64_t *dmrs_power_sum,
+                                        int *dmrs_re_count)
+{
+  const int symb_sz = fp->ofdm_symbol_size;
+  const int symbol_offset = symbol * symb_sz;
+  const int start_sc = (fp->first_carrier_offset + start_rb * NR_NB_SC_PER_RB) % symb_sz;
+
+  for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
+    // A PRB's pilots are indexed by its ABSOLUTE position in the grid (38.211 7.4.1.3.2), which is how
+    // nr_generate_sci1() maps them, hence the start_rb offset into the sequence.
+    const c16_t *pil = &pilot[start_rb * 3];
+    c16_t *dl_ch = ch_est[aarx];
+    memset(dl_ch, 0, sizeof(c16_t) * est_size);
+    int k = start_sc;
+    c32_t ch_sum = {0, 0};
+
+    for (int pilot_cnt = 0; pilot_cnt < 3 * nb_rb; pilot_cnt++) {
+      const c16_t rxF = rxdataF[aarx][symbol_offset + ((k + 1) % symb_sz)];
+      *dmrs_power_sum += (int64_t)rxF.r * rxF.r + (int64_t)rxF.i * rxF.i;
+      (*dmrs_re_count)++;
+      // pilot is already the complex conjugate of the transmitted DMRS (nr_pdcch_dmrs_ref)
+      const c16_t ch = c16mulShift(*pil++, rxF, 15);
+      ch_sum.r += ch.r;
+      ch_sum.i += ch.i;
+      k = (k + 4) % symb_sz;
+
+      if (pilot_cnt % 3 == 2) { // one PRB's worth of pilots: average and spread over its 12 REs
+        const c16_t ch_avg = {ch_sum.r / 3, ch_sum.i / 3};
+        multadd_real_vector_complex_scalar(filt16a_1, ch_avg, dl_ch, 16);
+        dl_ch += NR_NB_SC_PER_RB;
+        ch_sum = (c32_t){0, 0};
+      }
+    }
+  }
+}
+
+/* RE extraction for one PSCCH symbol: the nb_rb contiguous PRBs from start_rb, keeping the 9 data REs of
+ * each PRB (the DMRS REs 1/5/9 are dropped) in LINEAR order - PSCCH has no REG-bundle interleaving, so
+ * this order is exactly the one nr_generate_sci1() mapped the coded bits in. */
+static void nr_pscch_extract_rbs(const NR_DL_FRAME_PARMS *fp,
+                                 int nb_rb,
+                                 int start_rb,
+                                 int symbol,
+                                 int rxFsize,
+                                 c16_t rxdataF[][rxFsize],
+                                 int est_size,
+                                 c16_t ch_est[][est_size],
+                                 int ext_size,
+                                 c16_t rxF_ext[][ext_size],
+                                 c16_t ch_ext[][ext_size])
+{
+  const int symb_sz = fp->ofdm_symbol_size;
+  const int symbol_offset = symbol * symb_sz;
+  const int start_sc = (fp->first_carrier_offset + start_rb * NR_NB_SC_PER_RB) % symb_sz;
+
+  for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
+    const c16_t *ch0 = ch_est[aarx]; // estimates are stored allocation-relative, contiguous from PRB 0
+    c16_t *rxF_e = rxF_ext[aarx];
+    c16_t *ch_e = ch_ext[aarx];
+    int k = start_sc;
+
+    for (int rb = 0; rb < nb_rb; rb++) {
+      for (int re = 0; re < NR_NB_SC_PER_RB; re++) {
+        if ((re & 3) != 1) { // skip the DMRS REs (re == 1, 5, 9)
+          *rxF_e++ = rxdataF[aarx][symbol_offset + k];
+          *ch_e++ = ch0[re];
+        }
+        k = (k + 1) % symb_sz;
+      }
+      ch0 += NR_NB_SC_PER_RB;
+    }
+  }
+}
+
+// Maximum-ratio combining of the compensated REs into antenna 0.
+static void nr_pscch_detection_mrc(int nb_ant, int sz, c16_t rxF_comp[][sz])
+{
+  c16_t *rx0 = rxF_comp[0];
+  for (int a = 1; a < nb_ant; a++) {
+    c16_t *rx = rxF_comp[a];
+    for (int i = 0; i < sz; i += 4)
+      *(simde__m128i *)(rx0 + i) = simde_mm_adds_epi16(simde_mm_srai_epi16(*(simde__m128i *)(rx0 + i), 1),
+                                                       simde_mm_srai_epi16(*(simde__m128i *)(rx + i), 1));
+  }
+}
+
+/* QPSK soft bits from the compensated REs, clipped into [-32, 31] as the reference implementation's
+ * nr_pdcch_llr does. The clip is part of the decoder's input contract, not a normalisation: the polar
+ * decoder is fed a narrow window, so the channel-level shift above is what sets the scale. */
+static void nr_pscch_llr(int nb_re, const c16_t *rxF_comp, int16_t *llr)
+{
+  for (int i = 0; i < nb_re; i++) {
+    *llr++ = min(max(rxF_comp[i].r, -32), 31);
+    *llr++ = min(max(rxF_comp[i].i, -32), 31);
+  }
+}
+
+/* A CRC pass alone is not a detector: the list polar decoder searches for a CRC-consistent path and finds
+ * one in noise often enough to matter. Re-encode the decoded payload and count the coded bits whose sign
+ * disagrees with the received soft bits - few for a real transmission, many for noise. */
+static uint16_t nr_sci1_false_detection(const uint64_t *sci,
+                                        const int16_t *soft_in,
+                                        int encoded_length,
+                                        uint16_t payload_bits,
+                                        uint8_t agg)
+{
+  uint32_t encoder_output[NR_MAX_DCI_SIZE_DWORD] = {0};
+  uint64_t payload[2] = {sci[0], sci[1]};
+  polar_encoder_fast(payload, (void *)encoder_output, 0 /* crcmask: n_RNTI is 0 on sidelink */, 1,
+                     NR_POLAR_SCI_MESSAGE_TYPE, payload_bits, agg);
+  const uint8_t *enc = (const uint8_t *)encoder_output;
+  uint16_t mismatched = 0;
+  for (int i = 0; i < encoded_length / 8; i++)
+    for (int b = 0; b < 8; b++) // a coded 1 is transmitted as a negative amplitude, i.e. a negative LLR
+      mismatched += ((enc[i] >> b) & 1) ^ ((soft_in[i * 8 + b] >> 15) & 1);
+  return mismatched;
+}
+
+/* Returns 0 and writes *sci1_payload + *pssch_Nid on an accepted SCI-1A, -1 otherwise. rxdataF must already
+ * hold the FEP'd PSCCH symbols. Every sidelink RX slot is decoded - there is no presence test - so the CRC
+ * and the false-detection check are what reject the empty ones. */
+int nr_rx_pscch(PHY_VARS_NR_UE *ue,
+                const UE_nr_rxtx_proc_t *proc,
+                const NR_DL_FRAME_PARMS *fp,
+                const sl_nr_rx_config_pscch_pdu_t *pscch,
+                int rxFsize,
+                c16_t rxdataF[][rxFsize],
+                uint64_t *sci1_payload,
+                uint16_t *pssch_Nid,
+                int16_t *pscch_rsrp_dBm)
+{
+  const int n_rb = pscch->pscch_numrbs;
+  const int dur = pscch->pscch_numsym;
+  const int start_symb = 1; // symbol 0 is AGC/guard, as on the transmit side
+  const int start_rb = pscch->pscch_startrb;
+  const uint16_t Nid = pscch->pscch_dmrs_scrambling_id;
+  const uint16_t payload_bits = pscch->sci_1a_length;
+  const int agg = n_rb * dur; // "aggregation level" = PRBs * symbols, as passed to the TX polar encoder
+  const int nbRx = fp->nb_antennas_rx;
+
+  if (n_rb <= 0 || dur <= 0 || start_symb + dur > NR_SYMBOLS_PER_SLOT || payload_bits == 0
+      || payload_bits > 64 || nbRx < 1) {
+    LOG_D(NR_PHY, "PSCCH RX: invalid config (n_rb %d dur %d sci1_len %d)\n", n_rb, dur, payload_bits);
+    return -1;
+  }
+
+  const int data_re = n_rb * PSCCH_DATA_RE_PER_RB;            // data REs in one PSCCH symbol
+  const uint32_t G = (uint32_t)agg * 18;                      // coded bits == the TX encoded_length
+  const int est_size = ceil_mod(fp->ofdm_symbol_size + LTE_CE_FILTER_LENGTH, 16);
+  const int ext_size = ceil_mod(data_re, 32);
+
+  __attribute__((aligned(32))) c16_t ch_est[nbRx][est_size];
+  __attribute__((aligned(32))) c16_t rxF_ext[nbRx][ext_size];
+  __attribute__((aligned(32))) c16_t ch_ext[nbRx][ext_size];
+  __attribute__((aligned(32))) c16_t rxF_comp[nbRx][ext_size];
+  c16_t pilot[(n_rb + start_rb) * 3] __attribute__((aligned(16)));
+  int16_t llr[G];
+  int64_t dmrs_power_sum = 0;
+  int dmrs_re_count = 0;
+
+  for (int symbol_idx = 0; symbol_idx < dur; symbol_idx++) {
+    const int l = start_symb + symbol_idx;
+    // The very sequence the transmitter modulated onto this symbol's DMRS REs, conjugated.
+    const uint32_t *gold = nr_gold_pdcch(fp->N_RB_DL, fp->symbols_per_slot, Nid, proc->nr_slot_rx, l);
+    nr_pdcch_dmrs_ref(gold, pilot, n_rb + start_rb);
+
+    nr_pscch_channel_estimation(fp, n_rb, start_rb, l, est_size, ch_est, rxFsize, rxdataF, pilot,
+                                &dmrs_power_sum, &dmrs_re_count);
+    nr_pscch_extract_rbs(fp, n_rb, start_rb, l, rxFsize, rxdataF, est_size, ch_est, ext_size, rxF_ext, ch_ext);
+
+    // One equalisation scale per symbol, derived from the measured channel level, so the LLRs of every PRB
+    // are comparable before they are clipped.
+    int32_t avg[nbRx];
+    nr_channel_level(0, ext_size, ch_ext, nbRx, 1, avg, data_re);
+    int32_t avgs = 0;
+    for (int aarx = 0; aarx < nbRx; aarx++)
+      avgs = cmax(avgs, avg[aarx]);
+    const int log2_maxh = (log2_approx(avgs) / 2) + 5;
+
+    memset(rxF_comp, 0, sizeof(rxF_comp));
+    for (int aarx = 0; aarx < nbRx; aarx++)
+      mult_cpx_conj_vector(ch_ext[aarx], rxF_ext[aarx], rxF_comp[aarx], ceil_mod(data_re, 4), log2_maxh);
+    if (nbRx > 1)
+      nr_pscch_detection_mrc(nbRx, ext_size, rxF_comp);
+
+    nr_pscch_llr(data_re, rxF_comp[0], &llr[symbol_idx * data_re * 2]);
+  }
+
+  /* PSCCH RSRP: the received power on the PSCCH DMRS REs. The sensing procedure compares it against
+   * sl_thresh_rsrp to decide whether a peer's reservation is strong enough to exclude a candidate
+   * resource, so it has to be a real measurement, not a placeholder. Same conversion as
+   * nr_dl_channel_estimation.c, against the PC5 card's RX gain. */
+  if (pscch_rsrp_dBm && dmrs_re_count > 0) {
+    const int32_t rsrp = (int32_t)(dmrs_power_sum / dmrs_re_count);
+    const int card = ue->rf_map_sl.card;
+    *pscch_rsrp_dBm = dB_fixed(rsrp) + 30 - PSCCH_POW_2_30_DB
+                      - ((int)openair0_cfg[card].rx_gain[0] - (int)openair0_cfg[card].rx_gain_offset[0])
+                      - dB_fixed(fp->ofdm_symbol_size);
+  }
+
+  /* One candidate only: l_subch is 1 in config_pscch_pdu_rx, and the reference's loop over
+   * number_of_candidates advances by the PDCCH CCE stride over a region holding a single candidate. */
+  int16_t e_rx[G];
+  nr_pscch_unscrambling(llr, G, Nid, e_rx);
+
+  // Two words, as the SCI-2 decode does: the polar decoder writes in 64-bit units, so a single uint64_t
+  // target could be overrun for some payload sizes.
+  uint64_t payload_out[2] = {0};
+  const uint32_t crc = polar_decoder_int16(e_rx, payload_out, 1, NR_POLAR_SCI_MESSAGE_TYPE, payload_bits, agg);
+  if (crc != 0) { // n_RNTI is 0 on sidelink, so a pass is crc == 0. No PSCCH in this slot.
+    LOG_D(NR_PHY, "%d.%d PSCCH: SCI-1A CRC failed (len %d, agg %d)\n", proc->frame_rx, proc->nr_slot_rx,
+          payload_bits, agg);
+    return -1;
+  }
+
+  const uint16_t mismatched = nr_sci1_false_detection(payload_out, e_rx, G, payload_bits, agg);
+  const uint32_t accept_limit = G / PSCCH_FALSE_DETECTION_DIVISOR;
+  if (mismatched >= accept_limit) {
+    ue->SL_UE_PHY_PARAMS.pscch.rx_errors++;
+    LOG_D(NR_PHY, "%d.%d PSCCH: SCI-1A false positive dropped, mismatched bits %d/%u (limit %u)\n",
+          proc->frame_rx, proc->nr_slot_rx, mismatched, G, accept_limit);
+    return -1;
+  }
+
+  ue->SL_UE_PHY_PARAMS.pscch.rx_ok++;
+  *sci1_payload = payload_out[0];
+  /* 38.211 8.3.1.1: the PSSCH DMRS + SLSCH scrambling Nid comes from the PSCCH CRC. Recompute it from the
+   * decoded payload exactly as nr_generate_sci1() does on the TX side, so both ends agree without either
+   * of them having to assume a fixed value. */
+  *pssch_Nid = (uint16_t)((crc24c((uint8_t *)payload_out, payload_bits) >> 8) & 0xFFFF);
+  LOG_D(NR_PHY, "%d.%d PSCCH: SCI-1A decoded OK (len %d, mismatched %d) -> PSSCH Nid %u\n", proc->frame_rx,
+        proc->nr_slot_rx, payload_bits, mismatched, *pssch_Nid);
+  return 0;
+}
+
 // UE-native sidelink PSSCH demodulator (episys SL data-plane port). Models develop's UE receiver
 // nr_rx_pdsch and reuses the common (UE-linked) DSP (nr_scale_channel / nr_channel_level /
 // nr_channel_compensation / nr_compute_llr) — NO gNB PHY (nr_rx_pusch / nr_pusch_channel_estimation)
@@ -436,6 +698,10 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
   NR_gNB_PUSCH *pssch_vars = &ue->pssch_vars[slsch_id];
 
   const int nbRx = fp->nb_antennas_rx;
+  // Every per-antenna loop and VLA below is dimensioned on nbRx. Stating the invariant also gives the
+  // compiler the lower bound it cannot infer from fp, which otherwise reports the avg[nl * nbRx] VLA in
+  // the nr_channel_level() call as a possibly-zero-size region (-Wstringop-overflow).
+  AssertFatal(nbRx >= 1, "PSSCH RX: nb_antennas_rx must be >= 1, got %d\n", nbRx);
   const int nl = 1; // sidelink PSSCH: single layer
   const int rb_size = pssch_pdu->num_subch * pssch_pdu->subchannel_size;
   const int rb_start = pssch_pdu->startrb;
@@ -469,6 +735,10 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
   // ---- 1) SL DMRS channel estimation (per DMRS symbol) + RX/noise power for the DTX test ----
   uint32_t nvar = 0, nvar_cnt = 0;
   int dmrs_symbol = -1;
+  /* Every DMRS symbol's index, so each data symbol can be equalised against its NEAREST estimate below.
+   * The estimates for all of them are computed here; using only the first one throws the rest away. */
+  int dmrs_syms[NR_SYMBOLS_PER_SLOT];
+  int n_dmrs_syms = 0;
   for (int aarx = 0; aarx < nbRx; aarx++) {
     pssch_vars->ulsch_power[aarx] = 0;
     pssch_vars->ulsch_noise_power[aarx] = 0;
@@ -478,6 +748,8 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
       continue;
     if (dmrs_symbol < 0)
       dmrs_symbol = sym;
+    if (n_dmrs_syms < NR_SYMBOLS_PER_SLOT)
+      dmrs_syms[n_dmrs_syms++] = sym;
     uint32_t nvar_tmp = 0;
     nr_pssch_channel_estimation(ue, proc, fp, Nid, rb_start, rb_size, sym,
                                 pssch_vars->ul_ch_estimates, rxFsize, rxdataF, &nvar_tmp);
@@ -497,7 +769,67 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     nvar /= nvar_cnt;
   for (int aarx = 0; aarx < nbRx; aarx++)
     pssch_vars->ulsch_noise_power[aarx] = nvar;
-  const int ch_est_offset = dmrs_symbol * fp->ofdm_symbol_size;
+
+
+  /* ---- 1b) residual-CFO estimate from the DMRS pair ----
+   * Two independent B210 TCXOs leave a residual carrier offset after sync. It shows up as a phase ramp
+   * along the slot: with 30 kHz SCS a symbol is ~33.3 us, so even a few hundred Hz rotates the
+   * constellation several degrees per symbol, and QPSK's decision boundary is only 45 deg away. Equalising
+   * against the nearest DMRS symbol bounds the error but does not remove it. The DMRS symbols are spaced
+   * far enough apart (3 and 10 here) to measure the ramp directly: the argument of h_last * conj(h_first),
+   * summed over the allocation and the RX antennas, is the accumulated rotation between them. CFO is common
+   * to all antennas, so summing across them is a coherent average, not a mix of unrelated channels. */
+  double cfo_rad_per_sym = 0.0;
+  if (n_dmrs_syms >= 2) {
+    const int first = dmrs_syms[0], last = dmrs_syms[n_dmrs_syms - 1];
+    const int span = last - first;
+    int64_t acc_re = 0, acc_im = 0;
+    for (int aarx = 0; aarx < nbRx; aarx++) {
+      // Allocation-relative from the symbol base, matching how nr_pssch_channel_estimation stores it.
+      const c16_t *h0 = (const c16_t *)&pssch_vars->ul_ch_estimates[aarx][first * fp->ofdm_symbol_size];
+      const c16_t *h1 = (const c16_t *)&pssch_vars->ul_ch_estimates[aarx][last * fp->ofdm_symbol_size];
+      for (int re = 0; re < buf_len; re++) {
+        acc_re += (int32_t)h1[re].r * h0[re].r + (int32_t)h1[re].i * h0[re].i;
+        acc_im += (int32_t)h1[re].i * h0[re].r - (int32_t)h1[re].r * h0[re].i;
+      }
+    }
+
+    /* Only feed the tracker from slots that plausibly carry a transmission. Most slots are noise, where the
+     * ramp is a uniformly random angle: folding those in would pull the average toward zero and, at the
+     * +-180/span wrap rails, inject large outliers. Reuse the DTX comparison (signal vs noise + pssch_thres)
+     * that gates the decode itself, so the tracker sees the same slots the decoder does. */
+    uint64_t sig_pwr = 0;
+    for (int aarx = 0; aarx < nbRx; aarx++)
+      sig_pwr += pssch_vars->ulsch_power[aarx];
+    const bool signal_present = (acc_re != 0 || acc_im != 0)
+                                && dB_fixed_x10((uint32_t)(sig_pwr / (uint64_t)nbRx))
+                                       >= dB_fixed_x10(nvar) + ue->pssch_thres;
+
+    SL_NR_UE_PSSCH_t *st = &ue->SL_UE_PHY_PARAMS.pssch;
+    if (signal_present) {
+      /* atan2 resolves the accumulated ramp only within +-pi, i.e. +-pi/span per symbol (+-25.7 deg here
+       * for span 7). Once tracking, pick the 2.pi/span-spaced alias closest to the running value so a true
+       * offset beyond that range unwraps instead of folding. */
+      double raw = atan2((double)acc_im, (double)acc_re) / (double)span;
+      if (st->cfo_samples > 0) {
+        const double alias = 2.0 * M_PI / (double)span;
+        const double k = round((st->cfo_rad_per_sym - raw) / alias);
+        raw += k * alias;
+      }
+      // First sample seeds the filter; afterwards a 1/8 IIR averages the per-slot noise down.
+      st->cfo_rad_per_sym = (st->cfo_samples == 0) ? raw : st->cfo_rad_per_sym + 0.125 * (raw - st->cfo_rad_per_sym);
+      st->cfo_samples++;
+
+      const double t_sym = (double)(fp->ofdm_symbol_size + fp->nb_prefix_samples)
+                           / ((double)fp->samples_per_subframe * 1000.0);
+      LOG_D(NR_PHY, "%d.%d PSSCH CFO: raw %.1f deg/sym, tracked %.1f deg/sym (%.0f Hz) over %u slots\n",
+            proc->frame_rx, proc->nr_slot_rx, raw * 180.0 / M_PI, st->cfo_rad_per_sym * 180.0 / M_PI,
+            st->cfo_rad_per_sym / (2.0 * M_PI * t_sym), st->cfo_samples);
+    }
+    // Correct with the tracked value, not this slot's raw estimate - including on slots the gate rejected,
+    // where the raw estimate is meaningless but the tracked one still holds.
+    cfo_rad_per_sym = st->cfo_rad_per_sym;
+  }
 
   // ---- 2) per-symbol demod: extract -> scale -> level -> compensate -> LLR (SCI1/SCI2 punctured) ----
   int32_t log2_maxh = 0;
@@ -510,6 +842,23 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     if (nb_re == 0)
       continue;
 
+    /* Equalise against the NEAREST DMRS symbol, not the first one. A single reference for the whole slot is
+     * valid only on a phase-coherent channel: rfsim/vrtsim are, two B210s on independent internal clocks
+     * (no shared 10 MHz/PPS) are not - residual CFO rotates the constellation progressively across the
+     * slot. With DMRS at symbols 3 and 10, symbol 12 was being equalised against a 9-symbol-stale estimate,
+     * which is why SLSCH failed over the air at 14-19 dB SNR while SCI-2 - sitting in symbol 1, next to its
+     * reference - decoded fine. All the DMRS estimates already exist; only the offset was wrong. */
+    int ch_sym = dmrs_syms[0];
+    int ch_dist = abs(sym - ch_sym);
+    for (int d = 1; d < n_dmrs_syms; d++) {
+      const int dist = abs(sym - dmrs_syms[d]);
+      if (dist < ch_dist) {
+        ch_dist = dist;
+        ch_sym = dmrs_syms[d];
+      }
+    }
+    const int ch_est_offset = ch_sym * fp->ofdm_symbol_size;
+
     __attribute__((aligned(32))) c16_t rxF_ext[nbRx][buf_len];
     __attribute__((aligned(32))) c16_t ch_ext[nl][nbRx][buf_len];
     memset(rxF_ext, 0, sizeof(rxF_ext));
@@ -521,6 +870,26 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
                         rxF_ext[aarx], ch_ext[0][aarx], fp, bwp_start_subcarrier,
                         rb_size, dmrs_flag, aarx);
     data_re_energy += signal_energy_nodc(rxF_ext[0], nb_re); // data-RE energy this symbol (DTX gate)
+
+    /* Undo the residual-CFO phase ramp accumulated between this symbol and the DMRS symbol it is equalised
+     * against. A scalar rotation of the received REs is equivalent to rotating the channel estimate, and far
+     * cheaper than re-interpolating the estimate per symbol. DMRS symbols are their own reference, so they
+     * rotate by zero and are left untouched. Magnitude is preserved, so the DTX gate above is unaffected. */
+    if (cfo_rad_per_sym != 0.0 && sym != ch_sym) {
+      const double theta = cfo_rad_per_sym * (double)(sym - ch_sym);
+      const int32_t cos_q15 = (int32_t)lround(cos(theta) * 32767.0);
+      const int32_t sin_q15 = (int32_t)lround(sin(theta) * 32767.0);
+      for (int aarx = 0; aarx < nbRx; aarx++) {
+        c16_t *x = rxF_ext[aarx];
+        for (int re = 0; re < nb_re; re++) {
+          // x *= e^-j.theta  ->  (a + jb)(cos - j.sin) = (a.cos + b.sin) + j(b.cos - a.sin)
+          const int32_t xr = (int32_t)x[re].r * cos_q15 + (int32_t)x[re].i * sin_q15;
+          const int32_t xi = (int32_t)x[re].i * cos_q15 - (int32_t)x[re].r * sin_q15;
+          x[re].r = (int16_t)((xr + (1 << 14)) >> 15);
+          x[re].i = (int16_t)((xi + (1 << 14)) >> 15);
+        }
+      }
+    }
 
     nr_scale_channel(buf_len, (int(*)[buf_len])ch_ext, 0, nb_re, nl, nbRx, 0);
 
@@ -592,8 +961,14 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     for (int aarx = 0; aarx < nbRx; aarx++)
       pssch_vars->ulsch_power[aarx] = 0; // force the caller's DTX test to treat this as "not detected"
   }
-  LOG_D(NR_PHY, "%d.%d PSSCH demod: %u SLSCH REs -> llr_layers[0] (Qm %d, rb %d, sym %d) data_re_e=%llu nvar=%u\n",
-        proc->frame_rx, proc->nr_slot_rx, llr_offset, Qm, rb_size, nr_of_symbols, (unsigned long long)data_re_energy, nvar);
+  // log2_maxh is the per-slot LLR scaling, derived from ONE symbol's channel level (see cl_done above).
+  // It is printed here because it is the prime suspect for over-the-air-only SLSCH failures: an ideal
+  // simulator channel makes a mis-derived value harmless, a real frequency-selective one does not.
+  LOG_D(NR_PHY,
+        "%d.%d PSSCH demod: %u SLSCH REs -> llr_layers[0] (Qm %d, rb %d, sym %d) data_re_e=%llu nvar=%u "
+        "log2_maxh=%d\n",
+        proc->frame_rx, proc->nr_slot_rx, llr_offset, Qm, rb_size, nr_of_symbols,
+        (unsigned long long)data_re_energy, nvar, log2_maxh);
 
   // episys SL PSFCH port (4c-A): descramble + polar-decode the collected SCI-2 (format 2A) ONLY on a
   // detected PSSCH (gated by !DTX — running polar decode on every blind RX slot overruns real-time). On
@@ -617,9 +992,10 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
       sci_ind.sfn = proc->frame_rx;
       sci_ind.slot = proc->nr_slot_rx;
       sci_ind.number_of_SCIs = 1;
-      sci_ind.sci_pdu.sci_payloadlen = pssch_pdu->sci2_len;
-      sci_ind.sci_pdu.Nid = Nid;
-      memcpy(sci_ind.sci_pdu.sci_payloadBits, sci_estimation, sizeof(sci_ind.sci_pdu.sci_payloadBits)); // 8 bytes
+      sci_ind.sci_pdu[0].sci_format_type = SL_SCI_FORMAT_2_ON_PSSCH;
+      sci_ind.sci_pdu[0].sci_payloadlen = pssch_pdu->sci2_len;
+      sci_ind.sci_pdu[0].Nid = Nid;
+      memcpy(sci_ind.sci_pdu[0].sci_payloadBits, sci_estimation, sizeof(sci_ind.sci_pdu[0].sci_payloadBits)); // 8 bytes
       nr_sidelink_indication_t sl_indication;
       nr_fill_sl_indication(&sl_indication, NULL, &sci_ind, proc, ue, phy_data);
       if (ue->if_inst && ue->if_inst->sl_indication)

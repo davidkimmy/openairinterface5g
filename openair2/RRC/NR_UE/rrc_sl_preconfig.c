@@ -178,6 +178,39 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
   sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16 = calloc(1, sizeof(long));
   *sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16 =
       NR_SL_UE_SelectedConfigRP_r16__sl_MaxNumPerReserve_r16_n2;
+
+  /* The rest of sl_UE_SelectedConfigRP_r16. config_ue_sl.c reads
+   * sl_SensingWindow / sl_SelectionWindowList / sl_Thres_RSRP_List / sl_ResourceReservePeriodList to
+   * populate the pool's T0/T1/T2 and mac_tx_params; they were all NULL here, so the sensing parameters
+   * were left unset. Values are filled by config_get
+   * from the "rsrc_selection_params" list below. */
+  struct NR_SL_UE_SelectedConfigRP_r16 *nr_sl_ue_Selected_config = sl_res_pool->sl_UE_SelectedConfigRP_r16;
+
+  nr_sl_ue_Selected_config->sl_SelectionWindowList_r16 =
+      calloc(1, sizeof(*nr_sl_ue_Selected_config->sl_SelectionWindowList_r16));
+  nr_sl_ue_Selected_config->sl_SelectionWindowList_r16->list.array =
+      (NR_SL_SelectionWindowConfig_r16_t **)malloc16_clear(sizeof(NR_SL_SelectionWindowConfig_r16_t *));
+  nr_sl_ue_Selected_config->sl_SelectionWindowList_r16->list.array[0] =
+      (NR_SL_SelectionWindowConfig_r16_t *)malloc16_clear(sizeof(NR_SL_SelectionWindowConfig_r16_t));
+  nr_sl_ue_Selected_config->sl_SelectionWindowList_r16->list.count = 1;
+
+  nr_sl_ue_Selected_config->sl_SensingWindow_r16 = calloc(1, sizeof(*nr_sl_ue_Selected_config->sl_SensingWindow_r16));
+
+  nr_sl_ue_Selected_config->sl_Thres_RSRP_List_r16 =
+      calloc(1, sizeof(*nr_sl_ue_Selected_config->sl_Thres_RSRP_List_r16));
+  nr_sl_ue_Selected_config->sl_Thres_RSRP_List_r16->list.array =
+      (NR_SL_Thres_RSRP_r16_t **)malloc16_clear(sizeof(NR_SL_Thres_RSRP_r16_t *));
+  nr_sl_ue_Selected_config->sl_Thres_RSRP_List_r16->list.array[0] =
+      (NR_SL_Thres_RSRP_r16_t *)malloc16_clear(sizeof(NR_SL_Thres_RSRP_r16_t));
+  nr_sl_ue_Selected_config->sl_Thres_RSRP_List_r16->list.count = 1;
+
+  nr_sl_ue_Selected_config->sl_ResourceReservePeriodList_r16 =
+      calloc(1, sizeof(*nr_sl_ue_Selected_config->sl_ResourceReservePeriodList_r16));
+  nr_sl_ue_Selected_config->sl_ResourceReservePeriodList_r16->list.array =
+      (NR_SL_ResourceReservePeriod_r16_t **)malloc16_clear(sizeof(NR_SL_ResourceReservePeriod_r16_t *));
+  nr_sl_ue_Selected_config->sl_ResourceReservePeriodList_r16->list.array[0] =
+      (NR_SL_ResourceReservePeriod_r16_t *)malloc16_clear(sizeof(NR_SL_ResourceReservePeriod_r16_t));
+  nr_sl_ue_Selected_config->sl_ResourceReservePeriodList_r16->list.count = 1;
   sl_res_pool->sl_RxParametersNcell_r16 = NULL;
   sl_res_pool->sl_ZoneConfigMCR_List_r16 = NULL;
   sl_res_pool->sl_FilterCoefficient_r16 = NULL;
@@ -190,7 +223,14 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
   sl_res_pool->sl_PriorityThreshold_r16 = NULL;
   sl_res_pool->sl_X_Overhead_r16 = NULL;
   sl_res_pool->sl_PowerControl_r16 = NULL;
-  sl_res_pool->sl_TxPercentageList_r16 = NULL;
+  // sl_TxPercentage feeds mac_tx_params.sl_res_ratio (the minimum
+  // fraction of candidate resources the sensing procedure must leave available).
+  sl_res_pool->sl_TxPercentageList_r16 = calloc(1, sizeof(*sl_res_pool->sl_TxPercentageList_r16));
+  sl_res_pool->sl_TxPercentageList_r16->list.array =
+      (NR_SL_TxPercentageConfig_r16_t **)malloc16_clear(sizeof(NR_SL_TxPercentageConfig_r16_t *));
+  sl_res_pool->sl_TxPercentageList_r16->list.array[0] =
+      (NR_SL_TxPercentageConfig_r16_t *)malloc16_clear(sizeof(NR_SL_TxPercentageConfig_r16_t));
+  sl_res_pool->sl_TxPercentageList_r16->list.count = 1;
   sl_res_pool->sl_MinMaxMCS_List_r16 = NULL;
 
   sl_res_pool->ext1 = calloc(1, sizeof(*sl_res_pool->ext1));
@@ -220,6 +260,25 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
     sprintf(aprefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0,SL_CONFIG_STRING_SL_RX_RPOOL_LIST, 0);
 
   config_get(config_get_if(), SL_POOLPARAMS, sizeofArray(SL_POOLPARAMS), aprefix);
+
+  /* Overlay the sensing-based resource selection parameters from the "rsrc_selection_params" list.
+   * Defaults in SL_RSRCSELPARAMS_DESC apply when the .conf has no such list, so an unmodified conf still
+   * yields a usable sensing/selection window instead of leaving these NULL. */
+  char aprefix_rsc_sel[MAX_OPTNAME_SIZE * 2 + 8];
+  paramdef_t SL_RSCSELECTIONPARAMS[] = SL_RSRCSELPARAMS_DESC(sl_res_pool);
+  sprintf(aprefix_rsc_sel, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0,
+          SL_CONFIG_STRING_RSRC_SEL_PARAMS_LIST, 0);
+  config_get(config_get_if(), SL_RSCSELECTIONPARAMS, sizeofArray(SL_RSCSELECTIONPARAMS), aprefix_rsc_sel);
+  LOG_I(NR_RRC,
+        "SL rsrc-selection cfg: MaxNumPerReserve %ld, SensingWindow %ld ms, Priority %ld, SelectionWindow %ld, "
+        "Thres_RSRP %ld, ResourceReservePeriod %ld\n",
+        *sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16,
+        *sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SensingWindow_r16,
+        sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SelectionWindowList_r16->list.array[0]->sl_Priority_r16,
+        sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_SelectionWindowList_r16->list.array[0]->sl_SelectionWindow_r16,
+        *sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_Thres_RSRP_List_r16->list.array[0],
+        sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_ResourceReservePeriodList_r16->list.array[0]
+            ->choice.sl_ResourceReservePeriod1_r16);
 
   // episys SL PSFCH port (Stage 4a): compute the PSFCH RB-set bitmap now that sl_NumSubchannel_r16 /
   // sl_RB_Number_r16 have their final (conf-overlaid) values. num_prbs is the largest multiple of

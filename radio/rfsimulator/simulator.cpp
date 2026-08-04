@@ -49,7 +49,7 @@ extern int get_currentchannels_type(const char *buf,
 #include <numeric>
 
 #define PORT 4043 // default TCP port for this simulator
-#define PORT_SL 4043 // default TCP port for the sidelink (PC5) rfsim endpoint
+#define PORT_SL 4143 // default TCP port for this simulator
 #define sampleToByte(a, b) ((a) * (b) * sizeof(sample_t))
 #define byteToSample(a, b) ((a) / (sizeof(sample_t) * (b)))
 

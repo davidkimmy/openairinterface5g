@@ -36,6 +36,47 @@ typedef struct psfch_params {
   prbs_set_t *prbs_sets;
 } psfch_params_t;
 
+/* SL mode-2 sensing-based resource selection (TS 38.214 8.1.4), staged; see nr_ue_sl_sensing.c for the
+ * stage plan. Stage 1 = list container + sensing/history ageing only: nothing selects resources yet, so
+ * transmit behaviour is unchanged. */
+void init_list(List_t *list, size_t element_size, size_t initial_capacity);
+void push_back(List_t *list, void *element);
+void pop_back(List_t *list);
+void free_list_mem(List_t *list);
+uint16_t time_to_slots(uint8_t mu, uint16_t time);
+uint8_t get_tproc0(sl_nr_ue_mac_params_t *sl_mac, uint16_t pool_id);
+void update_sensing_data(List_t *sensing_data, frameslot_t *frame_slot, sl_nr_ue_mac_params_t *sl_mac, uint16_t pool_id);
+void update_transmit_history(List_t *transmit_history,
+                             frameslot_t *frame_slot,
+                             sl_nr_ue_mac_params_t *sl_mac,
+                             uint16_t pool_id);
+void remove_old_sensing_data(frameslot_t *frame_slot,
+                             uint16_t sensing_window,
+                             List_t *sensing_data,
+                             sl_nr_ue_mac_params_t *sl_mac);
+uint8_t get_lower_bound_resel_counter(uint16_t p_rsrv);
+uint8_t get_upper_bound_resel_counter(uint16_t p_rsrv);
+uint8_t get_random_reselection_counter(uint16_t rri);
+void remove_old_transmit_history(frameslot_t *frame_slot,
+                                 uint16_t sensing_window,
+                                 List_t *transmit_history,
+                                 sl_nr_ue_mac_params_t *sl_mac);
+void delete_at(List_t *list, size_t index);
+frameslot_t add_to_sfn(frameslot_t *sfn, uint16_t slot_n, uint8_t mu);
+bool overlapped_resource(uint8_t first_start, uint8_t first_length, uint8_t second_start, uint8_t second_length);
+bool check_t1_within_tproc1(uint8_t mu, uint16_t t1_slots);
+uint16_t get_T2_min(uint16_t pool_id, sl_nr_ue_mac_params_t *sl_mac, uint8_t mu);
+uint16_t get_t2(uint16_t pool_id, uint8_t mu, nr_sl_transmission_params_t *sl_tx_params, sl_nr_ue_mac_params_t *sl_mac);
+void init_vector(vec_of_list_t *vec, size_t initial_capacity);
+void push_back_list(vec_of_list_t *vec, List_t *new_list);
+void free_vector_mem(vec_of_list_t *vec);
+/* Stage 4/5: build the sensing-filtered candidate set, and test whether a given slot is in it. */
+List_t *get_candidate_resources(frameslot_t *frame_slot,
+                                NR_UE_MAC_INST_t *mac,
+                                List_t *sensing_data,
+                                List_t *transmit_history);
+sl_resource_info_t *get_resource_element(List_t *resource_list, frameslot_t sfn);
+
 // episys SL PSFCH port (Stage 3): MAC HARQ-feedback (PSFCH) build helpers. See nr_ue_procedures_sl.c.
 uint8_t count_on_bits(uint8_t *buf, size_t size);
 int64_t normalize(frameslot_t *frame_slot, uint8_t mu);
@@ -70,6 +111,10 @@ int find_current_slot_harqs(frame_t frame, sub_frame_t slot, NR_SL_UE_sched_ctrl
 void handle_nr_ue_sl_harq(module_id_t mod_id, frame_t frame, sub_frame_t slot, sl_nr_slsch_pdu_t *rx_slsch_pdu, uint16_t src_id);
 void nr_mac_process_sl_rx_data(NR_UE_MAC_INST_t *mac, uint16_t src_id, int8_t harq_id, uint8_t ack_nack);
 int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, int cc_id, frame_t frame,
+                                      int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data);
+// MAC handler for a decoded SCI-1A (PSCCH) indication - records the
+// sensing entry and programs the follow-on SCI-2 reception with the Nid recovered from the PSCCH CRC.
+int nr_ue_process_sci1_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, frame_t frame,
                                       int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data);
 
 /**\brief initialize the field in nr_mac instance

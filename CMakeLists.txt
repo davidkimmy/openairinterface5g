@@ -1259,6 +1259,7 @@ set (MAC_NR_SRC_UE
   ${NR_UE_MAC_DIR}/nr_ue_procedures_sl.c
   ${NR_UE_MAC_DIR}/nr_ue_scheduler.c
   ${NR_UE_MAC_DIR}/nr_ue_scheduler_sl.c
+  ${NR_UE_MAC_DIR}/nr_ue_sl_sensing.c
   ${NR_UE_MAC_DIR}/nr_ue_sci_slsch.c
   ${NR_UE_MAC_DIR}/nr_slsch_scheduler.c  # episys SL PSFCH port (Stage 3c): TX-UE HARQ feedback processing
   ${NR_UE_MAC_DIR}/nr_ue_dci_configuration.c
@@ -1998,6 +1999,18 @@ target_link_libraries(nr_psbchsim PRIVATE
   m pthread ${T_LIB} ITTI dl physim_common softmodem_common
   )
 target_link_libraries(nr_psbchsim PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
+
+# Sidelink PSCCH (SCI-1A) transmit->receive round trip. Offline bench for nr_generate_sci1/nr_rx_pscch:
+# CRC, the CRC-derived PSSCH Nid, and rejection of empty/noise-only slots - no radio, no scheduler, no ping.
+add_executable(nr_pscchsim
+  ${OPENAIR1_DIR}/SIMULATION/NR_PHY/pscchsim.c
+  ${NFAPI_USER_DIR}/nfapi.c
+  )
+target_link_libraries(nr_pscchsim PRIVATE
+  -Wl,--start-group UTIL SIMU PHY_NR_COMMON PHY_NR PHY_NR_UE SCHED_NR_LIB SCHED_NR_UE_LIB MAC_UE_NR MAC_NR_COMMON CONFIG_LIB -Wl,--end-group
+  m pthread ${T_LIB} ITTI dl physim_common softmodem_common
+  )
+target_link_libraries(nr_pscchsim PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
 
 add_executable(nr_pucchsim ${OPENAIR1_DIR}/SIMULATION/NR_PHY/pucchsim.c)
 target_link_libraries(nr_pucchsim PRIVATE

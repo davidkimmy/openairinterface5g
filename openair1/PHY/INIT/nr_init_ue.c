@@ -244,15 +244,26 @@ int init_nr_ue_signal(PHY_VARS_NR_UE *ue, int nb_connected_gNB)
   // Sidelink (PC5) dual-card relay (mode-1): separate TX/RX time-domain buffers for the second (SL) device.
   // Only allocated when the UE drives a distinct PC5 card; mode-2 (single SL card) leaves these NULL and
   // reuses txData/rxdata.
+  /* PC5 time-domain buffers, owned by UE_thread_sl. Allocated for EVERY SL mode (1 and 2): that thread
+   * always drives its own device and always reads/writes these. Sized from the SL frame params and the SL
+   * requirement - readFrame_sl() fills SL_NR_PSBCH_REPETITION_IN_FRAMES frames in one call. Do NOT reuse
+   * num_samples above: it is 16 frames only when sl_mode == 2, so a mode-1 relay was writing 16 frames into
+   * a 2-frame buffer. */
   common_vars->txData_sl = NULL;
   common_vars->rxdata_sl = NULL;
-  if (ue->sl_dual_card) {
-    common_vars->txData_sl = malloc16(fp->nb_antennas_tx * sizeof(c16_t *));
-    for (int i = 0; i < fp->nb_antennas_tx; i++)
-      common_vars->txData_sl[i] = malloc16_clear((fp->samples_per_frame) * sizeof(c16_t));
-    common_vars->rxdata_sl = malloc16(fp->nb_antennas_rx * sizeof(c16_t *));
-    for (int i = 0; i < fp->nb_antennas_rx; i++)
-      common_vars->rxdata_sl[i] = malloc16_clear(num_samples * sizeof(c16_t));
+  if (ue->sl_mode != 0) {
+    const NR_DL_FRAME_PARMS *sl_fp = &ue->SL_UE_PHY_PARAMS.sl_frame_params;
+    if (sl_fp->samples_per_frame == 0 || sl_fp->nb_antennas_rx == 0)
+      sl_fp = fp; // SL PHY config not applied yet; never allocate zero-sized
+    const int sl_num_samples = (SL_NR_PSBCH_REPETITION_IN_FRAMES * sl_fp->samples_per_frame) + sl_fp->ofdm_symbol_size;
+    common_vars->txData_sl = malloc16(sl_fp->nb_antennas_tx * sizeof(c16_t *));
+    for (int i = 0; i < sl_fp->nb_antennas_tx; i++)
+      common_vars->txData_sl[i] = malloc16_clear((sl_fp->samples_per_frame) * sizeof(c16_t));
+    common_vars->rxdata_sl = malloc16(sl_fp->nb_antennas_rx * sizeof(c16_t *));
+    for (int i = 0; i < sl_fp->nb_antennas_rx; i++)
+      common_vars->rxdata_sl[i] = malloc16_clear(sl_num_samples * sizeof(c16_t));
+    LOG_I(PHY, "SIDELINK INIT: allocated PC5 buffers (%d rx ant, %d samples = %d frames)\n",
+          sl_fp->nb_antennas_rx, sl_num_samples, SL_NR_PSBCH_REPETITION_IN_FRAMES);
   }
 
   // DLSCH

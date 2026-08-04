@@ -93,6 +93,38 @@ uint32_t compute_TRIV(uint8_t N, uint8_t t1, uint8_t t2)
   return triv;
 }
 
+// Inverse of compute_TRIV: recover the reservation offsets t1/t2 from a received TRIV.
+// Placed next to compute_TRIV. Inverted equations from 38.214 Section 8.1.5.
+int inverse_TRIV(uint8_t N, uint32_t triv, uint8_t *t1, uint8_t *t2)
+{
+  if (N == 1) {
+    *t1 = 0;
+    *t2 = 0;
+    return 0;
+  }
+  if (N == 2) {
+    *t1 = triv;
+    *t2 = 0;
+    return 0;
+  }
+  for (uint8_t candidate_t1 = 0; candidate_t1 <= 31; candidate_t1++) {
+    int32_t t2_1 = (triv + 29 * candidate_t1 - 1) / 30;
+    if (t2_1 >= 0 && t2_1 <= 31 && (t2_1 - candidate_t1 - 1) <= 15) {
+      *t1 = candidate_t1;
+      *t2 = (uint8_t)t2_1;
+      return 0;
+    }
+
+    int32_t t2_2 = (992 + 29 * candidate_t1 - triv) / 30;
+    if (t2_2 >= 0 && t2_2 <= 31 && (t2_2 - candidate_t1 - 1) > 15) {
+      *t1 = candidate_t1;
+      *t2 = (uint8_t)t2_2;
+      return 0;
+    }
+  }
+  return -1;
+}
+
 // Inverse of compute_FRIV: recover the subchannel length (Lsc) + start(s) from a received FRIV.
 void convNRFRIV(int FRIV, int N_subch, long sl_MaxNumPerReserve, uint16_t *Lsc, uint16_t *startsc, uint16_t *startsc2)
 {
@@ -302,17 +334,239 @@ void extract_pssch_sci_pdu(uint64_t *sci2_payload,
   fsize = 1;  pos += fsize; sci_pdu->csi_req       = (*sci2_payload >> (sci2_size - pos)) & ((1 << fsize) - 1);
 }
 
+// Unpack a decoded SCI-1A payload into sci_pdu. Exact inverse of nr_pack_sci1 (MSB-first at sci1_size).
+void extract_pscch_pdu(uint64_t *sci1_payload,
+                       int len,
+                       const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic,
+                       const struct NR_SL_ResourcePool_r16 *sl_res_pool,
+                       nr_sci_pdu_t *sci_pdu)
+{
+  (void)sl_bwp_generic;
+  int pos = 0, fsize;
+  int sci1_size = nr_sci_size(sl_res_pool, sci_pdu, NR_SL_SCI_FORMAT_1A);
+  AssertFatal(sci1_size == len, "sci1a size %d is not the same sci_indication %d\n", sci1_size, len);
+
+  // priority 3 bits
+  fsize = 3;
+  pos = fsize;
+  sci_pdu->priority = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // frequency resource assignment
+  fsize = sci_pdu->frequency_resource_assignment.nbits;
+  pos += fsize;
+  sci_pdu->frequency_resource_assignment.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // time-domain-assignment
+  fsize = sci_pdu->time_resource_assignment.nbits;
+  pos += fsize;
+  sci_pdu->time_resource_assignment.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // resource reservation period
+  fsize = sci_pdu->resource_reservation_period.nbits;
+  pos += fsize;
+  sci_pdu->resource_reservation_period.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // DMRS pattern
+  fsize = sci_pdu->dmrs_pattern.nbits;
+  pos += fsize;
+  sci_pdu->dmrs_pattern.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // second_stage_sci_format // 2 bits - Table 8.3.1.1-1
+  fsize = 2;
+  pos += fsize;
+  sci_pdu->second_stage_sci_format = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // beta_offset_indicator // 2 bits - depending sl-BetaOffsets2ndSCI and Table 8.3.1.1-2
+  fsize = 2;
+  pos += fsize;
+  sci_pdu->beta_offset_indicator = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // number_of_dmrs_port // 1 bit - Table 8.3.1.1-3
+  fsize = 1;
+  pos += fsize;
+  sci_pdu->number_of_dmrs_port = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // mcs // 5 bits
+  fsize = 5;
+  pos += fsize;
+  sci_pdu->mcs = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // additional_mcs; // depending on sl-Additional-MCS-Table
+  fsize = sci_pdu->additional_mcs.nbits;
+  pos += fsize;
+  sci_pdu->additional_mcs.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // psfch_overhead; // depending on sl-PSFCH-Period
+  fsize = sci_pdu->psfch_overhead.nbits;
+  pos += fsize;
+  sci_pdu->psfch_overhead.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // reserved; // depending on N_reserved (sl-NumReservedBits) and sl-IndicationUE-B
+  fsize = sci_pdu->reserved.nbits;
+  pos += fsize;
+  sci_pdu->reserved.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  // conflict_information_receiver; // depending on sl-IndicationUE-B
+  fsize = sci_pdu->conflict_information_receiver.nbits;
+  pos += fsize;
+  sci_pdu->conflict_information_receiver.val = *sci1_payload >> (sci1_size - pos) & ((1 << fsize) - 1);
+
+  LOG_D(NR_MAC,
+        "SCI1A unpacked: freq_rsrc %d, time_rsrc %d, rsvp %d, dmrs_pattern %d, beta_offset %d, mcs %d, "
+        "n_dmrs_port %d, 2nd-stage fmt %d\n",
+        sci_pdu->frequency_resource_assignment.val, sci_pdu->time_resource_assignment.val,
+        sci_pdu->resource_reservation_period.val, sci_pdu->dmrs_pattern.val, sci_pdu->beta_offset_indicator,
+        sci_pdu->mcs, sci_pdu->number_of_dmrs_port, sci_pdu->second_stage_sci_format);
+}
+
 // episys SL PSFCH port (4c-A): MAC handler for a decoded SCI-2 indication -> populate mac->sci_pdu_rx.
 int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, int cc_id, frame_t frame,
                                       int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data)
 {
-  (void)mod_id; (void)cc_id; (void)frame; (void)slot; (void)phy_data;
+  (void)cc_id;
   nr_sci_pdu_t *sci_pdu = &mac->sci_pdu_rx;
   const NR_SL_ResourcePool_r16_t *sl_res_pool = mac->sl_rx_res_pool ? mac->sl_rx_res_pool : mac->sl_tx_res_pool;
   extract_pssch_sci_pdu((uint64_t *)sci->sci_payloadBits, sci->sci_payloadlen, mac->sl_bwp, sl_res_pool, sci_pdu);
   LOG_D(NR_MAC, "SCI2A rx: harq_pid %d ndi %d RV %d SRC %x DST %x HARQ_FB %d Cast %d CSI %d\n",
         sci_pdu->harq_pid, sci_pdu->ndi, sci_pdu->rv_index, sci_pdu->source_id, sci_pdu->dest_id,
         sci_pdu->harq_feedback, sci_pdu->cast_type, sci_pdu->csi_req);
+
+  /* Stage 3 of the SL receive pipeline: SCI-2 has decoded, so the transmitter's real harq_pid / ndi /
+   * rv_index are known and the SLSCH transport config can be built and the PHY advanced to
+   * RX_PSSCH_SLSCH. This is the whole reason the pipeline is staged - building this config any earlier
+   * means guessing those three fields, which only holds while nothing is ever retransmitted. */
+  const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic = mac->SL_MAC_PARAMS->sl_bwp_generic;
+  if (!sl_bwp_generic || !sl_res_pool) {
+    LOG_W(NR_MAC, "%d.%d SCI-2 indication with no SL BWP/pool config yet\n", frame, slot);
+    return -1;
+  }
+
+  sl_nr_rx_config_request_t rx_config;
+  memset(&rx_config, 0, sizeof(rx_config));
+  rx_config.number_pdus = 1;
+  rx_config.sfn = frame;
+  rx_config.slot = slot;
+  config_pssch_slsch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pssch_config_pdu, sci_pdu, sl_bwp_generic,
+                            sl_res_pool);
+  rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+
+  nr_scheduled_response_t scheduled_response = {.sl_rx_config = &rx_config,
+                                                .module_id = mod_id,
+                                                .CC_id = 0,
+                                                .phy_data = phy_data,
+                                                .mac = mac};
+  LOG_D(NR_MAC, "[UE%d] TTI-%d:%d RX PSSCH_SLSCH REQ (harq %d rv %d ndi %d)\n", mod_id, frame, slot,
+        sci_pdu->harq_pid, sci_pdu->rv_index, sci_pdu->ndi);
+  if ((mac->if_module != NULL) && (mac->if_module->scheduled_response != NULL))
+    mac->if_module->scheduled_response(&scheduled_response);
+
+  return 0;
+}
+
+/* MAC handler for a decoded SCI-1A (PSCCH) indication. Two jobs:
+ *   1. Record the transmission in mac->sl_sensing_data, so the sensing-based resource selector knows
+ *      which resources a peer occupied / reserved (TS 38.214 8.1.4).
+ *   2. Program the follow-on SCI-2 reception on the PSSCH this SCI-1A scheduled, using the Nid the PHY
+ *      recovered from the PSCCH CRC (38.211 8.3.1.1) instead of the blind fixed Nid.
+ *
+ * NOTE (deliberate, do not "fix" without re-baselining against the reference implementation): rsvp,
+ * subch_start and subch_startre_tx1/tx2 are taken from this UE's own pool configuration rather than from
+ * the decoded SCI, even though extract_pscch_pdu has already decoded resource_reservation_period and
+ * convNRFRIV can return the start subchannel. That is exact only while every UE shares one pool config
+ * with sl_NumSubchannel = 1 and a single reservation period - which is the configuration under test.
+ */
+int nr_ue_process_sci1_indication_pdu(NR_UE_MAC_INST_t *mac,
+                                      module_id_t mod_id,
+                                      frame_t frame,
+                                      int slot,
+                                      sl_nr_sci_indication_pdu_t *sci,
+                                      void *phy_data)
+{
+  nr_sci_pdu_t *sci_pdu = &mac->sci_pdu_rx;
+  sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
+  memset(sci_pdu, 0, sizeof(*sci_pdu));
+
+  const NR_SL_BWP_Generic_r16_t *sl_bwp_generic = sl_mac->sl_bwp_generic;
+  const NR_SL_ResourcePool_r16_t *sl_res_pool = mac->sl_rx_res_pool ? mac->sl_rx_res_pool : mac->sl_tx_res_pool;
+  if (!sl_bwp_generic || !sl_res_pool) {
+    LOG_W(NR_MAC, "%d.%d SCI-1A indication with no SL BWP/pool config yet\n", frame, slot);
+    return -1;
+  }
+
+  AssertFatal(sci->sci_format_type == SL_SCI_FORMAT_1A_ON_PSCCH, "need to have format 1A here only\n");
+  extract_pscch_pdu((uint64_t *)sci->sci_payloadBits, sci->sci_payloadlen, sl_bwp_generic, sl_res_pool, sci_pdu);
+
+  uint16_t l_subch = 1;
+  convNRFRIV(sci_pdu->frequency_resource_assignment.val,
+             *sl_res_pool->sl_NumSubchannel_r16,
+             *sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16,
+             &l_subch,
+             NULL,
+             NULL);
+
+  sensing_data_t sensing_data;
+  memset(&sensing_data, 0, sizeof(sensing_data));
+  sensing_data.frame_slot.frame = frame;
+  sensing_data.frame_slot.slot = slot;
+  sensing_data.sl_rsrp = sci->pscch_rsrp;
+  sensing_data.rsvp = sl_mac->mac_tx_params.rri;
+  sensing_data.subch_startre_tx1 = 0;
+  sensing_data.subch_startre_tx2 = 0;
+  sensing_data.subch_start = *mac->sl_tx_res_pool->sl_StartRB_Subchannel_r16;
+  sensing_data.subch_len = l_subch;
+  push_back(&mac->sl_sensing_data, &sensing_data);
+  /* Sensing window T0, taken from the RX pool. NOTE: t0 is only ever assigned on the TX pool
+   * (config_ue_sl.c) and the RX pool struct is malloc16_clear'd, so this window is 0 and the store is
+   * trimmed to the current slot's entries. Kept deliberately to match the reference implementation; do
+   * not switch to sl_TxPool[0]->t0 without re-baselining against it. */
+  if (mac->sl_sensing_data.size > 1)
+    remove_old_sensing_data(&sensing_data.frame_slot, sl_mac->sl_RxPool[0]->t0, &mac->sl_sensing_data, sl_mac);
+
+  if (sci_pdu->reserved.val && !mac->is_synced_sl) {
+    mac->is_synced_sl = true;
+    LOG_D(NR_PHY, "Nearby UE is synced now!!!\n");
+  }
+
+  uint8_t t1 = 0, t2 = 0;
+  inverse_TRIV(2, sci_pdu->time_resource_assignment.val, &t1, &t2); // TODO: use t1 to avoid the collision
+  LOG_D(NR_MAC, "%d.%d SCI-1A sensing entry: rsvp %d, subch %d+%d, rsrp %d dBm, t1 %d t2 %d, store %ld\n",
+        frame, slot, sensing_data.rsvp, sensing_data.subch_start, sensing_data.subch_len,
+        sensing_data.sl_rsrp, t1, t2, mac->sl_sensing_data.size);
+
+  // Program the SCI-2 reception on the PSSCH this SCI-1A scheduled.
+  sl_nr_rx_config_request_t rx_config;
+  memset(&rx_config, 0, sizeof(rx_config));
+  rx_config.number_pdus = 1;
+  rx_config.sfn = frame;
+  rx_config.slot = slot;
+
+  /* ONE PDU only - the SCI-2 demod config carrying the Nid recovered from the PSCCH CRC, which advances
+   * the PHY to stage 2. The SLSCH transport config is deliberately NOT built here:
+   * config_pssch_slsch_pdu_rx reads harq_pid / rv_index / ndi, which are SCI-2 fields and still unknown
+   * at this point. Supplying it from the SCI-1A alone writes zeros into those three and breaks every
+   * retransmission - the SCI-2 handler programs it instead, as stage 3. */
+  int ret = config_pssch_sci_pdu_rx(&rx_config.sl_rx_config_list[0].rx_sci2_config_pdu,
+                                    NR_SL_SCI_FORMAT_2A,
+                                    sci_pdu,
+                                    sci->Nid,
+                                    sci->subch_index,
+                                    sl_bwp_generic,
+                                    sl_res_pool);
+  if (ret < 0)
+    return ret;
+  rx_config.number_pdus = 1;
+  rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SCI;
+
+  nr_scheduled_response_t scheduled_response = {.sl_rx_config = &rx_config,
+                                                .module_id = mod_id,
+                                                .CC_id = 0,
+                                                .phy_data = phy_data,
+                                                .mac = mac};
+  LOG_D(NR_MAC, "[UE%d] TTI-%d:%d RX PSSCH_SCI REQ (Nid %x, subch %d)\n",
+        mod_id, frame, slot, sci->Nid, sci->subch_index);
+  if ((mac->if_module != NULL) && (mac->if_module->scheduled_response != NULL))
+    mac->if_module->scheduled_response(&scheduled_response);
+
   return 0;
 }
 
@@ -551,6 +805,29 @@ int config_pssch_sci_pdu_rx(sl_nr_rx_config_pssch_sci_pdu_t *nr_sl_pssch_sci_pdu
   }
   nr_sl_pssch_sci_pdu->sense_pssch = 0;
   return 0;
+}
+
+/* PSCCH (SCI-1A) receive config. Describes the same region the transmitter writes in fill_pssch_pscch_pdu /
+ * nr_generate_sci1, so the receiver (nr_rx_pscch) estimates the channel on the right DMRS REs, descrambles
+ * with the right sl_DMRS_ScrambleID and polar-decodes the right SCI-1A length. Without this the receiver had
+ * to blind-guess the PSSCH parameters, which only works on an ideal channel. */
+void config_pscch_pdu_rx(sl_nr_rx_config_pscch_pdu_t *nr_sl_pscch_pdu,
+                         nr_sci_pdu_t *sci_pdu,
+                         const NR_SL_BWP_Generic_r16_t *sl_bwp_generic,
+                         const NR_SL_ResourcePool_r16_t *sl_res_pool)
+{
+  const struct NR_SL_PSCCH_Config_r16 *pscch_cfg = sl_res_pool->sl_PSCCH_Config_r16->choice.setup;
+  nr_sl_pscch_pdu->pscch_startrb = 0; // lowest subchannel (matches the minimal fixed-resource TX grant)
+  nr_sl_pscch_pdu->pscch_numsym = pscch_tda[*pscch_cfg->sl_TimeResourcePSCCH_r16];
+  nr_sl_pscch_pdu->pscch_numrbs = pscch_rb_table[*pscch_cfg->sl_FreqResourcePSCCH_r16];
+  nr_sl_pscch_pdu->pscch_dmrs_scrambling_id = *pscch_cfg->sl_DMRS_ScrambleID_r16;
+  nr_sl_pscch_pdu->num_subch = *sl_res_pool->sl_NumSubchannel_r16;
+  nr_sl_pscch_pdu->subchannel_size = subch_to_rb[*sl_res_pool->sl_SubchannelSize_r16];
+  nr_sl_pscch_pdu->l_subch = 1; // blind SCI-1A decode on the configured subchannel
+  const int num_psfch_symbols = sl_num_psfch_symbols(sl_res_pool, sci_pdu);
+  nr_sl_pscch_pdu->pssch_numsym = 7 + *sl_bwp_generic->sl_LengthSymbols_r16 - num_psfch_symbols - 2;
+  nr_sl_pscch_pdu->sci_1a_length = nr_sci_size(sl_res_pool, sci_pdu, NR_SL_SCI_FORMAT_1A);
+  nr_sl_pscch_pdu->sense_pscch = 0;
 }
 
 // Minimal F1 SLSCH scheduler: populate SCI-1 (sci_pdu, 1st stage) + SCI-2 (sci2_pdu, 2nd stage) field values

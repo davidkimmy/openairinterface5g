@@ -5,6 +5,14 @@
 #include "openair2/LAYER2/NR_MAC_UE/mac_defs.h"
 #include "NR_SidelinkPreconfigNR-r16.h"
 #include "mac_proto.h"
+#include "executables/softmodem-common.h" // get_softmodem_params() - numerology for the sensing window
+#include "common/config/config_userapi.h" // config_get / paramdef_t for the resource-selection config
+#include "RRC/NR_UE/sl_preconfig_paramvalues.h" // SL_CONFIG_STRING_SL_PRECONFIGURATION
+
+// Which of the TS 38.214 8.1.4 resource-selection configurations the mode-2 TX path uses.
+#define SL_CONFIG_STRING_SL_ALLOWED_RESOURCE_SELECTION_CONFIG "sl_AllowedResourceSelectionConfig"
+#define SL_CONFIG_RESOURCE_SELECTION(resource_selection_cfg) { \
+{SL_CONFIG_STRING_SL_ALLOWED_RESOURCE_SELECTION_CONFIG, NULL, 0, .u16ptr=resource_selection_cfg, .defuintval=3, TYPE_UINT16, 0}}
 
 void sl_ue_mac_free(NR_UE_MAC_INST_t *mac)
 {
@@ -293,8 +301,14 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
   AssertFatal(sl_preconfiguration !=NULL,"SL-Preconfig Cannot be NULL");
   AssertFatal(mac, "mac should have an instance");
 
-  if (!mac->SL_MAC_PARAMS)
+  if (!mac->SL_MAC_PARAMS) {
     mac->SL_MAC_PARAMS = CALLOC(1, sizeof(sl_nr_ue_mac_params_t));
+    // SL sensing: the sensing store and transmit history must exist before the first SCI-1A arrives,
+    // so they are initialised together with SL_MAC_PARAMS.
+    init_list(&mac->sl_sensing_data, sizeof(sensing_data_t), 1);
+    init_list(&mac->sl_transmit_history, sizeof(frameslot_t), 1);
+    mac->reselection_timer = 0;
+  }
 
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
 
@@ -340,6 +354,10 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
         if (rxpool) {
           if (sl_mac->sl_RxPool[i] == NULL)
             sl_mac->sl_RxPool[i] = malloc16_clear(sizeof(SL_ResourcePool_params_t));
+          // mac->sl_rx_res_pool was declared but never assigned, so the SCI-1A/SCI-2 MAC handlers fell
+          // back to the TX pool while the scheduler sized the RX config from the RX pool. Any sizing
+          // difference between the two pools then trips the sci1a-size AssertFatal in extract_pscch_pdu.
+          mac->sl_rx_res_pool = rxpool;
           sl_mac->sl_RxPool[i]->respool = rxpool;
           uint16_t sci_1a_len = 0, num_subch = 0;
           sci_1a_len = sl_determine_sci_1a_len(&num_subch,
@@ -367,6 +385,60 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
           if (sl_mac->sl_TxPool[i] == NULL)
             sl_mac->sl_TxPool[i] = malloc16_clear(sizeof(SL_ResourcePool_params_t));
           sl_mac->sl_TxPool[i]->respool = txpool;
+
+          /* Sensing/selection window parameters (TS 38.214 8.1.4).
+           * These fields existed in SL_ResourcePool_params_t but were never populated, so the sensing
+           * window was 0 and remove_old_sensing_data would have discarded every entry immediately. */
+          const uint8_t tproc1_values[] = {3, 5, 9, 17};
+          const uint8_t mu = get_softmodem_params()->numerology;
+          struct NR_SL_UE_SelectedConfigRP_r16 *sl_ue_selected_config = txpool->sl_UE_SelectedConfigRP_r16;
+          if (sl_ue_selected_config && sl_ue_selected_config->sl_SensingWindow_r16
+              && sl_ue_selected_config->sl_SelectionWindowList_r16) {
+            const uint16_t sensing_window_ms = (uint16_t)*sl_ue_selected_config->sl_SensingWindow_r16;
+            const uint16_t selection_window =
+                (uint16_t)sl_ue_selected_config->sl_SelectionWindowList_r16->list.array[0]->sl_SelectionWindow_r16;
+            sl_mac->sl_TxPool[i]->t2min = selection_window;
+            sl_mac->sl_TxPool[i]->t0 = time_to_slots(mu, sensing_window_ms);
+            sl_mac->sl_TxPool[i]->tproc0 = 1;
+            sl_mac->sl_TxPool[i]->tproc1 = tproc1_values[mu];
+            sl_mac->sl_TxPool[i]->t1 = 1;
+            // 38.214 8.1.4: T2min <= t2 <= PDB, with T2min = {1,5,10,20}*2^mu and PDB = 20 ms = 40 slots
+            sl_mac->sl_TxPool[i]->t2 = 60;
+
+            if (sl_ue_selected_config->sl_ResourceReservePeriodList_r16)
+              sl_mac->mac_tx_params.rri = sl_ue_selected_config->sl_ResourceReservePeriodList_r16->list.array[0]
+                                              ->choice.sl_ResourceReservePeriod1_r16;
+            sl_mac->mac_tx_params.resel_counter = get_random_reselection_counter(sl_mac->mac_tx_params.rri);
+            if (sl_ue_selected_config->sl_Thres_RSRP_List_r16)
+              sl_mac->mac_tx_params.sl_thresh_rsrp =
+                  (-128 + (*sl_ue_selected_config->sl_Thres_RSRP_List_r16->list.array[0] - 1) * 2);
+
+            if (txpool->sl_TxPercentageList_r16) {
+              const long sl_TxPercentage = txpool->sl_TxPercentageList_r16->list.array[0]->sl_TxPercentage_r16;
+              switch (sl_TxPercentage) {
+                case NR_SL_TxPercentageConfig_r16__sl_TxPercentage_r16_p20:
+                  sl_mac->mac_tx_params.sl_res_ratio = 20.0 / 100;
+                  break;
+                case NR_SL_TxPercentageConfig_r16__sl_TxPercentage_r16_p35:
+                  sl_mac->mac_tx_params.sl_res_ratio = 35.0 / 100;
+                  break;
+                case NR_SL_TxPercentageConfig_r16__sl_TxPercentage_r16_p50:
+                  sl_mac->mac_tx_params.sl_res_ratio = 50.0 / 100;
+                  break;
+                default:
+                  LOG_E(NR_MAC, "Incorrect sl_TxPercentage provided!\n");
+                  break;
+              }
+            }
+            LOG_I(NR_MAC,
+                  "SL sensing cfg pool[%d]: sl_thresh_rsrp %d, rri %d, sensing_window %d ms (t0 %d slots), "
+                  "selection_window %d, resel_counter %d\n",
+                  i, sl_mac->mac_tx_params.sl_thresh_rsrp, sl_mac->mac_tx_params.rri, sensing_window_ms,
+                  sl_mac->sl_TxPool[i]->t0, selection_window, sl_mac->mac_tx_params.resel_counter);
+          } else {
+            LOG_W(NR_MAC, "Txpool[%d]: no sl_UE_SelectedConfigRP_r16 - sensing parameters left unset\n", i);
+          }
+          sl_mac->mac_tx_params.packet_delay_budget_ms = 30;
 
           uint16_t sci_1a_len = 0, num_subch = 0;
           sci_1a_len = sl_determine_sci_1a_len(&num_subch,
@@ -419,6 +491,29 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
 
   sl_prepare_phy_config(module_id, &sl_phy_cfg->sl_config_req,
                         freqcfg, sync_source, sl_OffsetDFN, sl_mac->sl_TDD_config);
+
+  /* Which resource-selection procedure the mode-2 TX path uses (TS 38.214 8.1.4). c1/c4/c5/c7 are the
+   * sensing-based configurations; anything else leaves the scheduler on the plain "data => transmit"
+   * rule. Default 3 (=> c4) matches the reference implementation, so sensing is on unless the .conf
+   * disables it. */
+  char aprefix_rsc[MAX_OPTNAME_SIZE * 2 + 8];
+  sprintf(aprefix_rsc, "%s.[%d]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0);
+  uint16_t resource_selection_cfg = 3;
+  paramdef_t SL_CONFIG_RSR_INFO[] = SL_CONFIG_RESOURCE_SELECTION(&resource_selection_cfg);
+  config_get(config_get_if(), SL_CONFIG_RSR_INFO, sizeofArray(SL_CONFIG_RSR_INFO), aprefix_rsc);
+
+  switch (resource_selection_cfg) {
+    case 0: mac->rsc_selection_method = c1; break;
+    case 3: mac->rsc_selection_method = c4; break;
+    case 4: mac->rsc_selection_method = c5; break;
+    case 6: mac->rsc_selection_method = c7; break;
+    default:
+      LOG_W(NR_MAC, "Resource selection config %d is not supported; sensing-based selection disabled\n",
+            resource_selection_cfg);
+      mac->rsc_selection_method = c2; // not one of the sensing methods
+      break;
+  }
+  LOG_I(NR_MAC, "SL resource selection method: cfg %d -> %d\n", resource_selection_cfg, mac->rsc_selection_method);
 
   sl_ue_harq_ctx_init(mac);
   return 0;

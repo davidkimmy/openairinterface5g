@@ -600,11 +600,28 @@ void nr_ue_sl_indication(nr_sidelink_indication_t *sl_indication)
   if (sl_indication->rx_ind) {
     sl_nr_process_rx_ind(ue_id, hfn, frame, slot, sl_mac, sl_indication->rx_ind);
   } else if (sl_indication->sci_ind) {
-    // episys SL PSFCH port (4c-A): a decoded SCI-2 -> populate mac->sci_pdu_rx (harq_feedback/src/cast)
-    // so the subsequent SLSCH rx_ind can trigger the PSFCH HARQ feedback (configure_psfch_params_tx).
-    for (int i = 0; i < sl_indication->sci_ind->number_of_SCIs; i++)
-      nr_ue_process_sci2_indication_pdu(mac, ue_id, sl_indication->cc_id, frame, slot,
-                                        &sl_indication->sci_ind->sci_pdu, sl_indication->phy_data);
+    // Dispatch on the SCI format.
+    //  - SCI-1A (PSCCH): record the sensing entry and program the follow-on SCI-2 RX with the real Nid.
+    //  - SCI-2 (PSSCH): populate mac->sci_pdu_rx (harq_feedback/src/cast) so the subsequent SLSCH rx_ind
+    //    can trigger the PSFCH HARQ feedback (configure_psfch_params_tx).
+    int num_scis = sl_indication->sci_ind->number_of_SCIs;
+    if (num_scis > SL_NR_SCI_IND_MAX_PDU)
+      num_scis = SL_NR_SCI_IND_MAX_PDU;
+    for (int i = 0; i < num_scis; i++) {
+      sl_nr_sci_indication_pdu_t *sci_pdu = &sl_indication->sci_ind->sci_pdu[i];
+      switch (sci_pdu->sci_format_type) {
+        case SL_SCI_FORMAT_1A_ON_PSCCH:
+          nr_ue_process_sci1_indication_pdu(mac, ue_id, frame, slot, sci_pdu, sl_indication->phy_data);
+          break;
+        case SL_SCI_FORMAT_2_ON_PSSCH:
+          nr_ue_process_sci2_indication_pdu(mac, ue_id, sl_indication->cc_id, frame, slot,
+                                            sci_pdu, sl_indication->phy_data);
+          break;
+        default:
+          LOG_E(NR_MAC, "Unhandled or unknown sci format %d\n", sci_pdu->sci_format_type);
+          break;
+      }
+    }
   } else {
     nr_ue_sidelink_scheduler(sl_indication, mac);
   }

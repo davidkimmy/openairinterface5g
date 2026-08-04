@@ -152,6 +152,26 @@ typedef struct sl_stored_tti_req {
 
 } sl_stored_tti_req_t;
 
+/**
+ * \brief Structure to pass parameters to trigger the selection of candidate
+ * resources as per TR 38.214 Section 8.1.4
+ *
+ * Populated in config_ue_sl.c from the TX pool's sl_UE_SelectedConfigRP_r16, and consumed by the
+ * sensing-based resource selector.
+ */
+typedef struct {
+    uint8_t priority;    // L1 priority prio_TX
+    uint16_t packet_delay_budget_ms;   // remaining packet delay budget
+    uint16_t l_subch;    // L_subCH; number of subchannels to be used
+    uint16_t rri;        // resource reservation interval
+    uint16_t resel_counter;       // C_resel counter
+    int sl_thresh_rsrp;  // A threshold in dBm used for sensing based UE autonomous resource selection
+    float sl_res_ratio;  /* The percentage threshold to indicate the
+                                 minimum number of candidate single-slot
+                                 resources to be selected using sensing procedure.
+                              */
+} nr_sl_transmission_params_t;
+
 typedef struct sl_nr_ue_mac_params {
 
   //Holds the RX resource pool from RRC and its related parameters
@@ -162,6 +182,7 @@ typedef struct sl_nr_ue_mac_params {
   //Holds either the TDD config from RRC
   //or TDD config decoded from SL-MIB
   NR_TDD_UL_DL_ConfigCommon_t *sl_TDD_config;
+  nr_sl_transmission_params_t  mac_tx_params;
 
   // episys SL data-plane port: cached SL BWP generic config (sl_LengthSymbols/sl_StartSymbol), used by the
   // SLSCH scheduler (nr_ue_scheduler_sl.c) to size PSSCH. Set in config_ue_sl.c from the SL BWP list.

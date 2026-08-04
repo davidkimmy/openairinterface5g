@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: LicenseRef-CSSL-1.0
  */
 
+#include <stdlib.h>                                     // free() for the retired candidate-resource list
 #include "mac_defs.h"
 #include "mac_proto.h"
 #include "nr_ue_sci.h"                                  // nr_schedule_slsch, fill_pssch_pscch_pdu, config_pssch_*_rx
@@ -351,27 +352,24 @@ static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
     LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: RX PSBCH \n", ue_id, sl_ind->frame_rx, sl_ind->slot_rx);
 
   } else if (rx_action >= SL_NR_CONFIG_TYPE_RX_PSCCH && rx_action <= SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH) {
-    // episys SL data-plane port (F1 minimal): blind PSSCH RX config. Both UEs share the pool config, so we
-    // build the SCI-1 the transmitter would use and derive the demod (SCI-2) + SLSCH transport RX configs.
+    /* Stage 1 of the SL receive pipeline: program ONLY the PSCCH config, so the PHY can decode SCI-1A.
+     * The SCI-2 demod config and the SLSCH transport config are NOT built here - the SCI-1A and SCI-2
+     * indication handlers program them, each from what was actually decoded. Building them up front means
+     * guessing the transmitter's harq_pid/ndi/rv_index, which only holds while nothing is retransmitted. */
     const NR_SL_ResourcePool_r16_t *respool =
         (sl_mac->sl_RxPool[0] && sl_mac->sl_RxPool[0]->respool) ? sl_mac->sl_RxPool[0]->respool : mac->sl_tx_res_pool;
     const struct NR_SL_BWP_Generic_r16 *bwp_gen = sl_mac->sl_bwp_generic;
     if (respool && bwp_gen) {
+      /* The PSCCH region is fixed by the pool config, so a synthesised SCI-1 is enough to describe where
+       * SCI-1A sits and how to descramble it - it mirrors what the TX fills in fill_pssch_pscch_pdu. */
       nr_sci_pdu_t sci1 = {0}, sci2 = {0};
       nr_schedule_slsch(respool, &sci1, &sci2, 0, 0, 0, 0, SL_F1_BROADCAST_DEST, sl_effective_mcs());
-      nr_sci_size(respool, &sci1, NR_SL_SCI_FORMAT_1A); // fill 1st-stage nbits used by the RX config builders
-      // merge the 2nd-stage fields the RX config reads into the single combined SCI-1 PDU
-      sci1.harq_pid = sci2.harq_pid;
-      sci1.ndi = sci2.ndi;
-      sci1.rv_index = sci2.rv_index;
-      uint32_t pscch_Nid = 0; // TODO(OTA): must equal the TX Nid (CRC-derived in nr_generate_sci1) — reconcile.
-      config_pssch_sci_pdu_rx(&rx_config.sl_rx_config_list[0].rx_sci2_config_pdu, NR_SL_SCI_FORMAT_2A, &sci1,
-                              pscch_Nid, 0, bwp_gen, respool);
-      config_pssch_slsch_pdu_rx(&rx_config.sl_rx_config_list[1].rx_pssch_config_pdu, &sci1, bwp_gen, respool);
-      rx_config.number_pdus = 2;
-      rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
-      rx_config.sl_rx_config_list[1].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
-      LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: RX PSSCH/SLSCH (Nid=%u)\n", ue_id, sl_ind->frame_rx, sl_ind->slot_rx, pscch_Nid);
+      nr_sci_size(respool, &sci1, NR_SL_SCI_FORMAT_1A); // fill the 1st-stage nbits the RX config builder reads
+      config_pscch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pscch_config_pdu, &sci1, bwp_gen, respool);
+      rx_config.number_pdus = 1;
+      rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSCCH;
+      LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: RX PSCCH (SCI-1A), stage 1 of 3\n",
+            ue_id, sl_ind->frame_rx, sl_ind->slot_rx);
     }
 
   } else if (rx_action == SL_NR_CONFIG_TYPE_RX_PSFCH) {
@@ -616,7 +614,7 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
             sh->L = htons((uint16_t)slen);
             wr += sizeof(NR_MAC_SUBHEADER_LONG) + slen;
             len += slen;
-            LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG mux LCID %d len %d (tb_left %d)\n",
+            LOG_D(NR_MAC, "[UE%d] %d:%d SLDBG mux LCID %d len %d (tb_left %d)\n",
                   ue_id, sl_ind->frame_tx, sl_ind->slot_tx, sl_bearers[b].lcid, slen, (int)(end - wr));
           }
         }
@@ -637,7 +635,7 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       }
       tx_config.number_pdus = 1;
       tx_config.tx_config_list[0].pdu_type = tx_action;
-      LOG_I(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSCCH/PSSCH tb_size %d (rlc %d) mcs %d\n",
+      LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSCCH/PSSCH tb_size %d (rlc %d) mcs %d\n",
             ue_id, sl_ind->frame_tx, sl_ind->slot_tx, pdu->tb_size, (int)len, mcs);
     }
 
@@ -725,8 +723,66 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
         if (get_softmodem_params()->relay_type == 1 && (srb0b > 0 || srb1b > 0))
           LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG gate src_id=0x%x drb=%d srb0=%d srb1=%d -> tx_bytes=%d\n",
                 ue_id, frame, slot, mac->src_id, st.bytes_in_buffer, srb0b, srb1b, tx_bytes);
-        tti_action = (tx_bytes > 0) ? SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH : SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+        /* Sensing-based resource selection (TS 38.214 8.1.4). Having data is necessary but no longer
+         * sufficient: the slot must also be one of the resources selection left available, i.e. one that
+         * no peer's SCI-1A reserved above the RSRP threshold. That is what stops two UEs with traffic
+         * from transmitting in the same slot - a collision destroys a TB in both directions, because a
+         * UE cannot receive while it transmits.
+         *
+         * Applied only for mode-2 non-relay, and only when a sensing selection method is configured.
+         * Everything else (mode-1, relay, sensing disabled) keeps the previous "data => transmit" rule.
+         * If selection yields no resource for this slot the UE listens instead. */
+        bool may_transmit = (tx_bytes > 0);
+        const bool sensing_enabled = (get_softmodem_params()->sl_mode == 2 && get_softmodem_params()->relay_type == 0
+                                      && (mac->rsc_selection_method == c1 || mac->rsc_selection_method == c4
+                                          || mac->rsc_selection_method == c5 || mac->rsc_selection_method == c7));
+        if (may_transmit && sensing_enabled) {
+          frameslot_t frame_slot = {.frame = frame, .slot = slot};
+          const uint8_t mu = sl_mac->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+          const uint16_t p_prime_rsvp_tx = time_to_slots(mu, sl_mac->mac_tx_params.resel_counter);
+
+          // Re-run selection when the reselection timer expires; otherwise keep the current grant.
+          if (mac->sl_candidate_resources == NULL || mac->reselection_timer >= p_prime_rsvp_tx) {
+            mac->reselection_timer = 0;
+            List_t *selected =
+                get_candidate_resources(&frame_slot, mac, &mac->sl_sensing_data, &mac->sl_transmit_history);
+            if (selected) {
+              // Release the previous grant before replacing it: selection runs every resel_counter
+              // slots, so keeping the old list would leak a few KB per reselection for the whole run.
+              if (mac->sl_candidate_resources && mac->sl_candidate_resources != selected) {
+                free_list_mem(mac->sl_candidate_resources);
+                free(mac->sl_candidate_resources);
+              }
+              mac->sl_candidate_resources = selected;
+            }
+          } else {
+            mac->reselection_timer++;
+          }
+
+          const sl_resource_info_t *resource =
+              (mac->sl_candidate_resources && mac->sl_candidate_resources->size > 0)
+                  ? get_resource_element(mac->sl_candidate_resources, frame_slot)
+                  : NULL;
+          if (resource == NULL) {
+            may_transmit = false;
+            LOG_D(NR_MAC, "[UE%d] %d:%d SL sensing: slot not in the selected set (%ld candidates) -> RX\n",
+                  ue_id, frame, slot,
+                  mac->sl_candidate_resources ? mac->sl_candidate_resources->size : 0);
+          }
+        }
+
+        tti_action = may_transmit ? SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH : SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
         sl_mac->future_ttis[slot].sl_action = tti_action;
+
+        /* Record our own transmissions: selection must not hand back a slot we are already using.
+         * NOTE the trim here uses the TX pool's t0, whereas the SCI-1A sensing trim uses the RX pool's
+         * (which is never configured, hence 0). Both match the reference implementation. */
+        if (tti_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH) {
+          frameslot_t tx_fs = {.frame = frame, .slot = slot};
+          if (mac->sl_transmit_history.size > 1 && sl_mac->sl_TxPool[0])
+            remove_old_transmit_history(&tx_fs, sl_mac->sl_TxPool[0]->t0, &mac->sl_transmit_history, sl_mac);
+          push_back(&mac->sl_transmit_history, &tx_fs);
+        }
         LOG_D(NR_MAC, "[UE%d] %d:%d SL-SCHED data-plane: status_ind_sl(src_id=0x%x drb=%d)=%d bytes -> action %d\n",
               ue_id, frame, slot, mac->src_id, SL_F1_DRB_ID, tx_bytes, tti_action);
       } else if (!tti_action) {

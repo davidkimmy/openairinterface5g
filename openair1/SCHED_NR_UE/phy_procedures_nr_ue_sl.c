@@ -73,8 +73,6 @@ void nr_fill_sl_rx_indication(sl_nr_rx_indication_t *rx_ind,
       rx_slsch_pdu->harq_pid   = slsch_status->rdata->harq_pid;
       rx_slsch_pdu->ack_nack   = (slsch_status->rxok == true) ? 1 : 0;
       LOG_D(NR_MAC, "%4d.%2d Received %s SLSCH\n", rx_ind->sfn, rx_ind->slot, rx_slsch_pdu->ack_nack ? "Correct" : "Incorrect");
-      if (slsch_status->rxok == true) sl_phy_params->pssch.rx_ok++;
-      else                            sl_phy_params->pssch.rx_errors[0]++;
     } break;
     case FAPI_NR_RX_PDU_TYPE_SSB: {
       sl_nr_ssb_pdu_t *ssb_pdu = &rx_ind->rx_indication_body[n_pdus - 1].ssb_pdu;
@@ -218,8 +216,10 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
   const uint32_t rxdataF_sz = fp->samples_per_slot_wCP;
   __attribute__((aligned(32))) c16_t rxdataF[fp->nb_antennas_rx][rxdataF_sz];
 
-  // Dual-card relay (mode-1): the PC5 device fills rxdata_sl; single-card (mode-2) SL reuses rxdata.
-  c16_t **sl_rxdata = ue->sl_dual_card ? ue->common_vars.rxdata_sl : ue->common_vars.rxdata;
+  /* PC5 samples always come from rxdata_sl, for every SL mode: UE_thread_sl owns the PC5 device and fills
+   * that buffer. Keying this on sl_dual_card sent mode-2 to rxdata, which the PC5 thread never writes. */
+  c16_t **sl_rxdata = (ue->sl_mode != 0) ? ue->common_vars.rxdata_sl : ue->common_vars.rxdata;
+  AssertFatal(sl_rxdata != NULL, "SL RX buffer not allocated for sl_mode %d\n", ue->sl_mode);
 
   // Periodic sidelink PHY stats (KGRN colouring, matching episys/sl-mode1-relay). Placed BEFORE the
   // sl_rx_action branch so BOTH roles report: the sync-ee (which receives PSBCH) AND the SyncRef/relay
@@ -230,9 +230,9 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
     LOG_I(NR_PHY, "%s[UE%d] %d:%d PSBCH Stats: TX %d, RX ok %d, RX not ok %d\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,
           sl_phy_params->psbch.num_psbch_tx, sl_phy_params->psbch.rx_ok, sl_phy_params->psbch.rx_errors);
-    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSCCH Stats: TX %u, RX ok %u\n", KGRN,
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSCCH Stats: TX %u, RX ok %u, false pos %u\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,
-          sl_phy_params->pscch.num_pscch_tx, sl_phy_params->pscch.rx_ok);
+          sl_phy_params->pscch.num_pscch_tx, sl_phy_params->pscch.rx_ok, sl_phy_params->pscch.rx_errors);
     LOG_I(NR_PHY, "%s[UE%d] %d:%d PSSCH/SCI2 Stats: TX %u, RX ok %u, RX not ok %u\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,
           sl_phy_params->pssch.num_pssch_sci2_tx, sl_phy_params->pssch.rx_sci2_ok, sl_phy_params->pssch.rx_sci2_errors);
@@ -267,47 +267,102 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
           nr_psbch_process(ue, phy_data, proc, sym, rxdataF_symb, &e_rx_offset, psbch_e_rx, psbch_unClippled, dl_ch_estimates_time);
     }
   }
-  // episys SL data-plane port: PSSCH (SLSCH) receive. develop's SL was sync-only; this is the data plane.
-  else if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SCI
+  /* ---- SL receive pipeline: three staged decodes, chained by re-reading sl_rx_action. Each stage raises
+   * an indication to MAC; MAC programs the NEXT stage's single RX config PDU from what was actually
+   * decoded, and the scheduled_response advances sl_rx_action. Nothing downstream runs on a guessed
+   * config, so harq_pid/ndi/rv_index always come from a real SCI-2.
+   *     RX_PSCCH --(SCI-1A)--> RX_PSSCH_SCI --(SCI-2)--> RX_PSSCH_SLSCH */
+  else if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSCCH
+           || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SCI
            || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH
            || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH) {
-    sl_nr_rx_config_pssch_sci_pdu_t *pssch_pdu = &phy_data->nr_sl_pssch_sci_pdu;
-    LOG_D(NR_PHY, " ----- PSSCH RX TTI: frame.slot %d.%d pssch_numsym %d ------\n",
-          frame_rx % 1024, nr_slot_rx, pssch_pdu->pssch_numsym);
-
     NR_gNB_PUSCH *pssch_vars = ue->pssch_vars;
-    // A PSFCH-only feedback slot carries no valid PSSCH config (pssch_numsym 0, or garbage). Only run the
-    // PSSCH demod when the config is valid; otherwise skip it (DTX) — the PSFCH decode below runs regardless.
-    bool valid_pssch = pssch_pdu->pssch_numsym >= 1 && pssch_pdu->pssch_numsym <= NR_SYMBOLS_PER_SLOT - 1
-                       && pssch_pdu->sci2_beta_offset < 19;
-    if (!valid_pssch) {
-      pssch_vars->DTX = 1;
-    } else {
-      // OFDM front-end for the PSSCH symbols (symbol 0 is AGC/guard).
-      for (int sym = 1; sym <= pssch_pdu->pssch_numsym; sym++)
-        nr_slot_fep(ue, fp, proc->nr_slot_rx, sym, rxdataF, link_type_sl, 0, sl_rxdata);
 
-      // UE-native PSSCH demod -> ue->pssch_vars[0].llr_layers + per-antenna RX/noise power.
-      nr_rx_pssch(ue, proc, fp, phy_data, rxdataF_sz, rxdataF, 0);
+    /* STAGE 1 of 3: PSCCH / SCI-1A. On success the MAC handler programs stage 2 with the Nid taken from
+     * the PSCCH CRC (38.211 8.3.1.1). On failure sl_rx_action does not advance and the slot ends here,
+     * which is correct: without SCI-1A the PSSCH parameters are unknown. */
+    if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSCCH) {
+      const sl_nr_rx_config_pscch_pdu_t *pscch_pdu = &phy_data->nr_sl_pscch_pdu;
+      LOG_D(NR_PHY, " ----- PSCCH RX TTI: frame.slot %d.%d numrbs %d sci_1a_len %d ------\n",
+            frame_rx % 1024, nr_slot_rx, pscch_pdu->pscch_numrbs, pscch_pdu->sci_1a_length);
+      if (pscch_pdu->pscch_numrbs && pscch_pdu->sci_1a_length) {
+        /* OFDM front-end. PSCCH sits in the first symbols, but stages 2 and 3 consume the whole PSSCH
+         * region from this same rxdataF within the slot, so demodulate it once here. */
+        const int last_sym = (pscch_pdu->pssch_numsym >= 1 && pscch_pdu->pssch_numsym <= NR_SYMBOLS_PER_SLOT - 1)
+                                 ? pscch_pdu->pssch_numsym
+                                 : pscch_pdu->pscch_numsym;
+        for (int sym = 1; sym <= last_sym; sym++)
+          nr_slot_fep(ue, fp, proc->nr_slot_rx, sym, rxdataF, link_type_sl, 0, sl_rxdata);
 
-      pssch_vars->ulsch_power_tot = 0;
-      pssch_vars->ulsch_noise_power_tot = 0;
-      for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
-        pssch_vars->ulsch_power_tot += pssch_vars->ulsch_power[aarx];
-        pssch_vars->ulsch_noise_power_tot += pssch_vars->ulsch_noise_power[aarx];
+        uint64_t sci1_payload = 0;
+        uint16_t decoded_Nid = 0;
+        int16_t pscch_rsrp_dBm = 0;
+        if (nr_rx_pscch(ue, proc, fp, pscch_pdu, rxdataF_sz, rxdataF, &sci1_payload, &decoded_Nid,
+                        &pscch_rsrp_dBm)
+            == 0) {
+          LOG_D(NR_PHY, "%d.%d PSCCH decode OK: Nid %u, rsrp %d dBm -> stage 2\n", frame_rx,
+                nr_slot_rx, decoded_Nid, pscch_rsrp_dBm);
+
+          sl_nr_sci_indication_t sci_ind = {0};
+          sci_ind.sfn = frame_rx;
+          sci_ind.slot = nr_slot_rx;
+          sci_ind.number_of_SCIs = 1;
+          sci_ind.sensing_result = 0;
+          sci_ind.pssch_rsrp = 0; // the PSCCH measurement below is what sensing uses
+          sci_ind.sci_pdu[0].sci_format_type = SL_SCI_FORMAT_1A_ON_PSCCH;
+          sci_ind.sci_pdu[0].subch_index = 0;
+          sci_ind.sci_pdu[0].pscch_rsrp = pscch_rsrp_dBm;
+          sci_ind.sci_pdu[0].sci_payloadlen = pscch_pdu->sci_1a_length;
+          sci_ind.sci_pdu[0].Nid = decoded_Nid;
+          memcpy(sci_ind.sci_pdu[0].sci_payloadBits, &sci1_payload, sizeof(sci1_payload));
+
+          nr_sidelink_indication_t sl_indication;
+          nr_fill_sl_indication(&sl_indication, NULL, &sci_ind, proc, ue, phy_data);
+          if (ue->if_inst && ue->if_inst->sl_indication)
+            ue->if_inst->sl_indication(&sl_indication);
+        }
       }
-      bool detected = dB_fixed_x10(pssch_vars->ulsch_power_tot)
-                      >= dB_fixed_x10(pssch_vars->ulsch_noise_power_tot) + ue->pssch_thres;
-      if (!detected) {
+    }
+
+    /* STAGE 2 of 3: SCI-2 on PSSCH. Reached only because stage 1 decoded SCI-1A and MAC advanced the
+     * action. nr_rx_pssch demodulates, decodes SCI-2 and raises its indication, which makes MAC program
+     * stage 3 with the transmitter's real harq_pid / ndi / rv_index. */
+    if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SCI) {
+      sl_nr_rx_config_pssch_sci_pdu_t *pssch_pdu = &phy_data->nr_sl_pssch_sci_pdu;
+      LOG_D(NR_PHY, " ----- PSSCH RX TTI: frame.slot %d.%d pssch_numsym %d Nid %x ------\n",
+            frame_rx % 1024, nr_slot_rx, pssch_pdu->pssch_numsym, pssch_pdu->Nid);
+      // A PSFCH-only feedback slot carries no valid PSSCH config (pssch_numsym 0, or garbage).
+      bool valid_pssch = pssch_pdu->pssch_numsym >= 1 && pssch_pdu->pssch_numsym <= NR_SYMBOLS_PER_SLOT - 1
+                         && pssch_pdu->sci2_beta_offset < 19;
+      if (!valid_pssch) {
         pssch_vars->DTX = 1;
-        LOG_D(NR_PHY, "%d.%d PSSCH not detected (pwr %d < noise %d + thr %d)\n", frame_rx, nr_slot_rx,
-              dB_fixed_x10(pssch_vars->ulsch_power_tot), dB_fixed_x10(pssch_vars->ulsch_noise_power_tot), ue->pssch_thres);
       } else {
-        pssch_vars->DTX = 0;
-        int ret = nr_slsch_procedures(ue, proc, phy_data, 0);
-        LOG_D(NR_PHY, "%d.%d PSSCH SLSCH decode returned %d (pwr %d noise %d)\n", frame_rx, nr_slot_rx, ret,
-              dB_fixed_x10(pssch_vars->ulsch_power_tot), dB_fixed_x10(pssch_vars->ulsch_noise_power_tot));
+        // UE-native PSSCH demod -> ue->pssch_vars[0].llr_layers + per-antenna RX/noise power.
+        nr_rx_pssch(ue, proc, fp, phy_data, rxdataF_sz, rxdataF, 0);
+        pssch_vars->ulsch_power_tot = 0;
+        pssch_vars->ulsch_noise_power_tot = 0;
+        for (int aarx = 0; aarx < fp->nb_antennas_rx; aarx++) {
+          pssch_vars->ulsch_power_tot += pssch_vars->ulsch_power[aarx];
+          pssch_vars->ulsch_noise_power_tot += pssch_vars->ulsch_noise_power[aarx];
+        }
+        bool detected = dB_fixed_x10(pssch_vars->ulsch_power_tot)
+                        >= dB_fixed_x10(pssch_vars->ulsch_noise_power_tot) + ue->pssch_thres;
+        pssch_vars->DTX = detected ? 0 : 1;
+        if (!detected)
+          LOG_D(NR_PHY, "%d.%d PSSCH not detected (pwr %d < noise %d + thr %d)\n", frame_rx, nr_slot_rx,
+                dB_fixed_x10(pssch_vars->ulsch_power_tot), dB_fixed_x10(pssch_vars->ulsch_noise_power_tot),
+                ue->pssch_thres);
       }
+    }
+
+    /* STAGE 3 of 3: SLSCH transport decode. Reached only because stage 2 decoded SCI-2, so the transport
+     * config in phy_data->nr_sl_pssch_pdu carries the transmitter's real HARQ state. */
+    if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH
+        || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH) {
+      int ret = nr_slsch_procedures(ue, proc, phy_data, 0);
+      LOG_D(NR_PHY, "%d.%d PSSCH SLSCH decode returned %d (harq %d rv %d ndi %d)\n", frame_rx, nr_slot_rx,
+            ret, phy_data->nr_sl_pssch_pdu.harq_pid, phy_data->nr_sl_pssch_pdu.rv_index,
+            phy_data->nr_sl_pssch_pdu.ndi);
     }
 
     // episys SL PSFCH port (Stage 2 PHY RX): decode HARQ ACK/NACK feedback on this slot's PSFCH resources.
@@ -387,13 +442,19 @@ void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc
   // episys SL data-plane port: PSCCH+PSSCH transmit. PSCCH (SCI-1) is encoded UE-native (nr_generate_sci1).
   else if (phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH) {
     LOG_D(NR_PHY, "(%d.%d) Sidelink TX PSCCH(+PSSCH)\n", frame_tx, slot_tx);
-    // PSCCH SCI-1 (PC5). nr_generate_sci1 writes the PSCCH and returns its CRC (spec: low 16 bits would be the
-    // PSSCH DMRS/SLSCH-scrambling Nid). F1 BRING-UP: the RX does a blind PSSCH config with a FIXED Nid=0
-    // (nr_ue_scheduler_sl.c), so force the TX to the same fixed Nid=0 here to align PSSCH DMRS + SLSCH + SCI-2
-    // scrambling on both sides. TODO(reconcile): compute crc24c(SCI1)>>8 on BOTH ends for spec/multi-UE.
-    nr_generate_sci1(ue, txdataF[0], fp, AMP, slot_tx, &phy_data->nr_sl_pssch_pscch_pdu);
+    /* PSCCH SCI-1 (PC5). nr_generate_sci1 writes the PSCCH and returns its CRC; per 38.211 8.3.1.1 the low
+     * 16 bits are the PSSCH DMRS / SLSCH / SCI-2 scrambling Nid.
+     *
+     * This is now derived from the CRC rather than pinned to 0, because the receiver's SCI-1A decode is
+     * authoritative: it recovers the same Nid from the PSCCH CRC and programs the PSSCH RX with it.
+     * BOTH SIDES MUST MOVE TOGETHER. Leaving the transmitter pinned at 0 while the receiver used the
+     * decoded value made every PSSCH undecodable - the DMRS sequences disagree, the channel estimate is
+     * noise, measured power falls under pssch_thres, and the slot is written off as DTX before
+     * nr_slsch_procedures is ever called (the symptom is RX ok 0 with RX not ok 0/0/0/0, i.e. no
+     * attempts rather than failures). */
+    const uint32_t sci1_crc = nr_generate_sci1(ue, txdataF[0], fp, AMP, slot_tx, &phy_data->nr_sl_pssch_pscch_pdu);
     sl_phy_params->pscch.num_pscch_tx++; // PC5 PHY stats: PSCCH (SCI-1) TX
-    phy_data->pscch_Nid = 0;
+    phy_data->pscch_Nid = sci1_crc & 0xFFFF;
     // PSSCH data: SLSCH encode + SCI-2 polar encode + PSSCH DMRS + SL RE map (SCI-1 REs already written above).
     nr_ue_slsch_procedures(ue, frame_tx, slot_tx, phy_data, txdataF);
     tx_action = 1;
