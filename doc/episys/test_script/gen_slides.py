@@ -395,7 +395,7 @@ add_code_block(slide5, Inches(7.0), Inches(1.6), Inches(5.5), Inches(2.8),
     "# Use external clock source for USRP (0=internal, 1=external) \n"
     "use_external_clock=1\n"
     "# Use standalone mode (0=disabled, 1=enabled)\n"
-    "use_sa=1\n"
+    "use_sa=0\n"
     "# Use gnome-terminal (0=bash, 1=gnome)\n"
     "use_gnome=1\n"
     "# Ensure ping test time (0=strict, 1=flexible)\n"

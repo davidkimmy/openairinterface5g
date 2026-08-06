@@ -245,7 +245,7 @@ base_log_dir="~/openairinterface5g"
 use_external_clock=1
 
 # Use standalone mode (0=disabled, 1=enabled)
-use_sa=1
+use_sa=0
 
 # Ensure ping test has enough time to complete (0=strict duration, 1=flexible)
 ensure_ping_test_time=1

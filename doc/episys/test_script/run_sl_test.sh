@@ -16,6 +16,9 @@ SCRIPT_DIR_REL="${SCRIPT_DIR#$HOME/}"
 base_dir="$SCRIPT_DIR"
 USE_GNOME=0
 sa_flag=""
+# PDU-session DNN. Needed only when --sa is NOT passed: without it the UE registers fully but
+# reports no PDU session configured, so oaitun_ue1 is never created. Cleared for --sa below.
+pdu_session_flag="--uicc0.pdu_sessions.[0].dnn oai"
 ext_clock_flag=""
 ensure_ping_test_time=0  # Default: 0 (strict duration)
 
@@ -162,6 +165,7 @@ echo "Test_profile: $test_profile"
 [[ "$use_external_clock" == "1" ]] && ext_clock_flag=" --clock-source 1 --time-source 1"
 [[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
 [[ "$use_sa" == "1" ]] && sa_flag="--sa"
+[[ "$use_sa" == "1" ]] && pdu_session_flag=""
 
 # Apply extended delays if enabled in config
 if [[ "$use_extended_delays" == "1" ]]; then
@@ -294,6 +298,15 @@ while [[ $# -gt 0 ]]; do
             debug_log_arg="--log_config.$(echo "$2" | tr '[:upper:]' '[:lower:]')_log_level debug"
             shift 2
             ;;
+        --notest)
+            # The folder is OPTIONAL: a following token that is not another option is taken as the
+            # folder name, otherwise "latest" is used.
+            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+                NOTEST_DIR="$2"; shift 2
+            else
+                NOTEST_DIR="latest"; shift
+            fi
+            ;;
         *)
             _prescan_args+=("$1")
             shift
@@ -314,18 +327,23 @@ done
 shift $((OPTIND - 1))
 
 log_dir="$base_dir/test_${timestamp}"
-mkdir -p "$log_dir"
-ln -sfn "test_${timestamp}" "$base_dir/latest"
-echo "Log files will be saved at $log_dir"
-
 test_summary_file="$log_dir/test_summary_${timestamp}.csv"
 
-# Initialize host variables based on test configuration
-# Skip SSH resolution if tests are running on local host
-if [[ "${enabled_tests[*]}" =~ "on_local_host" ]]; then
-    init_host_variables "skip_ssh"
-else
-    init_host_variables "resolve_ssh"
+# --notest reprints an EXISTING folder, so none of the run set-up may happen: creating a new test_<stamp>
+# directory and re-pointing "latest" at it would bury the very folder being inspected, and resolving hosts
+# would ssh out for a run that is not going to take place.
+if [[ -z "${NOTEST_DIR:-}" ]]; then
+    mkdir -p "$log_dir"
+    ln -sfn "test_${timestamp}" "$base_dir/latest"
+    echo "Log files will be saved at $log_dir"
+
+    # Initialize host variables based on test configuration
+    # Skip SSH resolution if tests are running on local host
+    if [[ "${enabled_tests[*]}" =~ "on_local_host" ]]; then
+        init_host_variables "skip_ssh"
+    else
+        init_host_variables "resolve_ssh"
+    fi
 fi
 
 # Read default values from config files (before any tests modify them)
@@ -766,27 +784,63 @@ wait_for_tun_interface() {
     return 1
 }
 
-# Block until the sync-ee has ACQUIRED PC5 sync, so traffic is not sent into a link with no receiver.
-# Marker: "Sidelink UE synchronized", LOG_A(PHY) from UE_thread_sl (executables/nr-ue.c) - emitted once,
-# after SLSS search succeeded and the SL-MIB was decoded. LOG_A always prints, so no --debug is needed.
-# It previously matched "RX SLSS REQ", which is LOG_I(NR_MAC) from config_ue_sl.c: an RRC->MAC request to
-# *configure* SLSS reception, emitted at startup. That returned in ~1s while sync actually takes ~8s over
-# two hosts, so the ping began before the peer could receive (icmp_seq 1-8 lost, 9-15 all fine).
-wait_for_pc5_sync() {
-    local log_file="/tmp/result_nearby.log"
-    local timeout=${1:-60}
+# Latest CUMULATIVE PSSCH "RX ok" from a softmodem log, or 0 if that node has not reported yet.
+# The counters never reset and are dumped only every 32 frames (the `(frame_rx & 31) == 0` block in
+# openair1/SCHED_NR_UE/phy_procedures_nr_ue_sl.c), so this signal LAGS - under rfsim across two hosts,
+# consecutive dumps can be tens of wall-clock seconds apart. It is nevertheless the only direct evidence
+# that a node has decoded a transport block sent by its peer.
+pssch_rx_ok_count() {
+    local f="$1" v
+    [ -f "$f" ] || { echo 0; return 0; }
+    v=$(grep -o 'PSSCH Stats: TX [0-9]*, RX ok [0-9]*' "$f" 2>/dev/null | tail -1 | sed 's/.*RX ok //')
+    echo "${v:-0}"
+}
 
-    echo "Waiting for PC5 sync (timeout: ${timeout}s)..."
-    local elapsed=0
+# Block until PC5 can actually CARRY A PACKET - not merely until the PHY has synced.
+#
+# Why this is not just a sync check any more. "Sidelink UE synchronized" (LOG_A(PHY) from UE_thread_sl,
+# executables/nr-ue.c) only says the SLSS search succeeded and the SL-MIB was decoded. In
+# test_20260805_145909 that marker arrived at frame 249 while the run ended at frame 256: the link existed
+# for ~7 frames and moved 2 PSSCH transport blocks in total, yet the ping had already sent 14 requests and
+# "received" 10 replies - which therefore cannot have come over PC5 at all. A gate that passes in that
+# state is worse than no gate, because it certifies a link that cannot carry traffic and turns a broken
+# run into a plausible-looking one.
+#
+# Three conditions, checked on BOTH logs, because each node only ever reports about ITSELF:
+#   1. the receiving side finished the SLSS search   - "Sidelink UE synchronized"  (nr-ue.c)
+#   2. both sides have their SL TUN configured       - LOG_A(OIP) from tuntap_if.c:236
+#   3. both sides have DECODED a PSSCH from the peer - cumulative "RX ok" >= 1
+# 1 and 2 only say the link is set up; 3 is the only non-circumstantial evidence that it works, and it is
+# the condition the old gate was missing. Deliberately NOT used: "SL mode-2 data plane up"
+# (rrc_sl_preconfig.c:791) exists only in mode 2, and this gate also serves the mode-1 relay tests.
+wait_for_pc5_sync() {
+    local timeout=${1:-60}
+    local nearby_log="/tmp/result_nearby.log"
+    local syncref_log="/tmp/result_syncref.log"
+    # The *_with_noise launch paths log the SyncRef elsewhere; fall back rather than block on a missing file.
+    [ -f "$syncref_log" ] || syncref_log="/tmp/result_nrUE_syncref.log"
+
+    echo "Waiting for PC5 data-plane readiness (timeout: ${timeout}s)..."
+    local elapsed=0 blocked_on="" n_rx=0 s_rx=0
     while [ $elapsed -lt $timeout ]; do
-        if [ -f "$log_file" ] && grep -q "Sidelink UE synchronized" "$log_file"; then
-            echo "PC5 Sync Achieved (${elapsed}s elapsed)"
+        n_rx=$(pssch_rx_ok_count "$nearby_log"); s_rx=$(pssch_rx_ok_count "$syncref_log")
+        if ! grep -q "Sidelink UE synchronized" "$nearby_log" 2>/dev/null; then
+            blocked_on="PHY sync on the receiving UE"
+        elif ! grep -q "successfully configured, IPv4" "$nearby_log" 2>/dev/null ||
+             ! grep -q "successfully configured, IPv4" "$syncref_log" 2>/dev/null; then
+            blocked_on="SL TUN bring-up on both nodes"
+        elif [ "$n_rx" -lt 1 ] || [ "$s_rx" -lt 1 ]; then
+            blocked_on="a decoded PSSCH in each direction (nearby RX ok=$n_rx, syncref RX ok=$s_rx)"
+        else
+            echo "PC5 data plane READY (${elapsed}s elapsed): synced, TUNs up, PSSCH decoded both ways" \
+                 "(nearby RX ok=$n_rx, syncref RX ok=$s_rx)"
             return 0
         fi
         sleep 1
         elapsed=$((elapsed + 1))
     done
-    echo "WARNING: PC5 sync not detected after ${timeout}s"
+    echo "WARNING: PC5 data plane NOT ready after ${timeout}s - still waiting on: $blocked_on"
+    echo "WARNING: any traffic that follows is NOT a valid sidelink measurement (see PSSCH counters)."
     return 1
 }
 
@@ -836,6 +890,75 @@ print_test_summary_header() {
     fi
 }
 
+# --notest: recompute and print the summary for an ARCHIVED result folder, launching nothing.
+# Everything needed is already there: the CSV row carries test name / iteration / hosts / MCS / runtime,
+# ping_result_<test>_*.txt carries the packet counts, and the per-role logs carry the PSSCH counters.
+# It deliberately calls the SAME print_test_summary() the live path uses, so a scoring change can be
+# replayed over old folders instead of needing a fresh run to find out what it did.
+# The archived CSV is never written: rows go to a scratch path, which also lets the header logic fire
+# (print_test_summary_header only emits when its target does not exist yet).
+rescore_folder() {
+    # Folder resolution. No argument means "latest". A BARE NAME is resolved against the run archive
+    # ($base_dir - i.e. base_log_dir, or -d, which is where test_<stamp> and latest are created), NOT the
+    # current directory, so "--notest test_20260805_145909" works from anywhere. An absolute or explicitly
+    # relative path (/x, ./x, ../x, ~/x) is honoured as given. A bare name that does not exist under
+    # $base_dir but does exist relative to the cwd falls back to the cwd, so a local path still works.
+    local dir="${1:-latest}"
+    dir="${dir/#\~/$HOME}"
+    case "$dir" in
+        /*|./*|../*) ;;
+        *) [[ -d "$base_dir/$dir" || ! -d "$dir" ]] && dir="$base_dir/$dir" ;;
+    esac
+    dir="${dir%/}"
+    [[ -d "$dir" ]] || { echo "--notest: no such folder: $dir" >&2; return 1; }
+    local csv
+    csv=$(ls "$dir"/test_summary_*.csv 2>/dev/null | head -1)
+    [[ -f "$csv" ]] || { echo "--notest: no test_summary_*.csv in $dir" >&2; return 1; }
+
+    test_summary_file="$(mktemp -u)"
+    echo "Rescoring $dir - no softmodem is launched"
+    echo ""
+
+    local name itrn hosts mcs runtime rest sref near png bf tx rx result
+    while IFS=, read -r name itrn hosts mcs runtime rest; do
+        [[ -z "${name:-}" || "$name" == "Test Name" ]] && continue
+
+        sref=$(ls "$dir"/result_syncref_"${name}"_*.log 2>/dev/null | head -1)
+        near=$(ls "$dir"/result_nearby_"${name}"_*.log  2>/dev/null | head -1)
+        png=$(ls "$dir"/ping_result_"${name}"_*.txt     2>/dev/null | head -1)
+
+        LAST_PSSCH_TX_SYNCREF=0; LAST_PSSCH_RX_SYNCREF=0
+        LAST_PSSCH_TX_NEARBY=0;  LAST_PSSCH_RX_NEARBY=0
+        BASE_PSSCH_TX_SYNCREF=0; BASE_PSSCH_RX_SYNCREF=0
+        BASE_PSSCH_TX_NEARBY=0;  BASE_PSSCH_RX_NEARBY=0
+
+        [[ -f "${sref:-}" ]] && read -r _ LAST_PSSCH_TX_SYNCREF LAST_PSSCH_RX_SYNCREF \
+            < <(pssch_dumps "$sref" | tail -1)
+        if [[ -f "${near:-}" ]]; then
+            read -r _ LAST_PSSCH_TX_NEARBY LAST_PSSCH_RX_NEARBY < <(pssch_dumps "$near" | tail -1)
+            bf=$(pssch_dumps "$near" | head -1 | awk '{print $1}')
+            if [[ -n "${bf:-}" ]]; then
+                read -r _ BASE_PSSCH_TX_NEARBY BASE_PSSCH_RX_NEARBY < <(pssch_dumps "$near" | head -1)
+                [[ -f "${sref:-}" ]] && read -r _ BASE_PSSCH_TX_SYNCREF BASE_PSSCH_RX_SYNCREF \
+                    < <(pssch_dumps "$sref" | awk -v F="$bf" '$1<=F' | tail -1)
+            fi
+        fi
+        LAST_PSSCH_TX_SYNCREF=${LAST_PSSCH_TX_SYNCREF:-0}; LAST_PSSCH_RX_SYNCREF=${LAST_PSSCH_RX_SYNCREF:-0}
+        LAST_PSSCH_TX_NEARBY=${LAST_PSSCH_TX_NEARBY:-0};   LAST_PSSCH_RX_NEARBY=${LAST_PSSCH_RX_NEARBY:-0}
+        BASE_PSSCH_TX_SYNCREF=${BASE_PSSCH_TX_SYNCREF:-0}; BASE_PSSCH_RX_SYNCREF=${BASE_PSSCH_RX_SYNCREF:-0}
+        BASE_PSSCH_TX_NEARBY=${BASE_PSSCH_TX_NEARBY:-0};   BASE_PSSCH_RX_NEARBY=${BASE_PSSCH_RX_NEARBY:-0}
+
+        tx=0; rx=0
+        [[ -f "${png:-}" ]] && read -r tx rx < <(get_ping_stats_tuple "$png")
+        result="FAIL"
+        check_ping_result "${tx:-0}" "${rx:-0}" 60 && result="PASS"
+
+        print_test_summary "$name" "$itrn" "$hosts" "$mcs" "${runtime%s}" "${tx:-0}" "${rx:-0}" "$result"
+    done < "$csv"
+
+    rm -f "$test_summary_file"
+}
+
 print_test_summary() {
     local test_name=$1
     local iteration=$2
@@ -867,18 +990,36 @@ print_test_summary() {
     local rx_nearby_c=${LAST_PSSCH_RX_NEARBY:-0}
     local rx_syncref_c=${LAST_PSSCH_RX_SYNCREF:-0}
 
+    # Counted from the baseline above, so pre-join transmissions are excluded from BOTH directions.
+    # Direction 1 needs it: the SyncRef transmits from frame 0 while the nearby cannot receive until it
+    # has synced, so its early TX would otherwise read as loss. Direction 2 has no pre-join window (the
+    # nearby only transmits after syncing) and is baselined for symmetry, so the total sums two rates
+    # measured over the same window.
+    #
+    # ONE CONSEQUENCE, so a >100% Rate2 is not misdiagnosed. The note above says a rate over 100% is a
+    # counting bug to chase - that is still true for Rate1 and for the raw counters, but Rate2 now has a
+    # second, benign cause: baseline SKEW. At the baseline frame the nearby may have counted a TX whose
+    # reception the SyncRef only counts in a later dump, giving BASE_TX_NEARBY=1 with BASE_RX_SYNCREF=0
+    # and so (RX - 0) / (TX - 1) - e.g. 11/10 = 110%. That is sampling skew of at most a packet or two at
+    # the join instant, not double counting. Distinguish them by size: skew is off by 1-2 and only ever
+    # just above 100%; the double-count bug fixed in dfe48cafd5 inflated 22 to 28.
+    local tx1=$(( ${LAST_PSSCH_TX_SYNCREF:-0} - ${BASE_PSSCH_TX_SYNCREF:-0} ))
+    local rx1=$(( rx_nearby_c            - ${BASE_PSSCH_RX_NEARBY:-0} ))
+    local tx2=$(( ${LAST_PSSCH_TX_NEARBY:-0}  - ${BASE_PSSCH_TX_NEARBY:-0} ))
+    local rx2=$(( rx_syncref_c           - ${BASE_PSSCH_RX_SYNCREF:-0} ))
+
     # Rate1: syncref TX -> nearby RX
-    if [ -n "$LAST_PSSCH_TX_SYNCREF" ] && [ "$LAST_PSSCH_TX_SYNCREF" -gt 0 ]; then
-        local pssch_rate1=$((rx_nearby_c * 100 / LAST_PSSCH_TX_SYNCREF))
-        local pssch_rate1_str="${rx_nearby_c}/${LAST_PSSCH_TX_SYNCREF} (${pssch_rate1}%)"
+    if [ "$tx1" -gt 0 ]; then
+        local pssch_rate1=$((rx1 * 100 / tx1))
+        local pssch_rate1_str="${rx1}/${tx1} (${pssch_rate1}%)"
     else
         local pssch_rate1_str="N/A"
     fi
 
     # Rate2: nearby TX -> syncref RX
-    if [ -n "$LAST_PSSCH_TX_NEARBY" ] && [ "$LAST_PSSCH_TX_NEARBY" -gt 0 ]; then
-        local pssch_rate2=$((rx_syncref_c * 100 / LAST_PSSCH_TX_NEARBY))
-        local pssch_rate2_str="${rx_syncref_c}/${LAST_PSSCH_TX_NEARBY} (${pssch_rate2}%)"
+    if [ "$tx2" -gt 0 ]; then
+        local pssch_rate2=$((rx2 * 100 / tx2))
+        local pssch_rate2_str="${rx2}/${tx2} (${pssch_rate2}%)"
     else
         local pssch_rate2_str="N/A"
     fi
@@ -887,8 +1028,8 @@ print_test_summary() {
     # Both syncref->nearby and nearby->syncref links exist on single- and
     # multi-host tests, so aggregate RX/TX over both directions in all cases.
     # Use the clamped RX values so the total also stays <= 100%.
-    local total_tx=$((${LAST_PSSCH_TX_SYNCREF:-0} + ${LAST_PSSCH_TX_NEARBY:-0}))
-    local total_rx=$((rx_syncref_c + rx_nearby_c))
+    local total_tx=$(( tx1 + tx2 ))
+    local total_rx=$(( rx1 + rx2 ))
     if [ "$total_tx" -gt 0 ]; then
         local pssch_total=$((total_rx * 100 / total_tx))
         local pssch_total_str="${pssch_total}%"
@@ -921,6 +1062,15 @@ get_ping_stats_tuple() {
 
     # Return both transmitted and received as "transmitted received" tuple to stdout
     echo "${transmitted:-0} ${received:-0}"
+}
+
+# Every periodic "PSSCH Stats" dump in a log as "<frame> <tx> <rx_ok>", oldest first. Used to baseline
+# the rates; get_pssch_stats() below returns only the final snapshot.
+pssch_dumps() {
+    local f="$1"
+    [ -f "$f" ] || return 0
+    grep -o '[0-9]*:[0-9]* PSSCH Stats: TX [0-9]*, RX ok [0-9]*' "$f" 2>/dev/null \
+        | sed 's/:[0-9]* PSSCH Stats: TX / /; s/, RX ok / /'
 }
 
 get_pssch_stats() {
@@ -1175,6 +1325,10 @@ evaluate_ping_test() {
     [[ $# -ge 3 ]] && dest_ip=$3
     [[ $# -ge 4 ]] && local sl_mode=$4
     [[ $# -ge 5 ]] && local test_name=$5
+    # $6 = how long to let traffic run before teardown. Callers that gate on PC5 sync pass their computed
+    # ping_window; the rest fall back to their own `duration`. Previously this was read implicitly off the
+    # global, which is what forced the gates to write their leftover back into `duration`.
+    local ping_window=${6:-$duration}
 
     # Set default ping parameters if not already set (for non-BLER tests)
     : ${ping_count:=10}
@@ -1202,14 +1356,14 @@ evaluate_ping_test() {
 
         run_cmd $host_name "$cmd" $ping_output
     else
-        # Run ping on remote host
-        remote_log_dir="/home/$user_name/test_${timestamp}"
-        ping_output="$remote_log_dir/ping_result_${test_name}_${timestamp}.txt"
+        # Run ping on remote host. The output is captured on THIS host: run_cmd pipes the
+        # ssh stream into "$safe_filename" locally, so the remote side writes nothing to disk
+        # and needs no directory of its own.
         echo "Ping command (remote): ping -c $ping_count -i $ping_interval -I $src_if $dest_ip on $host_name (count=$ping_count, interval=${ping_interval}s)"
         local safe_filename="$log_dir/ping_result_${test_name}_${timestamp}.txt"
 
         # Build remote command with proper variable expansion
-        local cmd="source /home/$user_name/.bashrc 2>/dev/null; mkdir -p $remote_log_dir && cd $remote_log_dir && ping -c $ping_count -i $ping_interval -w $ping_deadline -I $src_if $dest_ip"
+        local cmd="source /home/$user_name/.bashrc 2>/dev/null; ping -c $ping_count -i $ping_interval -w $ping_deadline -I $src_if $dest_ip"
 
         # Save command to commands.txt
         echo "=== Ping Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -1222,7 +1376,7 @@ evaluate_ping_test() {
     # Wait for the ping to finish before tearing things down. Wait at least as
     # long as the ping's own deadline so it can always print its summary, even
     # when the remaining test duration is short.
-    local kill_wait=$duration
+    local kill_wait=$ping_window
     [[ $kill_wait -lt $ping_deadline ]] && kill_wait=$ping_deadline
     sleep $kill_wait
 
@@ -1246,7 +1400,7 @@ evaluate_ping_test() {
         if [ -f "$local_ping_output" ]; then
             ping_stats=$(get_ping_stats_tuple "$local_ping_output")
         else
-            echo "ERROR: Remote ping output file not found at $ping_output"
+            echo "ERROR: Remote ping output file not found at $local_ping_output"
             ping_stats="0 0"
         fi
     fi
@@ -1314,6 +1468,29 @@ evaluate_ping_test() {
     else
         LAST_PSSCH_TX_NEARBY=0
         LAST_PSSCH_RX_NEARBY=0
+    fi
+
+    # Baseline both directions at the moment the nearby UE joined the link. The SyncRef transmits from
+    # frame 0 by definition, but the nearby cannot receive anything until it has acquired SLSS - in
+    # test_20260805_161017 that was frame 251, by which point the SyncRef had already put 8 PSSCH into an
+    # empty channel. Counting those as losses made a link that then delivered 9/9 report 58%. The nearby's
+    # FIRST dump marks when it started participating (the dump only runs on slots it actually processes),
+    # so subtract both nodes' counters as of that frame. Genuine loss after that point still shows, which
+    # is the point - half-duplex collisions and real misses are NOT baselined away.
+    # Limitation: frame numbers wrap at 1024, so a run crossing a wrap gets no baseline (falls back to raw).
+    BASE_PSSCH_TX_SYNCREF=0; BASE_PSSCH_RX_SYNCREF=0
+    BASE_PSSCH_TX_NEARBY=0;  BASE_PSSCH_RX_NEARBY=0
+    if [ -f "$nearby_log" ] && [ -f "$syncref_log" ]; then
+        local base_frame
+        base_frame=$(pssch_dumps "$nearby_log" | head -1 | awk '{print $1}')
+        if [ -n "${base_frame:-}" ]; then
+            read -r _ BASE_PSSCH_TX_NEARBY BASE_PSSCH_RX_NEARBY \
+                < <(pssch_dumps "$nearby_log" | head -1)
+            read -r _ BASE_PSSCH_TX_SYNCREF BASE_PSSCH_RX_SYNCREF \
+                < <(pssch_dumps "$syncref_log" | awk -v F="$base_frame" '$1<=F' | tail -1)
+            BASE_PSSCH_TX_NEARBY=${BASE_PSSCH_TX_NEARBY:-0};   BASE_PSSCH_RX_NEARBY=${BASE_PSSCH_RX_NEARBY:-0}
+            BASE_PSSCH_TX_SYNCREF=${BASE_PSSCH_TX_SYNCREF:-0}; BASE_PSSCH_RX_SYNCREF=${BASE_PSSCH_RX_SYNCREF:-0}
+        fi
     fi
 
     # Check result and set global result variable
@@ -1628,7 +1805,7 @@ verify_ping() {
 
 evaluate_ping_and_rsrp_test() {
     # Argumemt(s): duration, test_type, mcs, iteration, host_name, test_name
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -1710,27 +1887,27 @@ run_nrUE_cmd() {
         if [[ $host_name == 'local' ]]; then
             nrUE_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                     ./nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                     --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         else
             nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                     sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                     --rfsimulator.serveraddr $LOCAL_HOST_IP --rfsimulator.serverport 4048 --rfsim $sa_flag \
                     --log_config.global_log_level info"
         fi
     elif [[ $test_type == "usrp" ]]; then
         nrUE_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                     sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                     -E $sa_flag --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif \
                     --max-ldpc-iterations ${max_ldpc_iterations} --log_config.global_log_level info"
     elif [[ $test_type == "vrtsim" ]]; then
         # vrtsim (shared-memory radio) is local-host only; UE is the Uu client.
         nrUE_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                     ./nr-uesoftmodem \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --ssb 516 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --ssb 516 --uicc0.imsi 001010000000001 $pdu_session_flag \
                     $sa_flag --device.name vrtsim --vrtsim.role client --vrtsim.chanmod 0 \
                     --log_config.global_log_level info"
     fi
@@ -1759,7 +1936,7 @@ run_syncref_cmd() {
             if [[ $host_name == 'local' ]]; then
                 syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                             -O $CONF_PATH/sl_sync_ref.conf \
-                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                             --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
@@ -1768,7 +1945,7 @@ run_syncref_cmd() {
                 syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
-                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                             --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
                             --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 \
@@ -1778,7 +1955,7 @@ run_syncref_cmd() {
             if [[ $host_name == 'local' ]]; then
                 syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                             -O $CONF_PATH/sl_sync_ref.conf \
-                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                             -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 --remote-ue-id 1 \
                             --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200,num_recv_frames=64,num_send_frames=64' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200,num_recv_frames=64,num_send_frames=64' \
                             $ext_clock_flag \
@@ -1787,7 +1964,7 @@ run_syncref_cmd() {
                 syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf \
-                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                            -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                             -E $sa_flag --sl-mode 1 --sync-ref --node-number 2 --relay-type 1 --is-relay-ue 1 --remote-ue-id 1 \
                             --usrp-args 'serial=$RELAY_UE_USRP_SN_FOR_UU,type=b200,num_recv_frames=64,num_send_frames=64' --usrp-args-sl 'serial=$RELAY_UE_USRP_SN_FOR_SL,type=b200,num_recv_frames=64,num_send_frames=64' \
                             $ext_clock_flag \
@@ -1798,7 +1975,7 @@ run_syncref_cmd() {
             # --remote-ue-id 1 (SRAP header match) + --thread-pool -1,-1,-1,-1 (CPU) + PDU-session DNN, as above.
             syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                         -O $CONF_PATH/sl_sync_ref.conf \
-                        -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 --uicc0.pdu_sessions.[0].dnn oai \
+                        -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                         $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 --thread-pool -1,-1,-1,-1 \
                         --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 0 \
                         --log_config.global_log_level info --relay-type 1 --is-relay-ue 1 $mcs"
@@ -1849,14 +2026,14 @@ run_nearby_cmd() {
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
-                            -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
+                            -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
+                            -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                             --log_config.global_log_level info"
@@ -1864,7 +2041,7 @@ run_nearby_cmd() {
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
                         sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
-                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 \
+                        -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                         -E $sa_flag --sl-mode 2 --node-number 3 --relay-type 1 --remote-ue-id 1 $ext_clock_flag $mcs \
                         --usrp-args 'type=b200,num_recv_frames=64,num_send_frames=64' \
                         --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --thread-pool -1,-1 --device.name oai_usrpdevif"
@@ -1873,7 +2050,7 @@ run_nearby_cmd() {
             # --remote-ue-id 1 (encoded in the SRAP header; must match gNB+relay), --thread-pool -1,-1,-1,-1
             # (avoid RT-thread CPU oversubscription that starves the relay Uu link), and the PDU-session DNN.
             nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
-                        -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 --uicc0.pdu_sessions.[0].dnn oai \
+                        -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                         $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 --thread-pool -1,-1,-1,-1 \
                         --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 0 \
                         --log_config.global_log_level info"
@@ -1921,7 +2098,7 @@ run_nearby_cmd() {
 
 slmode1_srap_ping_test() {
     # Argumemt: duration, test_type, mcs
-    [[ $# -ge 1 ]] && duration=$1 || duration=15
+    local duration=${1:-15}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -1982,20 +2159,26 @@ slmode1_srap_ping_test() {
     local wait_start=$(date +%s)
     wait_for_tun_interface $src_if $nearby_host_name $duration
     local remaining=$(( duration - $(date +%s) + wait_start ))
+    # What survives the TUN and PC5 gates is the PING WINDOW, not the test duration. It is a separate
+    # local on purpose: `duration` is the setting resolved by get_test_duration() and must stay read-only.
+    # Writing the leftover back into it made get_test_duration()'s profile-default fallback hand the NEXT
+    # test the previous test's remainder (30 -> 20 -> 16 across a three-test run), silently starving the
+    # later tests' sync gates while the config still said 30.
+    local ping_window
     if [[ "$ensure_ping_test_time" == "1" ]]; then
         [[ $remaining -lt 5 ]] && remaining=5
         wait_for_pc5_sync $remaining
         remaining=$(( duration - $(date +%s) + wait_start ))
         [[ $remaining -lt 16 ]] && remaining=16
-        duration=$remaining
+        ping_window=$remaining
     else
         # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
         # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
         # the gate was skipped altogether, so the ping started before the peer could receive.
         [[ $remaining -lt 20 ]] && remaining=20
         wait_for_pc5_sync $remaining
-        duration=$(( duration - $(date +%s) + wait_start ))
-        [[ $duration -lt 0 ]] && duration=0
+        ping_window=$(( duration - $(date +%s) + wait_start ))
+        [[ $ping_window -lt 0 ]] && ping_window=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
@@ -2016,7 +2199,7 @@ slmode1_srap_ping_test() {
     # logs, then took the else branch and forced FAIL with the ping skipped entirely.
     if [[ $sl_mode -eq 1 ]]; then
         if wait_for_remote_ue_core_ip 40; then
-            evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
+            evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name "$ping_window"
         else
             LAST_TEST_RESULT="FAIL"
             LAST_TX_PACKETS=0
@@ -2024,7 +2207,7 @@ slmode1_srap_ping_test() {
             echo "Skipping ping: remote UE registration did not complete (no Core IP)."
         fi
     else
-        evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name
+        evaluate_ping_test $nearby_host_name $src_if $dest_ip $sl_mode $test_name "$ping_window"
     fi
 
     # Cleanup all processes (nearby_host_name was cleaned up in the evaluate_ping_test)
@@ -2044,7 +2227,7 @@ rfsim_slmode1_srap_ping_test_on_three_hosts() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -2059,7 +2242,7 @@ usrp_B210_slmode1_srap_ping_test_on_three_hosts() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="usrp"
@@ -2074,7 +2257,7 @@ rfsim_slmode1_srap_ping_test_on_local_host() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -2089,7 +2272,7 @@ vrtsim_slmode1_srap_ping_test_on_local_host() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="vrtsim"
@@ -2325,7 +2508,7 @@ run_syncref_cmd_with_noise() {
         syncref_cmd="cd $OAI_BUILD_DIR; \
                      sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
                      -O $CONF_PATH/sl_sync_ref.conf \
-                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                      --sa --sync-ref --sl-mode 1 --node-number 2 \
                      --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 1 \
                      --channelmod.modellist_vrtsim.[0].noise_power_dB ${noise_power} \
@@ -2338,7 +2521,7 @@ run_syncref_cmd_with_noise() {
         syncref_cmd="cd $OAI_BUILD_DIR; \
                      sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
                      -O $CONF_PATH/sl_sync_ref.conf \
-                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 \
+                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                      --rfsim --sa --sync-ref --sl-mode 1 \
                      --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
                      --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
@@ -2382,7 +2565,7 @@ run_nearby_cmd_with_noise() {
         nearby_cmd="cd $OAI_BUILD_DIR; \
                     sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
                     -O $CONF_PATH/sl_ue1.conf \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 $pdu_session_flag \
                     --sa --sl-mode 2 --node-number 3 --relay-type 1 \
                     --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 1 \
                     --channelmod.modellist_vrtsim.[0].noise_power_dB ${noise_power} \
@@ -2395,7 +2578,7 @@ run_nearby_cmd_with_noise() {
         nearby_cmd="cd $OAI_BUILD_DIR; \
                     sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
                     -O $CONF_PATH/sl_ue1.conf \
-                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 \
+                    -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 $pdu_session_flag \
                     --rfsim --sa --sl-mode 2 \
                     --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
                     --log_config.global_log_level info --log_config.global_log_options time \
@@ -2421,7 +2604,7 @@ bler_test() {
 #############################################################
     # Core BLER test function - single test execution
     # Arguments: duration, test_type, mcs, iteration, noise_power, host parameters
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -2550,7 +2733,7 @@ rfsim_slmode1_bler_test_on_local_host() {
     # BLER test wrapper - delegates to core bler_test function
     # Arguments: duration, mcs, iteration, noise_power
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     [[ $# -ge 4 ]] && noise_power=$4
@@ -2575,7 +2758,7 @@ vrtsim_slmode1_bler_test_on_local_host() {
     # selects automatically for vrtsim_*bler* tests.
     # Arguments: duration, mcs, iteration, noise_power
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     [[ $# -ge 4 ]] && noise_power=$4
@@ -2591,7 +2774,7 @@ vrtsim_slmode1_bler_test_on_local_host() {
 
 uu_ping_test() {
     # Argumemt(s): duration, test_type, mcs, iteration, host_name, test_name
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -2641,7 +2824,7 @@ rfsim_uu_ping_test_on_two_hosts() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -2655,7 +2838,7 @@ usrp_B210_uu_ping_test_on_two_hosts() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="usrp"
@@ -2669,7 +2852,7 @@ rfsim_uu_ping_test_on_local_host() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -2683,7 +2866,7 @@ vrtsim_uu_ping_test_on_local_host() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="vrtsim"
@@ -2695,7 +2878,7 @@ vrtsim_uu_ping_test_on_local_host() {
 
 pc5_ping_test() {
     # Argumemt(s): duration, test_type, mcs, iteration, host_name, test_name
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -2730,20 +2913,26 @@ pc5_ping_test() {
     local wait_start=$(date +%s)
     wait_for_tun_interface $src_if $syncref_host_name $duration
     local remaining=$(( duration - $(date +%s) + wait_start ))
+    # What survives the TUN and PC5 gates is the PING WINDOW, not the test duration. It is a separate
+    # local on purpose: `duration` is the setting resolved by get_test_duration() and must stay read-only.
+    # Writing the leftover back into it made get_test_duration()'s profile-default fallback hand the NEXT
+    # test the previous test's remainder (30 -> 20 -> 16 across a three-test run), silently starving the
+    # later tests' sync gates while the config still said 30.
+    local ping_window
     if [[ "$ensure_ping_test_time" == "1" ]]; then
         [[ $remaining -lt 5 ]] && remaining=5
         wait_for_pc5_sync $remaining
         remaining=$(( duration - $(date +%s) + wait_start ))
         [[ $remaining -lt 16 ]] && remaining=16
-        duration=$remaining
+        ping_window=$remaining
     else
         # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
         # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
         # the gate was skipped altogether, so the ping started before the peer could receive.
         [[ $remaining -lt 20 ]] && remaining=20
         wait_for_pc5_sync $remaining
-        duration=$(( duration - $(date +%s) + wait_start ))
-        [[ $duration -lt 0 ]] && duration=0
+        ping_window=$(( duration - $(date +%s) + wait_start ))
+        [[ $ping_window -lt 0 ]] && ping_window=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
@@ -2752,7 +2941,7 @@ pc5_ping_test() {
         sleep ${sleep_timing[sync_stab_45s_v1]}
     fi
 
-    evaluate_ping_test $syncref_host_name $src_if $dest_ip $sl_mode "${test_name}"
+    evaluate_ping_test $syncref_host_name $src_if $dest_ip $sl_mode "${test_name}" "$ping_window"
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
@@ -2770,7 +2959,7 @@ rfsim_pc5_ping_test_on_two_hosts() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -2784,7 +2973,7 @@ usrp_B210_pc5_ping_test_on_two_hosts() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="usrp"
@@ -2798,7 +2987,7 @@ rfsim_pc5_ping_test_on_local_host() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -2812,7 +3001,7 @@ vrtsim_pc5_ping_test_on_local_host() {
 #############################################################
     # Argumemt(s): duration, mcs, iteration
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="vrtsim"
@@ -2826,7 +3015,7 @@ pc5_csi_acquisition_psfch_period_test() {
     # Argumemt(s): csi_acq, psfch_period, duration, test_type, mcs, iteration
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && test_type=$4
     [[ $# -ge 5 ]] && mcs=$5
     [[ $# -ge 6 ]] && iteration=$6
@@ -2888,20 +3077,26 @@ pc5_csi_acquisition_psfch_period_test() {
     local wait_start=$(date +%s)
     wait_for_tun_interface "oaitun_ue1" "$syncref_host_name" "$duration"
     local remaining=$(( duration - $(date +%s) + wait_start ))
+    # What survives the TUN and PC5 gates is the PING WINDOW, not the test duration. It is a separate
+    # local on purpose: `duration` is the setting resolved by get_test_duration() and must stay read-only.
+    # Writing the leftover back into it made get_test_duration()'s profile-default fallback hand the NEXT
+    # test the previous test's remainder (30 -> 20 -> 16 across a three-test run), silently starving the
+    # later tests' sync gates while the config still said 30.
+    local ping_window
     if [[ "$ensure_ping_test_time" == "1" ]]; then
         [[ $remaining -lt 5 ]] && remaining=5
         wait_for_pc5_sync $remaining
         remaining=$(( duration - $(date +%s) + wait_start ))
         [[ $remaining -lt 16 ]] && remaining=16
-        duration=$remaining
+        ping_window=$remaining
     else
         # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
         # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
         # the gate was skipped altogether, so the ping started before the peer could receive.
         [[ $remaining -lt 20 ]] && remaining=20
         wait_for_pc5_sync $remaining
-        duration=$(( duration - $(date +%s) + wait_start ))
-        [[ $duration -lt 0 ]] && duration=0
+        ping_window=$(( duration - $(date +%s) + wait_start ))
+        [[ $ping_window -lt 0 ]] && ping_window=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
@@ -2910,7 +3105,7 @@ pc5_csi_acquisition_psfch_period_test() {
         sleep ${sleep_timing[sync_stab_45s_v2]}
     fi
 
-    evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}"
+    evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}" "$ping_window"
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
@@ -2941,7 +3136,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="rfsim"
@@ -2957,7 +3152,7 @@ usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="usrp"
@@ -2973,7 +3168,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="rfsim"
@@ -2989,7 +3184,7 @@ vrtsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="vrtsim"
@@ -3003,7 +3198,7 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
     # Argumemt(s): csi_acq, psfch_period, duration, test_type, mcs, iteration
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && test_type=$4
     [[ $# -ge 5 ]] && mcs=$5
     [[ $# -ge 6 ]] && iteration=$6
@@ -3079,20 +3274,26 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
     local wait_start=$(date +%s)
     wait_for_tun_interface "oaitun_ue1" "$syncref_host_name" "$duration"
     local remaining=$(( duration - $(date +%s) + wait_start ))
+    # What survives the TUN and PC5 gates is the PING WINDOW, not the test duration. It is a separate
+    # local on purpose: `duration` is the setting resolved by get_test_duration() and must stay read-only.
+    # Writing the leftover back into it made get_test_duration()'s profile-default fallback hand the NEXT
+    # test the previous test's remainder (30 -> 20 -> 16 across a three-test run), silently starving the
+    # later tests' sync gates while the config still said 30.
+    local ping_window
     if [[ "$ensure_ping_test_time" == "1" ]]; then
         [[ $remaining -lt 5 ]] && remaining=5
         wait_for_pc5_sync $remaining
         remaining=$(( duration - $(date +%s) + wait_start ))
         [[ $remaining -lt 16 ]] && remaining=16
-        duration=$remaining
+        ping_window=$remaining
     else
         # PC5 sync is a hard precondition for any traffic, so give it a floor rather than whatever is left of
         # `duration` after wait_for_tun_interface. With no floor a slow TUN wait drove `remaining` to <= 0 and
         # the gate was skipped altogether, so the ping started before the peer could receive.
         [[ $remaining -lt 20 ]] && remaining=20
         wait_for_pc5_sync $remaining
-        duration=$(( duration - $(date +%s) + wait_start ))
-        [[ $duration -lt 0 ]] && duration=0
+        ping_window=$(( duration - $(date +%s) + wait_start ))
+        [[ $ping_window -lt 0 ]] && ping_window=0
     fi
 
     # Additional wait time for sidelink synchronization to complete
@@ -3101,7 +3302,7 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
         sleep ${sleep_timing[sync_stab_45s_v2]}
     fi
     sleep 3
-    evaluate_ping_test $nearby_host_name "oaitun_ue2" "8.8.8.8" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}"
+    evaluate_ping_test $nearby_host_name "oaitun_ue2" "8.8.8.8" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}" "$ping_window"
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
@@ -3135,7 +3336,7 @@ rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="rfsim"
@@ -3152,7 +3353,7 @@ vrtsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="vrtsim"
@@ -3169,7 +3370,7 @@ rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="rfsim"
@@ -3186,7 +3387,7 @@ usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
     [[ $# -ge 1 ]] && csi_acq=$1; echo "csi_acq = " $1
     [[ $# -ge 2 ]] && period=$2;  echo "psfch_period  = " $2
-    [[ $# -ge 3 ]] && duration=$3
+    local duration=${3:-$duration}
     [[ $# -ge 4 ]] && mcs=$4
     [[ $# -ge 5 ]] && iteration=$5
     local test_type="usrp"
@@ -3201,7 +3402,7 @@ usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
 ### iperf3 test cases
 #############################################################
 pc5_iperf3_test() {
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -3270,7 +3471,7 @@ pc5_iperf3_test() {
 rfsim_pc5_iperf3_test_on_local_host() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -3283,7 +3484,7 @@ rfsim_pc5_iperf3_test_on_local_host() {
 vrtsim_pc5_iperf3_test_on_local_host() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="vrtsim"
@@ -3296,7 +3497,7 @@ vrtsim_pc5_iperf3_test_on_local_host() {
 rfsim_pc5_iperf3_test_on_two_hosts() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -3309,7 +3510,7 @@ rfsim_pc5_iperf3_test_on_two_hosts() {
 usrp_B210_pc5_iperf3_test_on_two_hosts() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="usrp"
@@ -3320,7 +3521,7 @@ usrp_B210_pc5_iperf3_test_on_two_hosts() {
 }
 
 slmode1_srap_iperf3_test() {
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && test_type=$2
     [[ $# -ge 3 ]] && mcs=$3
     [[ $# -ge 4 ]] && iteration=$4
@@ -3434,7 +3635,7 @@ slmode1_srap_iperf3_test() {
 rfsim_slmode1_srap_iperf3_test_on_local_host() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -3448,7 +3649,7 @@ rfsim_slmode1_srap_iperf3_test_on_local_host() {
 vrtsim_slmode1_srap_iperf3_test_on_local_host() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="vrtsim"
@@ -3462,7 +3663,7 @@ vrtsim_slmode1_srap_iperf3_test_on_local_host() {
 rfsim_slmode1_srap_iperf3_test_on_three_hosts() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="rfsim"
@@ -3476,7 +3677,7 @@ rfsim_slmode1_srap_iperf3_test_on_three_hosts() {
 usrp_B210_slmode1_srap_iperf3_test_on_three_hosts() {
 #############################################################
     echo "====================  Testing ${FUNCNAME[0]}  ===================="
-    [[ $# -ge 1 ]] && duration=$1
+    local duration=${1:-$duration}
     [[ $# -ge 2 ]] && mcs=$2
     [[ $# -ge 3 ]] && iteration=$3
     local test_type="usrp"
@@ -3541,6 +3742,12 @@ cleanup_zombie_processes() {
 }
 
 main() {
+    # --notest short-circuits the whole run: reprint an archived folder and stop.
+    if [[ -n "${NOTEST_DIR:-}" ]]; then
+        rescore_folder "$NOTEST_DIR"
+        return $?
+    fi
+
     #########################################################
     ### Configuration already loaded at top of script ###
     #########################################################

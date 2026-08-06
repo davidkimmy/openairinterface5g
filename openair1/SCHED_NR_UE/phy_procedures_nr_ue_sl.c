@@ -225,7 +225,7 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
   // sl_rx_action branch so BOTH roles report: the sync-ee (which receives PSBCH) AND the SyncRef/relay
   // (which transmits PSBCH and only receives PSSCH). The develop port had buried this inside the RX_PSBCH
   // branch, so the SyncRef never printed any SL stats (get_pssch_stats then read N/A / 0 for the relay).
-  if ((frame_rx & 127) == 0) {
+  if ((frame_rx & 63) == 0) {
     LOG_I(NR_PHY, "============================================\n");
     LOG_I(NR_PHY, "%s[UE%d] %d:%d PSBCH Stats: TX %d, RX ok %d, RX not ok %d\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,

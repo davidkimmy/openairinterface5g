@@ -246,7 +246,7 @@ if [[ $test_profile == "pilot" ]]; then
     enabled_tests=("${pilot_tests[@]}")
     num_repeat=1
     mcs_array=(9)
-    duration=30
+    duration=45
     iperf3_bw_array=(6M)
     group_specific_mcs["slmode1_iperf3_tests"]="9"
     group_specific_duration["slmode1_basic_tests"]=45
