@@ -207,8 +207,8 @@ void nrue_set_ru_params(configmodule_interface_t *cfg)
   if (RUParamList.numelt <= 0) {
     // No RUs config -> default 1 RU. For mode-1 relay synthesize a 2nd (PC5) RU mirroring the Uu RU's
     // antenna/radio params, so the UE drives two cards (Uu card 0 + PC5 card 1) with no RUs list.
-    // NOTE (USRP mode-1): both RUs share sdr_addrs here; a real 2-USRP relay must supply an explicit
-    // RUs list with distinct per-RU sdr_addrs. vrtsim rendezvous is by role/role_sl, so this is fine.
+    // A two-USRP relay needs a DISTINCT device per RU, so RU 1 takes --usrp-args-sl when given
+    // (vrtsim/rfsim need none: they rendezvous by role/role_sl and by port).
     bool relay = (get_softmodem_params()->sl_mode == 1);
     nrue_ru_count = relay ? 2 : 1;
     nrue_rus = calloc_or_fail(nrue_ru_count, sizeof(nrUE_RU_params_t));
@@ -226,8 +226,20 @@ void nrue_set_ru_params(configmodule_interface_t *cfg)
                                      .if_frequency = get_nrUE_params()->if_freq,
                                      .if_freq_offset = get_nrUE_params()->if_freq_off,
                                      .used_by_cell = -1};
-    if (relay)
+    if (relay) {
       nrue_rus[1] = nrue_rus[0]; // PC5 card mirrors the Uu card's radio params
+      char *sl_args = get_nrUE_params()->usrp_args_sl;
+      if (sl_args && sl_args[0]) {
+        nrue_rus[1].sdr_addrs = sl_args;
+        LOG_I(NR_PHY, "SL mode-1 relay: PC5 RU 1 uses its own device args \"%s\" (Uu RU 0: \"%s\")\n",
+              nrue_rus[1].sdr_addrs, nrue_rus[0].sdr_addrs ? nrue_rus[0].sdr_addrs : "(default)");
+      } else {
+        LOG_W(NR_PHY,
+              "SL mode-1 relay: no --usrp-args-sl, so both RUs share device args \"%s\". With two USRPs this "
+              "opens the same radio twice - pass --usrp-args-sl 'serial=<PC5 serial>,...'\n",
+              nrue_rus[0].sdr_addrs ? nrue_rus[0].sdr_addrs : "(default)");
+      }
+    }
     return;
   }
 

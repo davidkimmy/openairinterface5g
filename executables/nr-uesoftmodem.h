@@ -44,6 +44,7 @@ typedef struct ueinfo {
   "entries; omit for no affinity\n"
 #define  CONFIG_HLP_EXTRA_PDU_ID           "ID of an additional PDU session to configure alongside default PDU session\n"
 #define  CONFIG_HLP_DISABLE_BLIND_SEARCH   "Disable blind search for UE searches by neighboring cells\n"
+#define  CONFIG_HLP_USRP_ARGS_SL           "UHD device args for the PC5/sidelink radio of a two-radio SL mode-1 relay (e.g. 'serial=...,type=b200'); defaults to --usrp-args\n"
 
 /***************************************************************************************************************************************/
 /* command line options definitions, CMDLINE_XXXX_DESC macros are used to initialize paramdef_t arrays which are then used as argument
@@ -56,6 +57,7 @@ typedef struct ueinfo {
 // clang-format off
 #define CMDLINE_NRUEPARAMS_DESC {  \
   {"usrp-args",                CONFIG_HLP_USRP_ARGS,           0,               .strptr=&nrUE_params.usrp_args,           .defstrval="type=b200",          TYPE_STRING,   0}, \
+  {"usrp-args-sl",             CONFIG_HLP_USRP_ARGS_SL,        0,               .strptr=&nrUE_params.usrp_args_sl,        .defstrval=NULL,                 TYPE_STRING,   0}, \
   {"tx_subdev",                CONFIG_HLP_TX_SUBDEV,           0,               .strptr=&nrUE_params.tx_subdev,           .defstrval=NULL,                 TYPE_STRING,   0}, \
   {"rx_subdev",                CONFIG_HLP_RX_SUBDEV,           0,               .strptr=&nrUE_params.rx_subdev,           .defstrval=NULL,                 TYPE_STRING,   0}, \
   {"dlsch-parallel",           CONFIG_HLP_DLSCH_PARA,          0,               .u8ptr=NULL,                              .defintval=0,                    TYPE_UINT8,    0}, \
@@ -124,6 +126,10 @@ typedef struct {
   int cont_fo_comp;
   int agc;
   char *usrp_args;
+  /* SL mode-1 U2N relay with two radios: device args for the PC5/SL card (RU 1). NULL = reuse
+   * usrp_args, which is correct for a single-radio UE but selects the SAME device twice on a
+   * two-USRP relay. */
+  char *usrp_args_sl;
   char *tx_subdev;
   char *rx_subdev;
   char *reconfig_file;

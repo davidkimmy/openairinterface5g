@@ -1616,9 +1616,12 @@ run_gNB_cmd() {
     elif [[ $test_type == "usrp" ]]; then
         # For USRP, use relative path from build directory
         local rel_config="../../../targets/PROJECTS/GENERIC-NR-5GC/CONF/$(basename $config_path)"
+        # --max-ldpc-iterations / --ue-txgain / --ue-rxgain are UE-only options (nr-uesoftmodem.h); passing
+        # them to nr-softmodem makes config_check_unknown_cmdlineopt() abort the gNB at startup. The gNB's
+        # radio gains come from the conf's RUs section (att_tx / att_rx / max_rxgain) instead.
         gNB_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-softmodem \
                 -O $rel_config --gNBs.[0].min_rxtxtime 6 \
-                -E $sa_flag --max-ldpc-iterations ${max_ldpc_iterations} --ue-txgain ${TX_GAIN} --ue-rxgain ${RX_GAIN} --device.name oai_usrpdevif $sl_relay_tag"
+                -E $sa_flag --device.name oai_usrpdevif $sl_relay_tag"
     elif [[ $test_type == "vrtsim" ]]; then
         # vrtsim (shared-memory radio) is local-host only; gNB is the Uu server.
         # NOTE: sl_relay_tag (sl_mode 1) intentionally omits --ip-demo (dropped after
