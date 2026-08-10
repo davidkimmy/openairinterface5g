@@ -51,6 +51,8 @@
 #define SL_CONFIG_STRING_RESPOOL_SUBCH_START_RB               "sl_StartRB_Subchannel"
 #define SL_CONFIG_STRING_RESPOOL_NUM_RBS                      "sl_RB_Number"
 #define SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS                   "sl_NumSubchannel"
+#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP         "sl_TimeResourceBitmap"
+#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN     "sl_TimeResourceBitmapLen"
 
 /* Sensing-based resource selection parameters (TS 38.214 8.1.4).
    Read from the "rsrc_selection_params" list of the SL preconfiguration. Without these the pool's
@@ -144,6 +146,16 @@
 {SL_CONFIG_STRING_RESPOOL_SUBCH_START_RB,NULL,0,.i64ptr=sl_res_pool->sl_StartRB_Subchannel_r16,.defint64val=0,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_NUM_RBS,NULL,0,.i64ptr=sl_res_pool->sl_RB_Number_r16,.defint64val=106,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS,NULL,0,.i64ptr=sl_res_pool->sl_NumSubchannel_r16,.defint64val=10,TYPE_INT64,0}}
+
+/* Per-pool sl_TimeResourceBitmap: a hex string selecting which sidelink slots belong to this pool.
+   Bit order is MSB of byte 0 = first sidelink slot, so "F0" selects the first four. Optional
+   sl_TimeResourceBitmapLen overrides the number of valid bits (default: all bits of the bytes given).
+   The TX and RX bitmaps of one node must be complementary, and a node's RX bitmap must equal its
+   peer's TX bitmap - overriding one side of a link therefore requires overriding the other. */
+#define SL_TIMERESPARAMS_DESC(bitmap, bitmap_len) { \
+{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP,NULL,0,.strptr=bitmap,.defstrval=NULL,TYPE_STRING,0}, \
+{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN,NULL,0,.iptr=bitmap_len,.defintval=0,TYPE_INT,0} \
+}
 
 /* Sensing-based resource selection parameters.
    Note sl_SensingWindow is consumed as MILLISECONDS by config_ue_sl.c (time_to_slots), not as an enum

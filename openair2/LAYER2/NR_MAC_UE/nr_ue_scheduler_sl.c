@@ -125,6 +125,41 @@ int sl_nr_ue_slot_select(const sl_nr_phy_config_request_t *cfg, int slot, uint8_
   return slot_type;
 }
 
+/* Derive a pool's sidelink slot mask from its sl_TimeResource bitmap.
+ *
+ * The bitmap is indexed by SIDELINK-SLOT ORDINAL (MSB of byte 0 = the first sidelink slot), not by
+ * slot-in-frame, so it is laid over this frame's own sidelink slots. The resulting mask is therefore
+ * FRAME-PERIODIC and immune to the 1024-frame SFN wrap. This is a deliberate divergence from the
+ * reference, which lays the same bitmap over absolute slots as a whole number of TDD periods and
+ * indexes abs_slot % phy_map_sz: that pattern is bitmap-periodic rather than frame-periodic, and the
+ * reference's own comment records that its pool phase shifts at the SFN wrap. This mapping cannot.
+ *
+ * Returns sl_slot_bitmap unchanged when the pool carries no bitmap, i.e. every sidelink slot stays
+ * usable - the behaviour from before the partition. */
+static uint32_t sl_build_pool_slot_mask(const NR_SL_ResourcePool_r16_t *respool, uint32_t sl_slot_bitmap)
+{
+  if (respool == NULL || respool->ext1 == NULL || respool->ext1->sl_TimeResource_r16 == NULL
+      || respool->ext1->sl_TimeResource_r16->buf == NULL)
+    return sl_slot_bitmap;
+
+  const BIT_STRING_t *tr = respool->ext1->sl_TimeResource_r16;
+  const int nbits = (int)(tr->size * 8) - (int)tr->bits_unused;
+  if (nbits <= 0)
+    return sl_slot_bitmap;
+
+  uint32_t mask = 0;
+  int ordinal = 0;
+  for (int slot = 0; slot < 32; slot++) {
+    if (!((sl_slot_bitmap >> slot) & 1))
+      continue;
+    const int bit = ordinal % nbits; // wraps when the pattern is shorter than the frame's SL slots
+    if ((tr->buf[bit >> 3] >> (7 - (bit & 7))) & 1)
+      mask |= (1u << slot);
+    ordinal++;
+  }
+  return mask;
+}
+
 static void sl_determine_slot_bitmap(sl_nr_ue_mac_params_t *sl_mac, int ue_id)
 {
 
@@ -140,6 +175,31 @@ static void sl_determine_slot_bitmap(sl_nr_ue_mac_params_t *sl_mac, int ue_id)
       sl_mac->sl_slot_bitmap |= (1 << i);
     }
   }
+
+  /* Split the single sidelink slot set into per-pool TX and RX masks. The pools carry complementary
+   * bitmaps (see prepare_NR_SL_ResourcePool), so this node transmits only in its own slots and
+   * listens in its peer's - two time-synchronized nodes can never transmit in the same slot. */
+  for (int i = 0; i < SL_NR_MAC_NUM_TX_RESOURCE_POOLS; i++)
+    if (sl_mac->sl_TxPool[i])
+      sl_mac->sl_TxPool[i]->sl_slot_mask =
+          sl_build_pool_slot_mask(sl_mac->sl_TxPool[i]->respool, sl_mac->sl_slot_bitmap);
+  for (int i = 0; i < SL_NR_MAC_NUM_RX_RESOURCE_POOLS; i++)
+    if (sl_mac->sl_RxPool[i])
+      sl_mac->sl_RxPool[i]->sl_slot_mask =
+          sl_build_pool_slot_mask(sl_mac->sl_RxPool[i]->respool, sl_mac->sl_slot_bitmap);
+
+  /* A configured pool with an empty mask would mute (TX) or deafen (RX) this node for the whole run.
+   * Fail loudly rather than silently: it means every set bit of the bitmap falls outside this TDD
+   * configuration's sidelink slots (e.g. "0F" where there are only 4 sidelink slots per frame). */
+  AssertFatal(sl_mac->sl_TxPool[0] == NULL || sl_mac->sl_TxPool[0]->sl_slot_mask != 0,
+              "[UE%d] SL TX pool bitmap selects none of the sidelink slots (SL slot bitmap %x): this node could never transmit\n",
+              ue_id, sl_mac->sl_slot_bitmap);
+  AssertFatal(sl_mac->sl_RxPool[0] == NULL || sl_mac->sl_RxPool[0]->sl_slot_mask != 0,
+              "[UE%d] SL RX pool bitmap selects none of the sidelink slots (SL slot bitmap %x): this node could never receive\n",
+              ue_id, sl_mac->sl_slot_bitmap);
+  LOG_I(NR_MAC, "[UE%d] SL-MAC: pool slot masks TX:%x RX:%x (of SL slots %x)\n", ue_id,
+        sl_mac->sl_TxPool[0] ? sl_mac->sl_TxPool[0]->sl_slot_mask : 0,
+        sl_mac->sl_RxPool[0] ? sl_mac->sl_RxPool[0]->sl_slot_mask : 0, sl_mac->sl_slot_bitmap);
 
   sl_mac->future_ttis = calloc(num_slots_per_frame, sizeof(sl_stored_tti_req_t));
 
@@ -732,7 +792,20 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
          * Applied only for mode-2 non-relay, and only when a sensing selection method is configured.
          * Everything else (mode-1, relay, sensing disabled) keeps the previous "data => transmit" rule.
          * If selection yields no resource for this slot the UE listens instead. */
-        bool may_transmit = (tx_bytes > 0);
+        /* Per-pool TDM partition. The TX and RX pools carry complementary sidelink-slot masks, so
+         * this node may transmit only in its own slots and listens in its peer's. Two
+         * time-synchronized nodes therefore never transmit in the same slot, which makes a same-slot
+         * collision structurally impossible rather than merely improbable. Such a collision costs a
+         * TB in BOTH directions, because a node running its TX chain in a slot does not run its RX
+         * chain. A pool with no bitmap keeps every sidelink slot (pre-partition behaviour). */
+        const uint32_t tx_pool_mask =
+            sl_mac->sl_TxPool[0] ? sl_mac->sl_TxPool[0]->sl_slot_mask : sl_mac->sl_slot_bitmap;
+        const uint32_t rx_pool_mask =
+            sl_mac->sl_RxPool[0] ? sl_mac->sl_RxPool[0]->sl_slot_mask : sl_mac->sl_slot_bitmap;
+        const bool tx_allowed = (tx_pool_mask >> slot) & 1;
+        const bool rx_allowed = (rx_pool_mask >> slot) & 1;
+
+        bool may_transmit = (tx_bytes > 0) && tx_allowed;
         const bool sensing_enabled = (get_softmodem_params()->sl_mode == 2 && get_softmodem_params()->relay_type == 0
                                       && (mac->rsc_selection_method == c1 || mac->rsc_selection_method == c4
                                           || mac->rsc_selection_method == c5 || mac->rsc_selection_method == c7));
@@ -771,7 +844,18 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
           }
         }
 
-        tti_action = may_transmit ? SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH : SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+        /* Arm the RX chain only in RX-pool slots. A slot in neither pool stays idle (action 0):
+         * sl_schedule_tx_actions builds nothing for it, and PSFCH feedback is scheduled separately
+         * from this action, so HARQ feedback is unaffected by the partition. */
+        if (may_transmit)
+          tti_action = SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH;
+        else if (rx_allowed)
+          tti_action = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+        else
+          tti_action = 0;
+        if (!tti_action)
+          LOG_D(NR_MAC, "[UE%d] %d:%d SL pool: slot in neither TX(%x) nor RX(%x) pool -> idle\n",
+                ue_id, frame, slot, tx_pool_mask, rx_pool_mask);
         sl_mac->future_ttis[slot].sl_action = tti_action;
 
         /* Record our own transmissions: selection must not hand back a slot we are already using.

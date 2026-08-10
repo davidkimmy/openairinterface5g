@@ -235,22 +235,60 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
 
   sl_res_pool->ext1 = calloc(1, sizeof(*sl_res_pool->ext1));
   sl_res_pool->ext1->sl_TimeResource_r16 = calloc(1, sizeof(*sl_res_pool->ext1->sl_TimeResource_r16));
-  sl_res_pool->ext1->sl_TimeResource_r16->size = 8;
-  sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = 4;
-  sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(sl_res_pool->ext1->sl_TimeResource_r16->size, sizeof(uint8_t));
-  // EX: BITMAP 10101010.. indicating every alternating slot supported for sidelink
-  for (int i=0;i<sl_res_pool->ext1->sl_TimeResource_r16->size;i++) {
-    if (is_txpool) {
-        sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = (is_sl_syncsource) ? 0xAA //0x88;//0xAA;
-                                                                            : 0x55;//0x11;//0x55;
-    } else {
-        sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = (is_sl_syncsource) ? 0x55 //0x88;//0xAA;
-                                                                            : 0xAA;//0x11;//0x55;
-    }
-  }
 
-  // mask out unused bits
-  sl_res_pool->ext1->sl_TimeResource_r16->buf[sl_res_pool->ext1->sl_TimeResource_r16->size - 1] &= (0 - (1 << (sl_res_pool->ext1->sl_TimeResource_r16->bits_unused)));
+  /* Per-pool sidelink-slot bitmap. Optional hex string from the .conf (MSB of byte 0 = the first
+   * sidelink slot, so "F0" selects the first four); when absent, fall back to a TX/RX partition keyed
+   * on whether this node is the PC5 sync source.
+   *
+   * The default is deliberately COMPLEMENTARY, both between the two roles and between the two pools:
+   *   sync source : TX = 0xF0, RX = 0x0F
+   *   peer        : TX = 0x0F, RX = 0xF0
+   * so the two nodes' TX slot sets are disjoint and each node listens exactly when the other
+   * transmits. That is what makes a same-slot collision structurally impossible. Leaving every node
+   * TX-eligible in every sidelink slot is what previously let two UEs that got data at the same
+   * instant choose the same slot and destroy a TB in EACH direction - a node running its TX chain in
+   * a slot does not run its RX chain, so one collision costs one TB per direction.
+   *
+   * A conf override MUST be applied to both ends of a link: this node's RX bitmap has to equal the
+   * peer's TX bitmap, and each node derives its pools from its own conf. */
+  char sl_time_res_prefix[MAX_OPTNAME_SIZE * 2 + 8];
+  sprintf(sl_time_res_prefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0,
+          is_txpool ? SL_CONFIG_STRING_SL_TX_RPOOL_LIST : SL_CONFIG_STRING_SL_RX_RPOOL_LIST, 0);
+  char *sl_time_res_hex = NULL;
+  int sl_time_res_len = 0;
+  paramdef_t SL_TIMERES_PARAM[] = SL_TIMERESPARAMS_DESC(&sl_time_res_hex, &sl_time_res_len);
+  config_get(config_get_if(), SL_TIMERES_PARAM, sizeofArray(SL_TIMERES_PARAM), sl_time_res_prefix);
+
+  if (sl_time_res_hex != NULL && strlen(sl_time_res_hex) > 0) {
+    const size_t hexlen = strlen(sl_time_res_hex);
+    const int nbytes = (hexlen + 1) / 2;
+    const int raw_bits = nbytes * 8;
+    const int nbits = (sl_time_res_len > 0 && sl_time_res_len <= raw_bits) ? sl_time_res_len : raw_bits;
+    sl_res_pool->ext1->sl_TimeResource_r16->size = nbytes;
+    sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = raw_bits - nbits;
+    sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(nbytes, sizeof(uint8_t));
+    for (int b = 0; b < nbytes; b++) {
+      char byte_str[3] = {0};
+      byte_str[0] = sl_time_res_hex[2 * b];
+      byte_str[1] = (2 * b + 1 < (int)hexlen) ? sl_time_res_hex[2 * b + 1] : '0';
+      sl_res_pool->ext1->sl_TimeResource_r16->buf[b] = (uint8_t)strtoul(byte_str, NULL, 16);
+    }
+    LOG_I(RRC, "SL %s pool sl_TimeResourceBitmap \"%s\": %d bytes, %d valid bits\n",
+          is_txpool ? "TX" : "RX", sl_time_res_hex, nbytes, nbits);
+  } else {
+    sl_res_pool->ext1->sl_TimeResource_r16->size = 8;
+    sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = 4;
+    sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(sl_res_pool->ext1->sl_TimeResource_r16->size, sizeof(uint8_t));
+    const uint8_t own_slots = is_txpool ? (is_sl_syncsource ? 0xF0 : 0x0F)
+                                        : (is_sl_syncsource ? 0x0F : 0xF0);
+    for (int i = 0; i < sl_res_pool->ext1->sl_TimeResource_r16->size; i++)
+      sl_res_pool->ext1->sl_TimeResource_r16->buf[i] = own_slots;
+
+    // mask out unused bits
+    sl_res_pool->ext1->sl_TimeResource_r16->buf[sl_res_pool->ext1->sl_TimeResource_r16->size - 1] &= (0 - (1 << (sl_res_pool->ext1->sl_TimeResource_r16->bits_unused)));
+    LOG_I(RRC, "SL %s pool sl_TimeResource default 0x%02x (%s)\n",
+          is_txpool ? "TX" : "RX", own_slots, is_sl_syncsource ? "sync source" : "peer");
+  }
 
   char aprefix[MAX_OPTNAME_SIZE*2 + 8];
   paramdef_t SL_POOLPARAMS[] = SL_RESPOOLPARAMS_DESC(sl_res_pool);

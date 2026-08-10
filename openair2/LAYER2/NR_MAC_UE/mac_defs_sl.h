@@ -102,6 +102,13 @@ typedef struct SL_ResourcePool_params {
   // consulted by slot_has_psfch() to decide whether a slot carries PSFCH resources.
   BIT_STRING_t phy_sl_bitmap;
 
+  /* Per-pool sidelink slot mask: bit i is set when slot i of the frame belongs to THIS pool.
+   * Derived from the pool's sl_TimeResource bitmap by sl_build_pool_slot_mask() once timing is
+   * acquired (zero before that). The TX and RX pools carry complementary masks, so two
+   * time-synchronized nodes never transmit in the same slot. A pool configured without a bitmap
+   * gets every sidelink slot, i.e. the behaviour from before the partition. */
+  uint32_t sl_slot_mask;
+
   //NUM Subchannels in this resource pool
   uint16_t num_subch;
 
