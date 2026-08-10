@@ -1024,12 +1024,16 @@ print_test_summary() {
         local pssch_rate2_str="N/A"
     fi
 
-    # Calculate total PSSCH rate (aggregated both directions).
-    # Both syncref->nearby and nearby->syncref links exist on single- and
-    # multi-host tests, so aggregate RX/TX over both directions in all cases.
-    # Use the clamped RX values so the total also stays <= 100%.
-    local total_tx=$(( tx1 + tx2 ))
-    local total_rx=$(( rx1 + rx2 ))
+    local total_tx=0
+    local total_rx=0
+    if [ "$tx1" -gt 0 ]; then
+        total_tx=$(( total_tx + tx1 ))
+        total_rx=$(( total_rx + rx1 ))
+    fi
+    if [ "$tx2" -gt 0 ]; then
+        total_tx=$(( total_tx + tx2 ))
+        total_rx=$(( total_rx + rx2 ))
+    fi
     if [ "$total_tx" -gt 0 ]; then
         local pssch_total=$((total_rx * 100 / total_tx))
         local pssch_total_str="${pssch_total}%"
@@ -1070,7 +1074,8 @@ pssch_dumps() {
     local f="$1"
     [ -f "$f" ] || return 0
     grep -o '[0-9]*:[0-9]* PSSCH Stats: TX [0-9]*, RX ok [0-9]*' "$f" 2>/dev/null \
-        | sed 's/:[0-9]* PSSCH Stats: TX / /; s/, RX ok / /'
+        | sed 's/:[0-9]* PSSCH Stats: TX / /; s/, RX ok / /' \
+        | awk '{ if (NR > 1 && $1 < prev) wrap += 1024; prev = $1; print $1 + wrap, $2, $3 }'
 }
 
 get_pssch_stats() {
