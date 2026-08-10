@@ -46,7 +46,7 @@ double cpuf;
 uint64_t downlink_frequency[MAX_NUM_CCs][4];
 int64_t uplink_frequency_offset[MAX_NUM_CCs][4];
 THREAD_STRUCT thread_struct;
-openair0_config_t openair0_cfg[MAX_CARDS];
+openair0_config_t openair0_cfg_g[MAX_CARDS];
 RAN_CONTEXT_t RC;
 char *uecap_file;
 int NB_UE_INST = 1;   // matches the extern in nr-uesoftmodem.h

@@ -260,7 +260,7 @@ static void UE_synch_sl(void *arg)
     const int freq_offset = UE->SL_UE_PHY_PARAMS.sync_params.freq_offset;
     // Update the PC5 card's carrier config. rfsim does not retune; for USRP mode-1 the device retune via
     // nrue_ru_set_freq_sl() should be added when that path is exercised.
-    nr_rf_card_config_freq(&openair0_cfg[UE->rf_map_sl.card], carrier, carrier, freq_offset);
+    nr_rf_card_config_freq(&openair0_cfg_g[UE->rf_map_sl.card], carrier, carrier, freq_offset);
     LOG_I(PHY, "Got sidelink synch: carrier off %d Hz\n", freq_offset);
     UE->is_synchronized_sl = 1;
   } else {

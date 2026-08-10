@@ -637,9 +637,9 @@ int nr_rx_pscch(PHY_VARS_NR_UE *ue,
    * nr_dl_channel_estimation.c, against the PC5 card's RX gain. */
   if (pscch_rsrp_dBm && dmrs_re_count > 0) {
     const int32_t rsrp = (int32_t)(dmrs_power_sum / dmrs_re_count);
-    const int card = ue->rf_map_sl.card;
+    const openair0_config_t *cfg = &openair0_cfg_g[ue->rf_map_sl.card];
     *pscch_rsrp_dBm = dB_fixed(rsrp) + 30 - PSCCH_POW_2_30_DB
-                      - ((int)openair0_cfg[card].rx_gain[0] - (int)openair0_cfg[card].rx_gain_offset[0])
+                      - ((int)cfg->rx_gain[0] - (int)cfg->rx_gain_offset[0])
                       - dB_fixed(fp->ofdm_symbol_size);
   }
 
