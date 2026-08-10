@@ -299,7 +299,8 @@ static void nr_scan_ssb(void *arg)
 
   // Generate PSS time signal for this GSCN.
   __attribute__((aligned(32))) c16_t pssTime[NUMBER_PSS_SEQUENCE][fp->ofdm_symbol_size];
-  const int pss_sequence = get_softmodem_params()->sl_mode == 0 ? NUMBER_PSS_SEQUENCE : NUMBER_PSS_SEQUENCE_SL;
+  // This is the Uu cell-search path (mode 0 and mode 1 relay); mode 2 PC5-only sync uses sl_nr_slss_search.
+  const int pss_sequence = get_softmodem_params()->sl_mode != 2 ? NUMBER_PSS_SEQUENCE : NUMBER_PSS_SEQUENCE_SL;
   for (int nid2 = 0; nid2 < pss_sequence; nid2++)
     generate_pss_nr_time(fp->ofdm_symbol_size, fp->first_carrier_offset, nid2, ssbInfo->gscnInfo.ssbFirstSC, pssTime[nid2]);
 

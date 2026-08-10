@@ -52,6 +52,8 @@ static void init_context_sss_nr(int amp, int N_ID_2, int16_t d_sss[N_ID_1_NUMBER
   int16_t x1[LENGTH_SSS_NR];
   int16_t dss_current;
   int m0, m1;
+  // Uu SSS detection (mode 0 and mode 1 relay); only PC5-only mode 2 uses the SL SSS layout.
+  int nid_2_num = get_softmodem_params()->sl_mode != 2 ? N_ID_2_NUMBER : N_ID_2_NUMBER_SL;
 
   const int x0_initial[INITIAL_SSS_NR] = { 1, 0, 0, 0, 0, 0, 0 };
   const int x1_initial[INITIAL_SSS_NR] = { 1, 0, 0, 0, 0, 0, 0 };
@@ -148,7 +150,7 @@ static void pss_sss_extract_nr(
   AssertFatal(params->nb_antennas_rx > 0, "nb antennas as sss_ext is not set to any value\n");
   const int pss_symbol = 0;
   const int sss_symbol =
-      get_softmodem_params()->sl_mode == 0 ? (SSS_SYMBOL_NB - PSS_SYMBOL_NB) : (SSS0_SL_SYMBOL_NB - PSS0_SL_SYMBOL_NB);
+      get_softmodem_params()->sl_mode != 2 ? (SSS_SYMBOL_NB - PSS_SYMBOL_NB) : (SSS0_SL_SYMBOL_NB - PSS0_SL_SYMBOL_NB);
 
   for (int aarx = 0; aarx < params->nb_antennas_rx; aarx++) {
     const c16_t *pss_rxF = rxdataF[pss_symbol][aarx];
@@ -156,7 +158,7 @@ static void pss_sss_extract_nr(
     c16_t *pss_rxF_ext = pss_ext[aarx];
     c16_t *sss_rxF_ext = sss_ext[aarx];
     unsigned int k = params->first_carrier_offset + params->ssb_start_subcarrier
-                     + ((get_softmodem_params()->sl_mode == 0) ? PSS_SSS_SUB_CARRIER_START : PSS_SSS_SUB_CARRIER_START_SL);
+                     + ((get_softmodem_params()->sl_mode != 2) ? PSS_SSS_SUB_CARRIER_START : PSS_SSS_SUB_CARRIER_START_SL);
 
     for (int i=0; i < LENGTH_PSS_NR; i++) {
       if (k >= params->ofdm_symbol_size)

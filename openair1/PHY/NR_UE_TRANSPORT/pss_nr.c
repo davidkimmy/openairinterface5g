@@ -89,7 +89,9 @@ void generate_pss_nr_time(int ofdm_symbol_size,
                           int ssbFirstSCS,
                           c16_t pssTime[ofdm_symbol_size])
 {
-  unsigned int subcarrier_start = get_softmodem_params()->sl_mode == 0 ? PSS_SSS_SUB_CARRIER_START : PSS_SSS_SUB_CARRIER_START_SL;
+  // nr_initial_sync/nr_ue_measurements are the Uu cell-search/RRM path (mode 0 AND mode 1 relay); only
+  // the PC5-only mode 2 SL sync uses the SL PSS layout (via its own sl_pss_for_correlation path).
+  unsigned int subcarrier_start = get_softmodem_params()->sl_mode != 2 ? PSS_SSS_SUB_CARRIER_START : PSS_SSS_SUB_CARRIER_START_SL;
   c16_t synchroF_tmp[ofdm_symbol_size] __attribute__((aligned(32)));
   memset(synchroF_tmp, 0, sizeof(synchroF_tmp));
   unsigned int k = first_carrier_offset + ssbFirstSCS + subcarrier_start;
@@ -178,7 +180,18 @@ nr_pss_info_t pss_search_time_nr(const pss_search_t *p)
   }
 
   c16_t(*pssTime)[p->ofdm_symbol_size] = (c16_t(*)[p->ofdm_symbol_size])p->pssTime;
+<<<<<<< HEAD
   int max_size = get_softmodem_params()->sl_mode == 0 ? NUMBER_PSS_SEQUENCE : NUMBER_PSS_SEQUENCE_SL;
+=======
+  int maxval=0;
+  int max_size = get_softmodem_params()->sl_mode != 2 ?  NUMBER_PSS_SEQUENCE : NUMBER_PSS_SEQUENCE_SL;
+  for (int j = 0; j < max_size; j++)
+    for (int i = 0; i < p->ofdm_symbol_size; i++) {
+      maxval = max(maxval, abs(pssTime[j][i].r));
+      maxval = max(maxval, abs(pssTime[j][i].i));
+    }
+  int shift = log2_approx(maxval);//*(frame_parms->ofdm_symbol_size+frame_parms->nb_prefix_samples)*2);
+>>>>>>> 8e06a58b87 (fix(nr-ue): use Uu PSS/SSS layout for SL mode-1 relay Uu cell search)
 
   /* Search pss in the received buffer each 4 samples which ensures a memory alignment on 128 bits (32 bits x 4 ) */
   /* This is required by SIMD (single instruction Multiple Data) Extensions of Intel processors. */
