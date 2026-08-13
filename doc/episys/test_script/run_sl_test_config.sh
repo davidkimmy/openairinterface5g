@@ -230,6 +230,10 @@ use_extended_delays=0 # (0 default: disabled)
 iperf3_bw_array=(1M 2M 3M 4M 5M 6M 7M 8M 9M 10M)
 iperf3_port=5001
 iperf3_run_duration=10  # seconds per bandwidth step
+# 1 = add --forceflush to the iperf3 command lines so logs are flushed every interval and survive
+# being killed. Needs iperf3 >= 3.7 (hence the name); each host is probed at run time and the
+# option is dropped for any host with an older iperf3.
+iperf3_flush_logs_v37=1
 
 # Base directory for logs. The default will be this script folder.
 base_log_dir="$HOME/openairinterface5g"
@@ -423,6 +427,7 @@ if printf '%s\n' "${enabled_tests[@]}" | grep -q "iperf3"; then
     echo "iperf3 BW Array      : ${iperf3_bw_array[@]}"
     echo "iperf3 Port          : $iperf3_port"
     echo "iperf3 Run Duration  : ${iperf3_run_duration}s"
+    echo "iperf3 Flush Logs    : ${iperf3_flush_logs_v37:-0} (needs iperf3 >= 3.7)"
 fi
 echo "Base Log Directory   : ${base_log_dir:-$SCRIPT_DIR}"
 echo ""

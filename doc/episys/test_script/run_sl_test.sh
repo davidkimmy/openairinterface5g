@@ -1510,33 +1510,202 @@ evaluate_ping_test() {
 #############################################################
 ### iperf3 test functions
 #############################################################
-get_iperf3_stats() {
-    local output_file=$1
-    if [ ! -f "$output_file" ]; then
-        echo "0 0 0"
-        return
+# Per-host cache of --forceflush support, so each host is probed once per run.
+declare -A IPERF3_FLUSH_SUPPORTED
+
+# First line of "iperf3 --version" on a host, for diagnostics. Empty if the host is unreachable.
+get_iperf3_version() {
+    local host_name=$1
+    if [[ "$host_name" == "upf_docker" ]]; then
+        docker exec oai-upf bash -c 'iperf3 --version 2>&1 | head -1' 2>/dev/null
+    else
+        safe_ssh "$host_name" 'iperf3 --version 2>&1 | head -1' 2>/dev/null
     fi
-    local summary=$(grep -A1 '\[SUM\].*receiver\|.*receiver' "$output_file" | grep 'receiver' | tail -1)
-    if [ -z "$summary" ]; then
-        summary=$(grep 'receiver' "$output_file" | tail -1)
+}
+
+# --forceflush requires iperf3 >= 3.7; older builds abort on the unrecognized option. Probe the
+# host instead of assuming, so enabling the flag can never break a run on an older iperf3.
+iperf3_host_supports_flush() {
+    local host_name=$1
+    if [[ -z "${IPERF3_FLUSH_SUPPORTED[$host_name]+set}" ]]; then
+        local probe='iperf3 --help 2>&1 | grep -q -- --forceflush'
+        local ok=0
+        if [[ "$host_name" == "upf_docker" ]]; then
+            docker exec oai-upf bash -c "$probe" >/dev/null 2>&1 && ok=1
+        else
+            safe_ssh "$host_name" "$probe" >/dev/null 2>&1 && ok=1
+        fi
+        IPERF3_FLUSH_SUPPORTED["$host_name"]=$ok
+        if [[ "$ok" -eq 0 ]]; then
+            local ver=$(get_iperf3_version "$host_name")
+            # stderr, not stdout: callers capture iperf3_flush_opts via $(...) straight into the
+            # iperf3 command line, so anything on stdout here becomes a bogus command argument.
+            echo "WARNING: --forceflush unavailable on host '$host_name'" >&2
+            echo "         ${ver:-(could not query iperf3 - host unreachable?)}" >&2
+            echo "         iperf3 >= 3.7 is required. Continuing without it, so this host's" >&2
+            echo "         iperf3 log may be empty if iperf3 is killed before it flushes." >&2
+        fi
     fi
-    local bw=$(echo "$summary" | grep -oP '[\d.]+(?=\s+[KMG]bits/sec)' | tail -1)
+    [[ "${IPERF3_FLUSH_SUPPORTED[$host_name]}" -eq 1 ]]
+}
+
+# Extra iperf3 command-line options for one host, gated by iperf3_flush_logs_v37=1 in
+# run_sl_test_config.sh. The flag name carries the version because the option it adds,
+# --forceflush, only exists in iperf3 >= 3.7.
+#
+# --forceflush flushes iperf3's output every interval. Without it iperf3's stdout is a pipe into
+# tee, so glibc block-buffers it and kill_process's SIGKILL discards the whole buffer - which is
+# why every iperf3_server_*.txt and iperf3_client_*.txt written before this was 0 bytes.
+iperf3_flush_opts() {
+    local host_name=${1:-local}
+    if [[ "${iperf3_flush_logs_v37:-0}" == "1" ]] && iperf3_host_supports_flush "$host_name"; then
+        echo "--forceflush"
+    fi
+}
+
+# Parse a single iperf3 summary line into "<bw_mbps> <loss_pct> <jitter_ms> <transfer_mb>".
+parse_iperf3_summary_line() {
+    local summary=$1
+    local bw=$(echo "$summary" | grep -oP '[\d.]+(?=\s+[KMG]?bits/sec)' | tail -1)
     local bw_unit=$(echo "$summary" | grep -oP '[\d.]+\s+\K[KMG](?=bits/sec)' | tail -1)
     local loss_pct=$(echo "$summary" | grep -oP '[\d.]+(?=%)' | tail -1)
     local jitter=$(echo "$summary" | grep -oP '[\d.]+(?=\s+ms)' | tail -1)
-    local transfer=$(echo "$summary" | grep -oP '[\d.]+(?=\s+[KMG]Bytes)' | tail -1)
+    local transfer=$(echo "$summary" | grep -oP '[\d.]+(?=\s+[KMG]?Bytes)' | tail -1)
     local transfer_unit=$(echo "$summary" | grep -oP '[\d.]+\s+\K[KMG](?=Bytes)' | tail -1)
-    # Normalize to Mbps
+    # Normalize to Mbps. An absent unit means plain bits/sec, not Mbits/sec - the placeholder
+    # line iperf3 prints when it has no server report reads "0.00 bits/sec".
     case "$bw_unit" in
+        "") bw=$(printf "%.3f" "$(echo "${bw:-0} / 1000000" | bc -l 2>/dev/null || echo "0")") ;;
         K) bw=$(printf "%.3f" "$(echo "$bw / 1000" | bc -l 2>/dev/null || echo "0")") ;;
         G) bw=$(printf "%.3f" "$(echo "$bw * 1000" | bc -l 2>/dev/null || echo "0")") ;;
     esac
-    # Normalize transfer to MB
+    # Normalize transfer to MB. Absent unit means plain Bytes.
     case "$transfer_unit" in
+        "") transfer=$(printf "%.3f" "$(echo "${transfer:-0} / 1048576" | bc -l 2>/dev/null || echo "0")") ;;
         K) transfer=$(printf "%.3f" "$(echo "${transfer:-0} / 1024" | bc -l 2>/dev/null || echo "0")") ;;
         G) transfer=$(printf "%.3f" "$(echo "${transfer:-0} * 1024" | bc -l 2>/dev/null || echo "0")") ;;
     esac
     echo "${bw:-0} ${loss_pct:-0} ${jitter:-0} ${transfer:-0}"
+}
+
+# Total datagram count from an iperf3 UDP summary line ("Lost/Total" -> Total). Empty when absent.
+get_iperf3_total_datagrams() {
+    echo "$1" | grep -oP '\d+/\K\d+(?=\s*\()' | tail -1
+}
+
+# Emits "<bw_mbps> <loss_pct> <jitter_ms> <transfer_mb> <status>" from a CLIENT log.
+#
+# status distinguishes cases the previous parser silently conflated:
+#   OK        - the receiver line is real; figures are DELIVERED throughput.
+#   CTRL_LOST - the iperf3 control socket died, so the client never got the server's report
+#               and printed its "0.00 Bytes ... 0/0 (0%) receiver" placeholder. Figures fall
+#               back to the SENDER line, i.e. OFFERED load; delivered throughput is not
+#               knowable from the client log - see get_iperf3_server_stats. Scoring that
+#               placeholder as 0Mbps with 0% loss made a saturated link look like a dead
+#               server, which is how a 100%-clean PHY got reported as a connection failure.
+#   NO_DATA   - no parsable summary line at all.
+get_iperf3_stats() {
+    local output_file=$1
+    if [ ! -f "$output_file" ] || [ ! -s "$output_file" ]; then
+        echo "0 0 0 0 NO_DATA"
+        return
+    fi
+
+    local ctrl_lost=0
+    grep -qE 'control socket has closed unexpectedly|iperf3: error' "$output_file" && ctrl_lost=1
+
+    local rx_line=$(grep 'receiver' "$output_file" | tail -1)
+    local tx_line=$(grep 'sender' "$output_file" | tail -1)
+
+    # A receiver line reporting 0 total datagrams is a placeholder, not a measurement.
+    local rx_total=$(get_iperf3_total_datagrams "$rx_line")
+    if [ -n "$rx_line" ] && [ "${rx_total:-0}" -gt 0 ] 2>/dev/null; then
+        echo "$(parse_iperf3_summary_line "$rx_line") OK"
+        return
+    fi
+
+    if [ -n "$tx_line" ]; then
+        local status="CTRL_LOST"
+        [ "$ctrl_lost" -eq 0 ] && [ -z "$rx_line" ] && status="NO_DATA"
+        echo "$(parse_iperf3_summary_line "$tx_line") $status"
+        return
+    fi
+
+    echo "0 0 0 0 NO_DATA"
+}
+
+# Emits "<bw_mbps> <loss_pct> <jitter_ms> <transfer_mb> <elapsed_s>" by aggregating the
+# per-second INTERVAL lines of an iperf3 log.
+#
+# Needed because a summary line is not guaranteed to exist. When the offered load exceeds the
+# link's drain rate, a standing queue builds and the server is still receiving long after the
+# client's -t window; the harness then SIGKILLs both ends mid-drain and NEITHER log gets a
+# final summary. The interval lines survive (iperf3_flush_logs_v37=1 -> --forceflush) and are the only
+# remaining record of delivered throughput.
+get_iperf3_interval_stats() {
+    local output_file=$1
+    awk '
+        /sec/ && /bits\/sec/ {
+            bytes = -1; lost = -1; tot = -1; end = -1; jit = -1
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[0-9.]+-[0-9.]+$/)   { split($i, iv, "-"); end = iv[2] }
+                if ($i ~ /^[0-9]+\/[0-9]+$/)    { split($i, dg, "/"); lost = dg[1]; tot = dg[2] }
+                if ($i == "Bytes")  bytes = $(i-1)
+                if ($i == "KBytes") bytes = $(i-1) * 1024
+                if ($i == "MBytes") bytes = $(i-1) * 1048576
+                if ($i == "GBytes") bytes = $(i-1) * 1073741824
+                if ($i == "ms")     jit = $(i-1)
+            }
+            # Require a datagram field, so summary lines and headers are not counted twice.
+            if (tot >= 0 && bytes >= 0) {
+                total_bytes += bytes; total_lost += lost; total_dg += tot
+                if (end > elapsed) elapsed = end
+                if (jit >= 0) last_jit = jit
+                n++
+            }
+        }
+        END {
+            if (n == 0 || elapsed <= 0) { print "0 0 0 0 0"; exit }
+            expected = total_dg + total_lost
+            printf "%.3f %.1f %.3f %.3f %.2f\n",
+                   (total_bytes * 8) / elapsed / 1000000,
+                   (expected > 0 ? (total_lost * 100.0) / expected : 0),
+                   last_jit,
+                   total_bytes / 1048576,
+                   elapsed
+        }' "$output_file"
+}
+
+# Emits "<bw_mbps> <loss_pct> <jitter_ms> <transfer_mb> <status>" from a SERVER log.
+# The server log is ground truth for DELIVERED throughput and survives a dead control
+# socket. The server is restarted per bandwidth step and its log is appended to, so the
+# last summary belongs to the step just run.
+#
+# status: OK            - a real final receiver summary was present.
+#         OK_INTERVALS  - no summary (killed mid-drain); figures aggregated from the interval
+#                         lines instead. Still a genuine delivered measurement.
+#         NO_DATA       - nothing usable.
+get_iperf3_server_stats() {
+    local output_file=$1
+    if [ ! -f "$output_file" ] || [ ! -s "$output_file" ]; then
+        echo "0 0 0 0 NO_DATA"
+        return
+    fi
+    local rx_line=$(grep 'receiver' "$output_file" | tail -1)
+    local rx_total=$(get_iperf3_total_datagrams "$rx_line")
+    if [ -n "$rx_line" ] && [ "${rx_total:-0}" -gt 0 ] 2>/dev/null; then
+        echo "$(parse_iperf3_summary_line "$rx_line") OK"
+        return
+    fi
+
+    # No final summary: aggregate the interval lines.
+    local iv=$(get_iperf3_interval_stats "$output_file")
+    local iv_bw=$(echo "$iv" | awk '{print $1}')
+    if [ "$(echo "$iv_bw" | awk '{print ($1 > 0) ? 1 : 0}')" -eq 1 ]; then
+        echo "$(echo "$iv" | awk '{print $1, $2, $3, $4}') OK_INTERVALS"
+        return
+    fi
+    echo "0 0 0 0 NO_DATA"
 }
 
 print_iperf3_summary_header() {
@@ -1571,13 +1740,14 @@ run_iperf3_server() {
     local port=${3:-5001}
     local log_file=$4
 
-    local cmd="iperf3 -s -B $bind_ip -p $port -i 1"
+    local dbg=$(iperf3_flush_opts "$host_name")
+    local cmd="iperf3 -s -B $bind_ip -p $port -i 1 $dbg"
 
     if [[ "$host_name" == "upf_docker" ]]; then
-        cmd="docker exec oai-upf bash -c 'iperf3 -s -B $bind_ip -p $port -i 1'"
+        cmd="docker exec oai-upf bash -c 'iperf3 -s -B $bind_ip -p $port -i 1 $dbg'"
     elif [[ "$host_name" == "$REMOTE_UE_HOST" || "$host_name" == "remote_ue" ]]; then
         # For remote_ue with policy routing, bind to device instead of IP
-        cmd="iperf3 -s --bind-dev oaitun_ue2 -p $port -i 1"
+        cmd="iperf3 -s --bind-dev oaitun_ue2 -p $port -i 1 $dbg"
     fi
 
     echo "=== iperf3 Server Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -1587,9 +1757,10 @@ run_iperf3_server() {
     if [[ "$host_name" == "upf_docker" ]]; then
         bash -c "$cmd" 2>&1 | tee -a "$log_file" &
     elif [[ "$host_name" == "local" ]]; then
-        bash -c "iperf3 -s -B $bind_ip -p $port -i 1" 2>&1 | tee -a "$log_file" &
+        # Run "$cmd" rather than a second inline copy of it, so what commands.txt records is
+        # actually what executes.
+        bash -c "$cmd" 2>&1 | tee -a "$log_file" &
     else
-        local user_name=$(find_user_name "$host_name")
         bash -c "ssh $host_name '$cmd'" 2>&1 | tee -a "$log_file" &
     fi
 }
@@ -1611,13 +1782,14 @@ run_iperf3_client() {
         bind_opt="--bind-dev $bind_ip"
     fi
 
-    local cmd="iperf3 -u -c $server_ip $bind_opt -p $port -i 1 -b $bandwidth -t $iperf3_duration"
+    local dbg=$(iperf3_flush_opts "$host_name")
+    local cmd="iperf3 -u -c $server_ip $bind_opt -p $port -i 1 -b $bandwidth -t $iperf3_duration $dbg"
 
     if [[ "$host_name" == "upf_docker" ]]; then
-        cmd="docker exec oai-upf bash -c 'iperf3 -u -c $server_ip $bind_opt -p $port -i 1 -b $bandwidth -t $iperf3_duration'"
+        cmd="docker exec oai-upf bash -c 'iperf3 -u -c $server_ip $bind_opt -p $port -i 1 -b $bandwidth -t $iperf3_duration $dbg'"
     elif [[ "$host_name" == "$REMOTE_UE_HOST" || "$host_name" == "remote_ue" ]]; then
         # For remote_ue with policy routing, bind to device instead of IP
-        cmd="iperf3 -u -c $server_ip --bind-dev oaitun_ue2 -p $port -i 1 -b $bandwidth -t $iperf3_duration"
+        cmd="iperf3 -u -c $server_ip --bind-dev oaitun_ue2 -p $port -i 1 -b $bandwidth -t $iperf3_duration $dbg"
     fi
 
     echo "=== iperf3 Client Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -1731,21 +1903,73 @@ evaluate_iperf3_sweep() {
         local loss_pct=$(echo "$stats" | awk '{print $2}')
         local jitter=$(echo "$stats" | awk '{print $3}')
         local transfer=$(echo "$stats" | awk '{print $4}')
+        local status=$(echo "$stats" | awk '{print $5}')
+
+        # Both CTRL_LOST and NO_DATA mean the CLIENT log yielded no delivered measurement: either
+        # the control socket died before the client could fetch the server's report, or the client
+        # was killed before printing one. The server log is unaffected by a dead control socket, so
+        # always try it. This is deliberately NOT gated on iperf3_flush_logs_v37: reading the log
+        # costs nothing, and if it is empty the helper simply returns NO_DATA. Gating it would mean
+        # a recoverable measurement is thrown away whenever the flag happens to be off.
+        if [[ "$status" == "CTRL_LOST" || "$status" == "NO_DATA" ]]; then
+            if [[ "$status" == "CTRL_LOST" ]]; then
+                echo "WARNING: iperf3 control socket died at $bw_target — client-side delivered figures are unusable"
+                echo "         (offered load was ${bw_actual}Mbps)"
+            else
+                echo "WARNING: client log at $bw_target has no summary line (client was killed before it printed one)"
+            fi
+            local srv_stats=$(get_iperf3_server_stats "$server_log")
+            local srv_status=$(echo "$srv_stats" | awk '{print $5}')
+            if [[ "$srv_status" == "OK" || "$srv_status" == "OK_INTERVALS" ]]; then
+                bw_actual=$(echo "$srv_stats" | awk '{print $1}')
+                loss_pct=$(echo "$srv_stats" | awk '{print $2}')
+                jitter=$(echo "$srv_stats" | awk '{print $3}')
+                transfer=$(echo "$srv_stats" | awk '{print $4}')
+                status="OK_SERVER"
+                echo "         server log reports ${bw_actual}Mbps delivered, ${loss_pct}% loss, ${jitter}ms jitter"
+                if [[ "$srv_status" == "OK_INTERVALS" ]]; then
+                    # Delivery outlasting the client's -t window means a standing queue: the
+                    # offered load exceeded the drain rate and the backlog was still draining
+                    # when the run was killed. Low loss here is NOT a clean pass.
+                    local srv_elapsed=$(get_iperf3_interval_stats "$server_log" | awk '{print $5}')
+                    echo "         (aggregated from interval lines: ${srv_elapsed}s of delivery for a ${iperf3_run_duration}s test"
+                    echo "          — delivery outlasting the test window indicates a standing queue)"
+                fi
+            elif [[ ! -s "$server_log" ]]; then
+                echo "         server log is empty — set iperf3_flush_logs_v37=1 in run_sl_test_config.sh"
+                echo "         so iperf3 flushes per interval and survives being killed"
+            else
+                echo "         server log unusable too — delivered throughput is UNKNOWN for this step"
+            fi
+        fi
 
         # Determine result
         local result="PASS"
         local loss_int=$(echo "$loss_pct" | awk '{printf "%d", $1}')
-        if [ "$loss_int" -gt 20 ]; then
-            result="FAIL"
-        fi
+        # Offered target in Mbps, for the target-relative saturation check below.
+        local bw_target_mbps=$(echo "$bw_target" | awk '{
+            v = $0; sub(/[KMGkmg]$/, "", v)
+            if ($0 ~ /[Kk]$/) print v / 1000; else if ($0 ~ /[Gg]$/) print v * 1000; else print v }')
 
-        # Detect connection failure (0 Mbps actual = server likely dead)
-        local bw_zero=$(echo "$bw_actual" | awk '{print ($1 == 0) ? 1 : 0}')
-        if [ "$bw_zero" -eq 1 ] && [ "$loss_int" -eq 0 ]; then
+        if [[ "$status" == "NO_DATA" ]]; then
+            # No parsable measurement on either side: the run really did not happen.
             result="FAIL"
-            echo "WARNING: iperf3 client got 0 Mbps with 0% loss — server connection failed"
-        # Check saturation: if actual BW didn't increase by at least 10% over previous
+            echo "WARNING: no parsable iperf3 summary at $bw_target — check $client_log"
+        elif [[ "$status" == "CTRL_LOST" ]]; then
+            # Distinct from FAIL: the link may be fine, we simply failed to measure it. The
+            # usual cause is an offered load far above link capacity — the flood starves the
+            # iperf3 TCP control connection, which shares the bearer under test. Check the SL
+            # PSSCH TX/RX counters in the softmodem logs before blaming the radio.
+            result="CTRL_LOST"
+        elif [ "$loss_int" -gt 20 ]; then
+            result="FAIL"
+        elif [ "$(echo "$bw_actual $bw_target_mbps" | awk '{print ($2 > 0 && $1 < 0.5 * $2) ? 1 : 0}')" -eq 1 ]; then
+            # Delivered less than half the offered rate. This is the saturation knee and it must
+            # be caught even on the FIRST step, where prev_bw is still 0 and the growth test
+            # below cannot fire. Without this, a link delivering 0.28 of a 1M ask scored PASS.
+            result="SATURATED"
         elif [ "$prev_bw" != "0" ]; then
+            # Check saturation: if actual BW didn't increase by at least 10% over previous
             local increase=$(echo "$bw_actual $prev_bw" | awk '{if ($2 > 0) printf "%d", (($1 - $2) / $2) * 100; else print 100}')
             if [ "$increase" -lt "$saturation_threshold" ]; then
                 result="SATURATED"
@@ -1755,9 +1979,12 @@ evaluate_iperf3_sweep() {
         print_iperf3_summary "$iperf3_summary_file" "$test_name" "$iteration" "$num_hosts" "$mcs" \
             "$bw_target" "$bw_actual" "$transfer" "$jitter" "$loss_pct" "$result"
 
-        prev_bw=$bw_actual
+        # Only a real delivered measurement may seed the saturation comparison.
+        if [[ "$status" == "OK" || "$status" == "OK_SERVER" ]]; then
+            prev_bw=$bw_actual
+        fi
 
-        if [[ "$result" == "SATURATED" || "$result" == "FAIL" ]]; then
+        if [[ "$result" == "SATURATED" || "$result" == "FAIL" || "$result" == "CTRL_LOST" ]]; then
             echo "iperf3 sweep stopped: $result at target=$bw_target (actual=${bw_actual}Mbps, loss=${loss_pct}%)"
             break
         fi

@@ -87,6 +87,10 @@ def plot_iperf3(csv_file, output_file=None):
                 ax1.plot(data["target"][i], data["actual"][i], "^", color="orange", markersize=10, zorder=5)
             elif res == "FAIL":
                 ax1.plot(data["target"][i], data["actual"][i], "x", color="darkred", markersize=10, zorder=5)
+            elif res == "CTRL_LOST":
+                # The iperf3 control socket died, so this point's bitrate is OFFERED load, not
+                # delivered throughput. Mark it so it is not read as a valid measurement.
+                ax1.plot(data["target"][i], data["actual"][i], "*", color="purple", markersize=13, zorder=5)
 
     ax1.set_xlabel("Target Bandwidth (Mbps)")
     ax1.set_ylabel("KPI Performance (MB, Mbps)")
