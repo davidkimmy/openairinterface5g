@@ -19,20 +19,20 @@ The BLER test runs over the **SL Mode 1 U2N relay** topology (gNB + Relay UE + R
 
 > **Note**: The test scripts live in two directories under the repository (relative to the repo root):
 >
-> - **`doc/episys/test_script/`** — the main test driver and configs: `run_sl_test.sh`, `run_sl_test_config.sh`, and the per-host worker configs `run_sl_test_config_host*.sh`.
-> - **`doc/episys/test_script/bler_test/`** — the BLER-specific tools: `check_test_status.sh`, `process_and_fetch_results.sh`, `merge_runs.sh`, `extract_bler.py`, `plot_results.py`, `process_bler_local.py`.
+> - **`tools/sl_test/`** — the main test driver and configs: `run_sl_test.sh`, `run_sl_test_config.sh`, and the per-host worker configs `run_sl_test_config_host*.sh`.
+> - **`tools/sl_test/bler_test/`** — the BLER-specific tools: `check_test_status.sh`, `process_and_fetch_results.sh`, `merge_runs.sh`, `extract_bler.py`, `plot_results.py`, `process_bler_local.py`.
 >
-> For a default checkout at `~/openairinterface5g`, these resolve to `~/openairinterface5g/doc/episys/test_script` and `~/openairinterface5g/doc/episys/test_script/bler_test`. For example, you **run** the test from the first directory:
+> For a default checkout at `~/openairinterface5g`, these resolve to `~/openairinterface5g/tools/sl_test` and `~/openairinterface5g/tools/sl_test/bler_test`. For example, you **run** the test from the first directory:
 >
 > ```bash
-> cd ~/openairinterface5g/doc/episys/test_script
+> cd ~/openairinterface5g/tools/sl_test
 > ./run_sl_test.sh
 > ```
 >
 > and **monitor / post-process** from the `bler_test/` subfolder:
 >
 > ```bash
-> cd ~/openairinterface5g/doc/episys/test_script/bler_test
+> cd ~/openairinterface5g/tools/sl_test/bler_test
 > ./check_test_status.sh
 > ```
 >
@@ -197,7 +197,7 @@ grep ENABLE_BLER_INSTRUMENTATION ~/openairinterface5g/cmake_targets/ran_build/bu
 Install the Python packages once with:
 
 ```bash
-cd ~/openairinterface5g/doc/episys/test_script/bler_test
+cd ~/openairinterface5g/tools/sl_test/bler_test
 pip3 install -r requirements.txt
 ```
 
@@ -278,7 +278,7 @@ test_profile="bler"
 **2. Run the test:**
 
 ```bash
-cd ~/openairinterface5g/doc/episys/test_script
+cd ~/openairinterface5g/tools/sl_test
 ./run_sl_test.sh
 ```
 
@@ -289,11 +289,11 @@ After launching `./run_sl_test.sh`, you may monitor the test progress in paralle
 **Use the monitoring script (Optional but recommended):**
 ```bash
 # Check status of all machines with progress details
-cd ~/openairinterface5g/doc/episys/test_script/bler_test
+cd ~/openairinterface5g/tools/sl_test/bler_test
 ./check_test_status.sh
 
 # Or watch continuously (updates every 30 seconds)
-watch -n 30 '~/openairinterface5g/doc/episys/test_script/bler_test/check_test_status.sh'
+watch -n 30 '~/openairinterface5g/tools/sl_test/bler_test/check_test_status.sh'
 ```
 
 The monitoring script shows:
@@ -406,11 +406,11 @@ Each machine logs independently to its own `~/openairinterface5g/test_<timestamp
 **Use the monitoring script (Optional but recommended):**
 ```bash
 # Check status of all machines with progress details
-cd ~/openairinterface5g/doc/episys/test_script/bler_test
+cd ~/openairinterface5g/tools/sl_test/bler_test
 ./check_test_status.sh
 
 # Or watch continuously (updates every 30 seconds)
-watch -n 30 '~/openairinterface5g/doc/episys/test_script/bler_test/check_test_status.sh'
+watch -n 30 '~/openairinterface5g/tools/sl_test/bler_test/check_test_status.sh'
 ```
 
 The monitoring script shows:
@@ -447,7 +447,7 @@ You don't need to specify the exact timestamp. The output folder is named after 
 **Run the collection and plotting script:**
 
 ```bash
-cd ~/openairinterface5g/doc/episys/test_script/bler_test
+cd ~/openairinterface5g/tools/sl_test/bler_test
 ./process_and_fetch_results.sh
 ```
 
@@ -737,14 +737,14 @@ This keeps the two backends' SNR mappings correct instead of mixing them under o
 cd ~/openairinterface5g
 
 # average two (or more) runs; output -> ~/openairinterface5g/bler_results_merged_<ts>/
-doc/episys/test_script/bler_test/merge_runs.sh test_20260724_140437 test_20260724_142858
+tools/sl_test/bler_test/merge_runs.sh test_20260724_140437 test_20260724_142858
 
 # incremental: add a third run later — earlier runs are re-read, not lost
-doc/episys/test_script/bler_test/merge_runs.sh \
+tools/sl_test/bler_test/merge_runs.sh \
     test_20260724_140437 test_20260724_142858 test_20260724_144424
 
 # custom output parent (default is OAI_BASE_DIR, i.e. where the test_<ts> dirs live)
-doc/episys/test_script/bler_test/merge_runs.sh -d /data/bler_out test_A test_B
+tools/sl_test/bler_test/merge_runs.sh -d /data/bler_out test_A test_B
 ```
 
 - Folder args may be absolute or relative to `~/openairinterface5g`.
@@ -826,7 +826,7 @@ If you need to process logs manually without `process_and_fetch_results.sh`:
 **1. Extract PC5 Nearby UE RX BLER data:**
 
 ```bash
-cd ~/openairinterface5g/doc/episys/test_script/bler_test
+cd ~/openairinterface5g/tools/sl_test/bler_test
 python3 extract_bler.py \
     ~/openairinterface5g/test_<timestamp> \
     nearby_bler.csv \
@@ -1001,9 +1001,9 @@ If tests experience timing issues (TUN interface not ready, sync failures):
   ```bash
   ssh l3 "cd ~/openairinterface5g && ./build_oai --nrUE --gNB -w SIMU -c --cmake-opt \"-DENABLE_BLER_INSTRUMENTATION=ON\""
   ```
-- Check if config was copied: `ssh l3 "ls ~/openairinterface5g/doc/episys/test_script/run_sl_test_config_host*.sh"`
-- Verify config is executable: `ssh l3 "chmod +x ~/openairinterface5g/doc/episys/test_script/run_sl_test_config_host1.sh"`
-- Manually trigger on remote: `ssh l3 "cd ~/openairinterface5g/doc/episys/test_script && BLER_CONFIG_FILE=run_sl_test_config_host1.sh ./run_sl_test.sh"`
+- Check if config was copied: `ssh l3 "ls ~/openairinterface5g/tools/sl_test/run_sl_test_config_host*.sh"`
+- Verify config is executable: `ssh l3 "chmod +x ~/openairinterface5g/tools/sl_test/run_sl_test_config_host1.sh"`
+- Manually trigger on remote: `ssh l3 "cd ~/openairinterface5g/tools/sl_test && BLER_CONFIG_FILE=run_sl_test_config_host1.sh ./run_sl_test.sh"`
 
 ### Process script shows wrong MCS display
 - Note: The script displays hardcoded MCS strings (e.g., "MCS 0,4") for visual separation only

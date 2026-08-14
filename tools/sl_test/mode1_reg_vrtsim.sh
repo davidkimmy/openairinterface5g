@@ -33,9 +33,9 @@
 # ============================================================================
 set -u
 
-# ---- locate the repo (this script lives in <repo>/doc/episys/test_script/) ----
+# ---- locate the repo (this script lives in <repo>/tools/sl_test/) ----
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 B="${BUILD_DIR:-$REPO/cmake_targets/ran_build/build}"
 GNB_CONF="${GNB_CONF:-$REPO/targets/PROJECTS/GENERIC-NR-5GC/CONF/gnb.sa.band78.fr1.106PRB.usrpb210_relay_ue.conf}"

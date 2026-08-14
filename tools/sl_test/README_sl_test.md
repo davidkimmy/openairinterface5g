@@ -93,7 +93,7 @@ The test scripts reference `~/ci_script/` as the working directory. You need to 
 
 ```bash
 # Create symbolic link to the test script directory
-ln -s ~/openairinterface5g/doc/episys/test_script ~/ci_script
+ln -s ~/openairinterface5g/tools/sl_test ~/ci_script
 
 # Verify the link was created
 ls -la ~/ci_script
@@ -102,7 +102,7 @@ ls -la ~/ci_script
 **Alternative:** If you want to use the test scripts independently of the repository branch or OAI software version:
 ```bash
 # Copy test scripts to home directory
-cp -pr ~/openairinterface5g/doc/episys/test_script ~/ci_script
+cp -pr ~/openairinterface5g/tools/sl_test ~/ci_script
 ```
 
 **When to use the alternative approach:**
@@ -134,7 +134,7 @@ cp -pr ~/openairinterface5g/doc/episys/test_script ~/ci_script
   ├── bler_results_<timestamp>/           # BLER analysis results (auto-created)
   └── latest -> test_<timestamp>/         # Symlink to most recent test
 
-~/openairinterface5g/doc/episys/test_script (alternatively, ~/ci_script/)
+~/openairinterface5g/tools/sl_test (alternatively, ~/ci_script/)
   ├── run_sl_test.sh                      # Main test execution script
   ├── run_sl_test_config.sh               # User configuration (defines bler_hosts array)
   ├── plot_sl_test_iperf3.py              # iperf3 bandwidth sweep plot generator
