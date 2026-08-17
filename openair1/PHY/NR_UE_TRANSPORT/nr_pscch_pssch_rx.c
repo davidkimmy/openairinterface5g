@@ -134,7 +134,7 @@ void nr_postDecode_slsch(PHY_VARS_NR_UE *UE, notifiedFIFO_elt_t *req,UE_nr_rxtx_
   NR_UL_gNB_HARQ_t *slsch_harq = rdata->ulsch_harq;
   NR_gNB_ULSCH_t *slsch = rdata->ulsch;
   int r = rdata->segment_r;
-  sl_nr_rx_config_pssch_pdu_t *slsch_pdu = &phy_data->nr_sl_pssch_pdu;//UE->slsch[rdata->ulsch_id].harq_process->slsch_pdu;
+  sl_nr_rx_config_pssch_pdu_t *slsch_pdu = &phy_data->nr_sl_pssch_pdu;
   bool decodeSuccess = (rdata->decodeIterations <= rdata->decoderParms.numMaxIter);
   slsch_harq->processedSegments++;
   LOG_D(NR_PHY,
@@ -678,6 +678,50 @@ int nr_rx_pscch(PHY_VARS_NR_UE *ue,
   return 0;
 }
 
+/* Descramble + polar-decode the SCI-2 (format 2A) LLRs; on CRC OK raise the SCI-2 indication to
+ * MAC. Returns CRC (0 = OK). Run mid-symbol-loop, before the CSI-RS symbol, so the CSI-RS LLR
+ * puncture and stage-3 G reduction key off the same decoded csi_req. */
+static uint16_t sl_decode_sci2(PHY_VARS_NR_UE *ue,
+                               const UE_nr_rxtx_proc_t *proc,
+                               nr_phy_data_t *phy_data,
+                               const int16_t *sci2_llrs,
+                               int sci2_re_total,
+                               uint16_t Nid,
+                               int sci2_len)
+{
+  const int Gsci2 = sci2_re_total * 2;
+  const int roundedSz = (Gsci2 + 31) / 32;
+  uint32_t *seq = gold_cache((1010u << 16) + Nid, roundedSz);
+  int16_t unscrambled_sci2[Gsci2];
+  for (int j = 0; j < Gsci2; j++) {
+    const int bit = (seq[j >> 5] >> (j & 31)) & 1;
+    unscrambled_sci2[j] = bit ? -sci2_llrs[j] : sci2_llrs[j];
+  }
+  uint64_t sci_estimation[2] = {0};
+  uint16_t crc = polar_decoder_int16(unscrambled_sci2, sci_estimation, 1, NR_POLAR_SCI2_MESSAGE_TYPE,
+                                     sci2_len, sci2_re_total);
+  if (crc == 0) {
+    ue->SL_UE_PHY_PARAMS.pssch.rx_sci2_ok++;
+    sl_nr_sci_indication_t sci_ind = {0};
+    sci_ind.sfn = proc->frame_rx;
+    sci_ind.slot = proc->nr_slot_rx;
+    sci_ind.number_of_SCIs = 1;
+    sci_ind.sci_pdu[0].sci_format_type = SL_SCI_FORMAT_2_ON_PSSCH;
+    sci_ind.sci_pdu[0].sci_payloadlen = sci2_len;
+    sci_ind.sci_pdu[0].Nid = Nid;
+    memcpy(sci_ind.sci_pdu[0].sci_payloadBits, sci_estimation, sizeof(sci_ind.sci_pdu[0].sci_payloadBits)); // 8 bytes
+    nr_sidelink_indication_t sl_indication;
+    nr_fill_sl_indication(&sl_indication, NULL, &sci_ind, proc, ue, phy_data);
+    if (ue->if_inst && ue->if_inst->sl_indication)
+      ue->if_inst->sl_indication(&sl_indication);
+    LOG_D(NR_PHY, "%d.%d SCI-2 decoded OK (len %d, %d REs)\n", proc->frame_rx, proc->nr_slot_rx,
+          sci2_len, sci2_re_total);
+  } else {
+    ue->SL_UE_PHY_PARAMS.pssch.rx_sci2_errors++;
+  }
+  return crc;
+}
+
 // UE-native sidelink PSSCH demodulator (episys SL data-plane port). Models develop's UE receiver
 // nr_rx_pdsch and reuses the common (UE-linked) DSP (nr_scale_channel / nr_channel_level /
 // nr_channel_compensation / nr_compute_llr) — NO gNB PHY (nr_rx_pusch / nr_pusch_channel_estimation)
@@ -731,6 +775,9 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
   const int sci2_re_total = sci2_left;
   int16_t sci2_llrs[(sci2_re_total > 0 ? sci2_re_total * 2 : 1)];
   int sci2_llr_cnt = 0;
+  /* SCI-2 is decoded mid-loop (when its LLRs complete) so csi_req is known before the
+   * CSI-RS symbol and the puncture cannot de-align. sci2_decoded fires it once. */
+  bool sci2_decoded = false;
 
   // ---- 1) SL DMRS channel estimation (per DMRS symbol) + RX/noise power for the DTX test ----
   uint32_t nvar = 0, nvar_cnt = 0;
@@ -941,6 +988,13 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
       off += take;
       nb_re -= take;
       sci2_left -= take;
+
+      /* SCI-2 LLRs complete: decode mid-loop so MAC advances sl_rx_action to *_CSI_RS before the
+       * CSI-RS puncture below and stage-3 G. On CRC failure it stays RX_PSSCH_SCI and the slot ends. */
+      if (sci2_left == 0 && !sci2_decoded && sci2_re_total > 0) {
+        sci2_decoded = true;
+        sl_decode_sci2(ue, proc, phy_data, sci2_llrs, sci2_re_total, Nid, pssch_pdu->sci2_len);
+      }
     }
     if (nb_re <= 0)
       continue;
@@ -969,43 +1023,6 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
         "log2_maxh=%d\n",
         proc->frame_rx, proc->nr_slot_rx, llr_offset, Qm, rb_size, nr_of_symbols,
         (unsigned long long)data_re_energy, nvar, log2_maxh);
-
-  // episys SL PSFCH port (4c-A): descramble + polar-decode the collected SCI-2 (format 2A) ONLY on a
-  // detected PSSCH (gated by !DTX — running polar decode on every blind RX slot overruns real-time). On
-  // CRC OK, deliver to MAC (-> mac->sci_pdu_rx: harq_feedback/source_id/cast_type) so the SLSCH rx_ind can
-  // trigger the PSFCH HARQ feedback. Descramble MUST use the TX gold seq gold_cache((1010<<16)+Nid).
-  if (!pssch_vars->DTX && sci2_re_total > 0 && sci2_llr_cnt == sci2_re_total * 2) {
-    const int Gsci2 = sci2_re_total * 2;
-    const int roundedSz = (Gsci2 + 31) / 32;
-    uint32_t *seq = gold_cache((1010u << 16) + Nid, roundedSz);
-    int16_t unscrambled_sci2[Gsci2];
-    for (int j = 0; j < Gsci2; j++) {
-      const int bit = (seq[j >> 5] >> (j & 31)) & 1;
-      unscrambled_sci2[j] = bit ? -sci2_llrs[j] : sci2_llrs[j];
-    }
-    uint64_t sci_estimation[2] = {0};
-    uint16_t crc = polar_decoder_int16(unscrambled_sci2, sci_estimation, 1, NR_POLAR_SCI2_MESSAGE_TYPE,
-                                       pssch_pdu->sci2_len, sci2_re_total);
-    if (crc == 0) {
-      ue->SL_UE_PHY_PARAMS.pssch.rx_sci2_ok++;
-      sl_nr_sci_indication_t sci_ind = {0};
-      sci_ind.sfn = proc->frame_rx;
-      sci_ind.slot = proc->nr_slot_rx;
-      sci_ind.number_of_SCIs = 1;
-      sci_ind.sci_pdu[0].sci_format_type = SL_SCI_FORMAT_2_ON_PSSCH;
-      sci_ind.sci_pdu[0].sci_payloadlen = pssch_pdu->sci2_len;
-      sci_ind.sci_pdu[0].Nid = Nid;
-      memcpy(sci_ind.sci_pdu[0].sci_payloadBits, sci_estimation, sizeof(sci_ind.sci_pdu[0].sci_payloadBits)); // 8 bytes
-      nr_sidelink_indication_t sl_indication;
-      nr_fill_sl_indication(&sl_indication, NULL, &sci_ind, proc, ue, phy_data);
-      if (ue->if_inst && ue->if_inst->sl_indication)
-        ue->if_inst->sl_indication(&sl_indication);
-      LOG_D(NR_PHY, "%d.%d SCI-2 decoded OK (len %d, %d REs)\n", proc->frame_rx, proc->nr_slot_rx,
-            pssch_pdu->sci2_len, sci2_re_total);
-    } else {
-      ue->SL_UE_PHY_PARAMS.pssch.rx_sci2_errors++;
-    }
-  }
 }
 
 // SLSCH receive-decode entry (episys SL data-plane port). Assumes nr_rx_pssch already produced the
@@ -1018,9 +1035,32 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_ph
   sl_nr_rx_config_pssch_pdu_t *slsch_pdu = &phy_data->nr_sl_pssch_pdu;
   sl_nr_rx_config_pssch_sci_pdu_t *pssch_pdu = &phy_data->nr_sl_pssch_sci_pdu;
   NR_gNB_PUSCH *pssch_vars = &ue->pssch_vars[slsch_id];
-  NR_UL_gNB_HARQ_t *harq = ue->slsch[slsch_id].harq_process;
 
   const int harq_pid = slsch_pdu->harq_pid;
+  /* Select this pid's persistent soft buffer so blind retransmissions (RV cycle
+   * {0,2,3,1}) soft-combine across rounds. RV1/RV2 are not self-decodable and need
+   * the earlier RVs' soft bits. A new TB (toggled NDI, or RV0 which is always
+   * systematic) resets the buffer (new_rx/round=0); an RV!=0 with unchanged NDI is a
+   * retransmission that combines onto the persisted C/K/Z/F. slsch_last_ndi=-1 at
+   * init forces a fresh decode on the first reception per pid. */
+  NR_UL_gNB_HARQ_t *harq;
+  if (harq_pid >= 0 && harq_pid < NR_MAX_SLSCH_HARQ_PROCESSES) {
+    harq = (NR_UL_gNB_HARQ_t *)ue->slsch_harq[harq_pid];
+    bool new_tb = (ue->slsch_last_ndi[harq_pid] != (int8_t)slsch_pdu->ndi) || (slsch_pdu->rv_index == 0);
+    harq->new_rx = new_tb;
+    harq->round = new_tb ? 0 : harq->round;
+    ue->slsch_last_ndi[harq_pid] = (int8_t)slsch_pdu->ndi;
+  } else {
+    // Corrupt SCI-2 (out-of-range harq_pid): decode into pid 0's buffer as a fresh TB.
+    harq = (NR_UL_gNB_HARQ_t *)ue->slsch_harq[0];
+    harq->new_rx = true;
+    harq->round = 0;
+  }
+  /* Point pssch_pdu at the selected per-pid soft buffer. The per-pid buffers are malloc16_clear'd
+   * (pssch_pdu == NULL) and nothing else assigns this field, so the SLSCH NAK/error path
+   * (nr_ulsch_decoding callback) would dereference a NULL pssch_pdu when logging startrb/
+   * subchannel_size. Ported from de4e380 which set this on the selected buffer before decode. */
+  harq->pssch_pdu = pssch_pdu;
   const uint16_t start_symbol = 1;
   const uint16_t number_symbols = pssch_pdu->pssch_numsym;
   uint8_t number_dmrs_symbols = 0;
@@ -1059,9 +1099,6 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_ph
   nr_sl_layer_demapping(pssch_vars->llr, pssch_pdu->num_layers, pssch_pdu->mod_order, G, pssch_vars->llr_layers);
   nr_sl_unscrambling(pssch_vars->llr, G, pssch_pdu->Nid, 1010);
 
-  // Sidelink SL-DRB is UM (no HARQ soft-combining) -> every reception is a fresh decode.
-  harq->new_rx = true;
-  harq->round = 0;
   const uint32_t A = (uint32_t)slsch_pdu->tb_size << 3;
   int ret = nr_slsch_decoding(ue,
                               proc,

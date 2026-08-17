@@ -441,6 +441,8 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
     return -1;
   }
 
+  sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
+
   sl_nr_rx_config_request_t rx_config;
   memset(&rx_config, 0, sizeof(rx_config));
   rx_config.number_pdus = 1;
@@ -448,6 +450,27 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
   rx_config.slot = slot;
   config_pssch_slsch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pssch_config_pdu, sci_pdu, sl_bwp_generic,
                             sl_res_pool);
+  /* Freeze TBS across retransmissions: config_pssch_slsch_pdu_rx recomputed tb_size from THIS
+   * slot's symbol count, which on a retx landing on a different-numsym slot than round-0 gives
+   * a different TBS -> different LDPC segmentation -> can't decode/combine. Cache the RV0 TBS
+   * and reuse it on retransmissions (same NDI) so RX segmentation matches the transmitted one. */
+  {
+    sl_nr_rx_config_pssch_pdu_t *pssch = &rx_config.sl_rx_config_list[0].rx_pssch_config_pdu;
+    int hpid = sci_pdu->harq_pid;
+    if (hpid >= 0 && hpid < NR_MAX_HARQ_PROCESSES) {
+      bool new_tb = (sl_mac->slsch_rx_ndi[hpid] != (int8_t)sci_pdu->ndi);
+      if (new_tb)
+        sl_mac->slsch_rx_ndi[hpid] = (int8_t)sci_pdu->ndi;
+      /* Cache TBS only from RV0 (the self-decodable RV with the true geometry); never seed
+       * from RV1/2/3. On a new TB, invalidate the stale entry until its RV0 is seen. */
+      if (new_tb)
+        sl_mac->slsch_rx_tbsize[hpid] = -1;
+      if (sci_pdu->rv_index == 0)
+        sl_mac->slsch_rx_tbsize[hpid] = (int32_t)pssch->tb_size;  // authoritative
+      else if (sl_mac->slsch_rx_tbsize[hpid] >= 0)
+        pssch->tb_size = (uint32_t)sl_mac->slsch_rx_tbsize[hpid]; // retx: reuse RV0 TBS
+    }
+  }
   rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
 
   nr_scheduled_response_t scheduled_response = {.sl_rx_config = &rx_config,

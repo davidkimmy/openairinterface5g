@@ -161,6 +161,12 @@ typedef struct {
   nr_sl_csi_report_t csi_report_template[MAX_SL_CSI_REPORTCONFIG];
   NR_SL_UE_sched_ctrl_t UE_sched_ctrl;
   NR_UE_sl_mac_stats_t mac_sl_stats;
+  /* Per-HARQ-process NDI of the last TB already delivered upward for this source.
+     SL uses blind HARQ retransmissions (RV cycle {0,2,3,1}); once a TB decodes, its
+     remaining RVs also decode and would re-deliver the identical SDU, which PDCP then
+     discards as duplicates ("discard NR PDU rcvd_count=N rx_deliv N+1"). Deliver a TB
+     to RLC only on the first successful decode per (source, harq_pid, NDI). -1 = none. */
+  int8_t sl_delivered_ndi[NR_MAX_HARQ_PROCESSES];
 } NR_SL_UE_info_t;
 
 

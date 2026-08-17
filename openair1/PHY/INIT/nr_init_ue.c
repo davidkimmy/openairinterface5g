@@ -626,12 +626,19 @@ void sl_ue_phy_init(PHY_VARS_NR_UE *UE)
       pv->llr_layers[l] = malloc16_clear(max_llr * sizeof(int16_t));
     UE->pssch_vars = pv;
 
-    NR_gNB_ULSCH_t *sl = malloc16_clear(sizeof(*sl));
-    sl->harq_process = malloc16_clear(sizeof(NR_UL_gNB_HARQ_t));
-    sl->harq_process->b = malloc16_clear(a_segments * 1056);
-    sl->harq_process->c = malloc16_clear(a_segments * 1056);
-    sl->harq_process->d = malloc16_clear(a_segments * 68 * 384 * sizeof(int16_t));
-    UE->slsch = sl;
+    /* Per-HARQ-process soft buffers so SLSCH reception can soft-combine blind
+     * retransmissions (RV cycle {0,2,3,1}) across rounds. Each keeps its own b/c/d
+     * so the persisted soft bits (harq->d) survive between rounds; nr_slsch_procedures
+     * selects one by harq_pid and clears it only on a new TB. slsch_last_ndi=-1 forces
+     * a fresh decode on the first reception per pid. */
+    for (int pid = 0; pid < NR_MAX_SLSCH_HARQ_PROCESSES; pid++) {
+      NR_UL_gNB_HARQ_t *hp = malloc16_clear(sizeof(NR_UL_gNB_HARQ_t));
+      hp->b = malloc16_clear(a_segments * 1056);
+      hp->c = malloc16_clear(a_segments * 1056);
+      hp->d = malloc16_clear(a_segments * 68 * 384 * sizeof(int16_t));
+      UE->slsch_harq[pid] = hp;
+      UE->slsch_last_ndi[pid] = -1;
+    }
 
     UE->pssch_thres = 10; // PSSCH energy-detection threshold (dB x10) for the DTX test; tunable
     LOG_I(PHY, "SIDELINK INIT: allocated PSSCH vars (%d rx ant, est %d) + SLSCH HARQ (a_segments %d)\n",

@@ -43,11 +43,25 @@ typedef struct NR_bler_stats {
   int last_num_sched; // scheduling count at last BLER update (for activity guard)
 } NR_bler_stats_t;
 
+/* Moved here from NR_MAC_gNB/nr_mac_gNB.h so the UE sidelink MAC scheduler can drive the same
+   BLER-based MCS adaptation loop (get_mcs_from_bler) as the gNB DL/UL. (episys SL port) */
+typedef struct NR_bler_options {
+  double upper;
+  double lower;
+  uint8_t min_mcs;
+  uint8_t max_mcs;
+  uint8_t harq_round_max;
+} NR_bler_options_t;
+
 /* ---- episys SL data-plane port: sidelink MAC common defs (macros, frameslot, stats) ---- */
 #define MAX_REMOTE_UES        1
 // episys SL PSFCH port (Stage 3c): HARQ feedback bits reserved per remote UE in the static SL HARQ table.
 #define HARQ_BITS_PER_UE      (NR_MAX_HARQ_PROCESSES / MAX_REMOTE_UES)
 #define MAX_SL_HARQ_PROCESSES (NR_MAX_HARQ_PROCESSES)
+/* The SCI-2 harq_pid field is 4 bits (TS 38.212), so only pids 0..15 survive over the air. The SL HARQ
+ * process pool must never hand out a pid the SCI cannot carry, or pids 16..31 wrap to 0..15 at the RX and
+ * the (harq_pid, ndi) duplicate-TB guard drops genuinely new TBs as replays. Cap the addressable pool here. */
+#define SL_NUM_SCI_HARQ_PROCESSES 16
 #define MAX_GRANTS            8
 #define MAX_PSFCH_TO_PUCCH_OFFSET 16
 
@@ -345,6 +359,9 @@ uint32_t nr_compute_tbs_sl(uint16_t Qm, uint16_t R, uint16_t nb_re, uint8_t Nl);
 /** \brief Computes Q based on I_MCS PDSCH and table_idx for downlink. Implements MCS Tables from 38.214. */
 uint8_t nr_get_Qm_dl(uint8_t Imcs, uint8_t table_idx);
 uint32_t nr_get_code_rate_dl(uint8_t Imcs, uint8_t table_idx);
+
+/** \brief Maps a reported CQI index to the highest MCS whose (Qm, code rate) it can support. */
+uint8_t get_mcs_from_cqi(int mcs_table, int cqi_table, int cqi_idx);
 
 /** \brief Computes Q based on I_MCS PDSCH and table_idx for uplink. Implements MCS Tables from 38.214. */
 uint8_t nr_get_Qm_ul(uint8_t Imcs, uint8_t table_idx);

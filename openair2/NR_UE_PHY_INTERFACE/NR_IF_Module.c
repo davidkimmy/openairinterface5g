@@ -529,12 +529,41 @@ void sl_nr_process_rx_ind(int ue_id,
       sl_nr_slsch_pdu_t *slsch = &rx_ind->rx_indication_body[num_pdus - 1].rx_slsch_pdu;
       if (slsch->ack_nack && slsch->pdu && slsch->pdu_length > (int)sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED)) {
         NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
+        /* Duplicate-TB suppression for blind HARQ retransmissions: SL cycles RV {0,2,3,1} for the
+         * same TB, so later RVs re-decode and would re-deliver the identical SDU (PDCP then discards
+         * them, with noisy warnings). Deliver to RLC only on the first decode per (source, harq_pid,
+         * NDI); HARQ/PSFCH feedback below still runs so the transmitter is ACKed. */
+        int sl_hpid = mac->sci_pdu_rx.harq_pid;
+        int sl_ndi = mac->sci_pdu_rx.ndi;
+        bool sl_dup_tb = false;
+        if (mac->sl_info.list[0] && sl_hpid >= 0 && sl_hpid < NR_MAX_HARQ_PROCESSES) {
+          int8_t *delivered_ndi = mac->sl_info.list[0]->sl_delivered_ndi;
+          sl_dup_tb = (delivered_ndi[sl_hpid] == (int8_t)sl_ndi);
+          if (!sl_dup_tb)
+            delivered_ndi[sl_hpid] = (int8_t)sl_ndi; // first decode of this TB
+        }
         uint8_t *p = (uint8_t *)slsch->pdu + sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED); // skip SL-SCH fixed header
         int remaining = slsch->pdu_length - (int)sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
-        while (remaining > 0) {
+        while (!sl_dup_tb && remaining > 0) {
           uint8_t rx_lcid = ((NR_MAC_SUBHEADER_FIXED *)p)->LCID;
           if (rx_lcid == SL_SCH_LCID_PADDING)
             break;
+          /* SL CSI report MAC CE: FIXED subheader (LCID only) + fixed 1-byte report, not a length-prefixed
+           * SDU. Store the CQI/RI for MCS adaptation; not delivered to RLC. */
+          if (rx_lcid == SL_SCH_LCID_SL_CSI_REPORT) {
+            if (remaining < (int)(sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t)))
+              break;
+            nr_sl_csi_report_t *rep = (nr_sl_csi_report_t *)(p + sizeof(NR_MAC_SUBHEADER_FIXED));
+            if (mac->sl_info.list[0]) {
+              NR_SL_UE_sched_ctrl_t *sc = &mac->sl_info.list[0]->UE_sched_ctrl;
+              sc->rx_csi_report.CQI = rep->CQI;
+              sc->rx_csi_report.RI = rep->RI;
+              LOG_D(NR_MAC, "[SL_CSIREP_RX] decoded SL CSI report MAC CE (cqi %d ri %d)\n", rep->CQI, rep->RI);
+            }
+            p += sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t);
+            remaining -= sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t);
+            continue;
+          }
           uint16_t mac_len = 0, mac_subheader_len = 0;
           if (!get_mac_len(p, (uint32_t)remaining, &mac_len, &mac_subheader_len) || mac_len == 0)
             break; // malformed or no more sub-PDUs

@@ -749,14 +749,6 @@ typedef struct NR_mac_stats {
   int NPRB;
 } NR_mac_stats_t;
 
-typedef struct NR_bler_options {
-  double upper;
-  double lower;
-  uint8_t min_mcs;
-  uint8_t max_mcs;
-  uint8_t harq_round_max;
-} NR_bler_options_t;
-
 typedef struct nr_mac_rrc_ul_if_s {
   f1_reset_du_initiated_func_t f1_reset;
   f1_reset_acknowledge_cu_initiated_func_t f1_reset_acknowledge;

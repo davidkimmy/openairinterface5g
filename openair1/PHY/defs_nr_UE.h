@@ -31,6 +31,10 @@
 #include "common/utils/actor/actor.h"
 //#include "openair1/SCHED_NR_UE/defs.h"
 
+#ifndef NR_MAX_SLSCH_HARQ_PROCESSES
+#define NR_MAX_SLSCH_HARQ_PROCESSES (NR_MAX_HARQ_PROCESSES)
+#endif
+
 #define msg(aRGS...) LOG_D(PHY, ##aRGS)
 // use msg in the real-time thread context
 #define msg_nrt printf
@@ -359,8 +363,14 @@ typedef struct PHY_VARS_NR_UE_s {
 
   // episys SL data-plane port: PSSCH receive vars (LLR buffers); reuses the gNB PUSCH vars struct.
   struct NR_gNB_PUSCH_s *pssch_vars;
-  // episys SL data-plane port: SLSCH receive state (per-connection HARQ), reuses the common ULSCH struct.
-  struct NR_gNB_ULSCH_s *slsch;
+  /* Per-HARQ-process soft buffers for SLSCH reception. SL HARQ cycles RV {0,2,3,1};
+   * RV1/RV2 are not self-decodable and need soft-combining with earlier RVs, so soft
+   * bits must persist across rounds (selected by harq_pid, cleared only when SCI NDI
+   * toggles). slsch_last_ndi tracks the last NDI per pid. void* avoids the
+   * defs_gNB.h<->defs_nr_UE.h circular include (NR_UL_gNB_HARQ_t is not
+   * forward-declarable); cast to NR_UL_gNB_HARQ_t* at use. */
+  void                    *slsch_harq[NR_MAX_SLSCH_HARQ_PROCESSES];
+  int8_t                   slsch_last_ndi[NR_MAX_SLSCH_HARQ_PROCESSES];
   // PSSCH energy-detection threshold (dB x10) for the DTX test in the SL RX chain.
   int pssch_thres;
 

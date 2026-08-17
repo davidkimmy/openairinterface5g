@@ -9,20 +9,62 @@
 #include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"      // nr_mac_rlc_status_ind_sl / data_req_sl (SL DRB)
 #include "executables/softmodem-common.h"               // SL_MCS (--mcs cmdline override)
 
-// episys SL data-plane port: F1 minimal — SL DRB is drb_id 1; broadcast dest id. MCS comes from --mcs
-// (SL_MCS) when set, else the default below. Both TX and RX must use the same MCS (same SCI-1).
+/* SL data plane: SL DRB is drb_id 1, broadcast dest id. MCS comes from --mcs (SL_MCS) when set, else
+   the default below; TX and RX must use the same MCS (same SCI-1). */
 #define SL_F1_DRB_ID 1
 #define SL_F1_BROADCAST_DEST 0xFFFF
-#define SL_F1_DEFAULT_MCS 9
+/* SL_F1_DEFAULT_MCS lives in nr_ue_sci.h (shared with config_ue_sl.c's sl_max_mcs seed). */
 
 // episys SL PSFCH port (Stage 4b): RV sequence by HARQ round (TS 38.212 / episys nr_slsch_scheduler.c).
 static const uint8_t nr_rv_round_map[4] = {0, 2, 3, 1};
 
-// Effective SL MCS: cmdline --mcs if provided (>=0), otherwise the F1 default.
-static inline uint8_t sl_effective_mcs(void)
+/* Current SL MCS (read-only): CQI-adapted sl_max_mcs if a UE context exists, else --mcs / the default.
+   Used by the RX pipeline only to synthesise an SCI-1 for PSCCH location/descrambling, so must not
+   mutate state (the real PSSCH MCS comes from the decoded SCI-1A). */
+static uint8_t sl_current_mcs(NR_UE_MAC_INST_t *mac)
 {
+  if (mac->sl_info.list[0])
+    return mac->sl_info.list[0]->UE_sched_ctrl.sl_max_mcs;
   int mcs = get_softmodem_params()->mcs;
   return (mcs >= 0) ? (uint8_t)mcs : SL_F1_DEFAULT_MCS;
+}
+
+/* SL BLER thresholds and MCS ceiling: LOWER/UPPER bound the retransmission-ratio band
+   get_mcs_from_bler() steps the MCS within. */
+#define LOWER_BLER 0.2344
+#define UPPER_BLER 5.547
+#define MAX_MCS 28
+
+/* Effective SL TX MCS. A received CSI report (rx_csi_report.CQI > 0) sets sl_max_mcs as a ceiling via
+   get_mcs_from_cqi; the MCS actually sent is chosen by the closed BLER loop get_mcs_from_bler(), which
+   backs off from that ceiling under a high HARQ retransmission ratio (prevents latching at a CQI-optimistic
+   value the link cannot decode). No HARQ loop (blind TX / pre-CSI) -> static --mcs / seeded sl_max_mcs. */
+static uint8_t sl_effective_mcs(NR_UE_MAC_INST_t *mac, frame_t frame)
+{
+  if (!mac->sl_info.list[0])
+    return sl_current_mcs(mac);
+  NR_SL_UE_info_t *ue = mac->sl_info.list[0];
+  NR_SL_UE_sched_ctrl_t *sc = &ue->UE_sched_ctrl;
+
+  // CQI -> MCS ceiling (sl_max_mcs). Only updated once a CSI report has been received from the peer.
+  uint8_t cqi = sc->rx_csi_report.CQI;
+  if (cqi) {
+    int mcs_tb_ind = 0; // sl_Additional_MCS_Table = 0 -> CQI table 1
+    uint8_t ceil_mcs = get_mcs_from_cqi(mcs_tb_ind, mcs_tb_ind, cqi);
+    sc->sl_max_mcs = ceil_mcs;
+  }
+
+  // Closed BLER loop: pick the actual TX MCS at or below the ceiling based on the HARQ round history.
+  NR_bler_options_t *sl_bo = &mac->SL_MAC_PARAMS->sl_bler;
+  sl_bo->lower = LOWER_BLER;
+  sl_bo->upper = UPPER_BLER;
+  sl_bo->max_mcs = MAX_MCS;
+  int mcs_tb_ind = 0;
+  const int max_mcs_table = mcs_tb_ind == 1 ? 27 : 28;
+  int max_mcs = min(sc->sl_max_mcs, max_mcs_table);
+  if (sl_bo->harq_round_max <= 1)
+    return max_mcs; // no retransmissions configured -> no BLER feedback, run at the ceiling
+  return get_mcs_from_bler(sl_bo, &ue->mac_sl_stats.sl, &sc->sl_bler_stats, max_mcs, frame);
 }
 
 static uint16_t sl_adjust_ssb_indices(sl_ssb_timealloc_t *ssb_timealloc, uint32_t slot_in_16frames, uint16_t *ssb_slot_ptr)
@@ -423,7 +465,7 @@ static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       /* The PSCCH region is fixed by the pool config, so a synthesised SCI-1 is enough to describe where
        * SCI-1A sits and how to descramble it - it mirrors what the TX fills in fill_pssch_pscch_pdu. */
       nr_sci_pdu_t sci1 = {0}, sci2 = {0};
-      nr_schedule_slsch(respool, &sci1, &sci2, 0, 0, 0, 0, SL_F1_BROADCAST_DEST, sl_effective_mcs());
+      nr_schedule_slsch(respool, &sci1, &sci2, 0, 0, 0, 0, SL_F1_BROADCAST_DEST, sl_current_mcs(mac));
       nr_sci_size(respool, &sci1, NR_SL_SCI_FORMAT_1A); // fill the 1st-stage nbits the RX config builder reads
       config_pscch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pscch_config_pdu, &sci1, bwp_gen, respool);
       rx_config.number_pdus = 1;
@@ -548,7 +590,7 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       nr_sci_pdu_t sci1 = {0}, sci2 = {0};
       static uint8_t sl_ndi = 0;
       sl_ndi ^= 1;
-      const uint8_t mcs = sl_effective_mcs();
+      const uint8_t mcs = sl_effective_mcs(mac, sl_ind->frame_tx);
 
       // episys SL PSFCH port (Stage 4b): HARQ-aware TX. When PSFCH is configured, allocate a HARQ
       // process (retransmission first, else a fresh one), arm it to expect feedback, and request
@@ -580,11 +622,8 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
         }
         if (psfch_period) {
           NR_UE_sl_harq_t *h = &sc->sl_harq_processes[harq_pid];
-          // develop's blind SL RX has no soft-combining buffer, so incremental-redundancy RVs (2,3,1) are
-          // undecodable. Force rv=0 -> chase combining: each (re)transmission is a self-decodable copy of
-          // the SAME buffered TB; the RX decodes each attempt independently until one passes CRC.
-          rv = 0;
-          (void)nr_rv_round_map;
+          // Per-pid soft buffers let the RX soft-combine, so use the full RV cycle {0,2,3,1}.
+          rv = nr_rv_round_map[h->round % 4];
           // The peer (receiver) sends the PSFCH in ITS TX half = my RX half. If I am SyncRef my RX half
           // is {16-19} (use_first_half=false); if Nearby, {6-9} (true). So pass !sync_ref.
           int fb_slot = get_feedback_slot(psfch_period, sl_ind->slot_tx, !get_softmodem_params()->sync_ref);
@@ -611,8 +650,14 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
           }
         }
       }
-      // populate SCI-1/SCI-2 field values, then assemble the PDU (nr_sci_size + packing + TB size inside).
-      nr_schedule_slsch(respool, &sci1, &sci2, harq_pid, sl_ndi, rv, mac->src_id, SL_F1_BROADCAST_DEST, mcs);
+      /* Populate SCI-1/SCI-2 fields, then assemble the PDU (nr_sci_size + packing + TB size inside).
+         NDI in the SCI: the HARQ-armed path uses the per-process NDI (h->ndi), which toggles only on new
+         data and is held across retransmissions for soft-combine; the RX duplicate-TB guard keys on
+         (harq_pid, ndi). The free-running sl_ndi is kept only for the blind fallback (no HARQ proc). */
+      uint8_t tx_ndi = sl_ndi;
+      if (arm_feedback && mac->sl_info.list[0])
+        tx_ndi = mac->sl_info.list[0]->UE_sched_ctrl.sl_harq_processes[harq_pid].ndi;
+      nr_schedule_slsch(respool, &sci1, &sci2, harq_pid, tx_ndi, rv, mac->src_id, SL_F1_BROADCAST_DEST, mcs);
       if (arm_feedback)
         sci2.harq_feedback = 1;
       fill_pssch_pscch_pdu(pdu, bwp_gen, respool, &sci1, &sci2, NR_SL_SCI_FORMAT_1A, NR_SL_SCI_FORMAT_2A);
@@ -693,6 +738,11 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
           htx->tb_size = cp;
         }
       }
+      /* BLER stats: count this (re)transmission by HARQ round so get_mcs_from_bler() can measure the
+         retransmission ratio (rounds[0] = initial TX, rounds[>0] = retx). Only when a HARQ process is
+         tracked (PSFCH active); a blind TX has no feedback loop to adapt on. */
+      if (htx && mac->sl_info.list[0] && htx->round < HARQ_ROUND_MAX)
+        mac->sl_info.list[0]->mac_sl_stats.sl.rounds[htx->round]++;
       tx_config.number_pdus = 1;
       tx_config.tx_config_list[0].pdu_type = tx_action;
       LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSCCH/PSSCH tb_size %d (rlc %d) mcs %d\n",
@@ -805,7 +855,17 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
         const bool tx_allowed = (tx_pool_mask >> slot) & 1;
         const bool rx_allowed = (rx_pool_mask >> slot) & 1;
 
-        bool may_transmit = (tx_bytes > 0) && tx_allowed;
+        /* A pending HARQ retransmission must also acquire a TX slot even when the RLC buffer has drained.
+           The round-0 TB is buffered in the HARQ process and removed from RLC, so by the time a NACK arrives
+           tx_bytes is 0; gating may_transmit on tx_bytes alone would strand the buffered TB on
+           retrans_sl_harq forever. That is fatal for a bootstrap control PDU (e.g. the relay's RRCSetup to a
+           not-yet-registered remote), where a single round-0 loss becomes a permanent registration deadlock.
+           Treat a queued retransmission as TX demand so the buffered TB is actually resent. */
+        bool has_retx = false;
+        if (mac->sl_info.list[0])
+          has_retx = (mac->sl_info.list[0]->UE_sched_ctrl.retrans_sl_harq.head >= 0);
+
+        bool may_transmit = ((tx_bytes > 0) || has_retx) && tx_allowed;
         const bool sensing_enabled = (get_softmodem_params()->sl_mode == 2 && get_softmodem_params()->relay_type == 0
                                       && (mac->rsc_selection_method == c1 || mac->rsc_selection_method == c4
                                           || mac->rsc_selection_method == c5 || mac->rsc_selection_method == c7));

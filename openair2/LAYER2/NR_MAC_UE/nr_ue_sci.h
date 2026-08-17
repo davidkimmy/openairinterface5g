@@ -48,7 +48,13 @@
 #define SL_SCH_LCID_SRB0 0
 #define SL_SCH_LCID_SRB1 1
 #define SL_SCH_LCID_DRB1 4
+/* SL CSI report MAC CE (TS 38.321). Fixed subheader (LCID only) + 1-byte nr_sl_csi_report_t.
+ * The node that measured CSI-RS packs it; the TX node reads it and adapts PSSCH MCS. */
+#define SL_SCH_LCID_SL_CSI_REPORT 62
 #define SL_SCH_LCID_PADDING 63
+
+/* Default SL TX MCS when --mcs is not set. Also used to seed the CQI-adaptive sl_max_mcs. */
+#define SL_F1_DEFAULT_MCS 9
 
 typedef enum {
   NR_SL_SCI_FORMAT_1A = 0,

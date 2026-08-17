@@ -82,7 +82,7 @@ typedef struct {
   //////////////////////////////////////////////////////////////
 } NR_UL_gNB_HARQ_t;
 
-// Tagged (NR_gNB_ULSCH_s) so UE headers can forward-declare it (PHY_VARS_NR_UE.slsch) without pulling this header.
+// Tagged (NR_gNB_ULSCH_s) so UE headers can forward-declare it without pulling this header.
 typedef struct NR_gNB_ULSCH_s {
   uint32_t frame;
   uint32_t slot;

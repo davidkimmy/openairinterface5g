@@ -110,6 +110,13 @@ int configure_psfch_params_rx(int module_idP, NR_UE_MAC_INST_t *mac, int frame, 
 int find_current_slot_harqs(frame_t frame, sub_frame_t slot, NR_SL_UE_sched_ctrl_t *sched_ctrl, NR_UE_sl_harq_t **matched_harqs);
 void handle_nr_ue_sl_harq(module_id_t mod_id, frame_t frame, sub_frame_t slot, sl_nr_slsch_pdu_t *rx_slsch_pdu, uint16_t src_id);
 void nr_mac_process_sl_rx_data(NR_UE_MAC_INST_t *mac, uint16_t src_id, int8_t harq_id, uint8_t ack_nack);
+/* get_mcs_from_cqi() is declared in nr_mac_common.h (shared with gNB DL).
+   BLER-based SL MCS adaptation (ported from sidelink-basic), defined in nr_slsch_scheduler.c. */
+int get_mcs_from_bler(const NR_bler_options_t *bler_options,
+                      const NR_mac_dir_stats_t *stats,
+                      NR_bler_stats_t *bler_stats,
+                      int max_mcs,
+                      frame_t frame);
 int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, int cc_id, frame_t frame,
                                       int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data);
 // MAC handler for a decoded SCI-1A (PSCCH) indication - records the

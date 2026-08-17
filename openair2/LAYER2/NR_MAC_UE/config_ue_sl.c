@@ -248,13 +248,16 @@ static void  sl_prepare_phy_config(int module_id,
   return;
 }
 
-// episys SL PSFCH port (Stage 4b): initialize the per-connection SL HARQ context (HARQ process pool +
-// feedback/retrans lists + PSFCH feedback-scheduling buffer). Idempotent; a no-op unless PSFCH is
-// provisioned and the TX pool + TDD config are ready. Called from both SL config entry points.
+/* episys SL PSFCH port (Stage 4b): initialize the per-connection SL context (HARQ process pool +
+   feedback/retrans lists + PSFCH feedback-scheduling buffer + the sched_ctrl that carries uid, the
+   TX MCS and CSI-report state). Idempotent; needs only the TX pool + TDD config to be ready.
+   NOTE: do NOT gate this on sl_PSFCH_Config_r16 - the per-connection context is also required by the
+   CQI-driven MCS adaptation, which runs even when PSFCH is disabled (psfch0); the HARQ/feedback lists
+   are simply left unused in that case. Called from both SL config entry points. */
 static void sl_ue_harq_ctx_init(NR_UE_MAC_INST_t *mac)
 {
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
-  if (!sl_mac || !mac->sl_tx_res_pool || !mac->sl_tx_res_pool->sl_PSFCH_Config_r16 || !sl_mac->sl_TDD_config)
+  if (!sl_mac || !mac->sl_tx_res_pool || !sl_mac->sl_TDD_config)
     return;
   if (mac->sl_info.list[0] != NULL)
     return; // already initialized
@@ -268,9 +271,17 @@ static void sl_ue_harq_ctx_init(NR_UE_MAC_INST_t *mac)
 
   mac->sl_info.list[0] = calloc(1, sizeof(NR_SL_UE_info_t));
   mac->sl_info.list[0]->uid = 0; // single peer connection (2-node SL)
-  NR_SL_UE_sched_ctrl_t *sc = &mac->sl_info.list[0]->UE_sched_ctrl;
-  create_nr_list(&sc->available_sl_harq, NR_MAX_HARQ_PROCESSES);
+  // Duplicate-TB suppression state (see NR_IF_Module.c SLSCH RX): -1 = no TB delivered yet per pid.
   for (int h = 0; h < NR_MAX_HARQ_PROCESSES; h++)
+    mac->sl_info.list[0]->sl_delivered_ndi[h] = -1;
+  NR_SL_UE_sched_ctrl_t *sc = &mac->sl_info.list[0]->UE_sched_ctrl;
+  /* Seed the SL TX MCS from --mcs (or the F1 default). A received CSI report later overrides this
+     via get_mcs_from_cqi (CQI-driven adaptation); until then transmissions use the seeded value. */
+  int cmdline_mcs = get_softmodem_params()->mcs;
+  sc->sl_max_mcs = (cmdline_mcs >= 0) ? (uint8_t)cmdline_mcs : SL_F1_DEFAULT_MCS;
+  // Only seed pids the 4-bit SCI-2 harq_pid field can address (0..15); see SL_NUM_SCI_HARQ_PROCESSES.
+  create_nr_list(&sc->available_sl_harq, NR_MAX_HARQ_PROCESSES);
+  for (int h = 0; h < SL_NUM_SCI_HARQ_PROCESSES; h++)
     add_tail_nr_list(&sc->available_sl_harq, h);
   create_nr_list(&sc->feedback_sl_harq, NR_MAX_HARQ_PROCESSES);
   create_nr_list(&sc->retrans_sl_harq, NR_MAX_HARQ_PROCESSES);
@@ -308,6 +319,16 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
     init_list(&mac->sl_sensing_data, sizeof(sensing_data_t), 1);
     init_list(&mac->sl_transmit_history, sizeof(frameslot_t), 1);
     mac->reselection_timer = 0;
+    /* BLER-based SL MCS adaptation options. harq_round_max enables the closed loop in
+       get_mcs_from_bler(); min_mcs lets it back off to QPSK; max_mcs is the hard ceiling. */
+    mac->SL_MAC_PARAMS->sl_bler.harq_round_max = HARQ_ROUND_MAX;
+    mac->SL_MAC_PARAMS->sl_bler.min_mcs = 0;
+    mac->SL_MAC_PARAMS->sl_bler.max_mcs = 28;
+    // Per-pid RX TBS freeze cache: -1 = unset (CALLOC leaves 0, which is a valid ndi/tbs).
+    for (int i = 0; i < NR_MAX_HARQ_PROCESSES; i++) {
+      mac->SL_MAC_PARAMS->slsch_rx_tbsize[i] = -1;
+      mac->SL_MAC_PARAMS->slsch_rx_ndi[i] = -1;
+    }
   }
 
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;

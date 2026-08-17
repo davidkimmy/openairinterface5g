@@ -200,6 +200,10 @@ typedef struct sl_nr_ue_mac_params {
   uint32_t sl_SSB_PriorityNR;
   uint8_t sl_CSI_Acquisition;
 
+  /* BLER-based SL MCS adaptation options (harq_round_max, min/max mcs, lower/upper thresholds).
+     Seeded at UE init; driven by get_mcs_from_bler() in the SLSCH scheduler. */
+  NR_bler_options_t sl_bler;
+
   //MAC prepares this and sends it to PHY
   nr_sl_phy_config_t sl_phy_config;
 
@@ -228,6 +232,16 @@ typedef struct sl_nr_ue_mac_params {
   uint16_t N_SSB_16frames;
 
   sl_stored_tti_req_t *future_ttis;
+
+  /* Per-HARQ-process RX transport-block size, frozen at the round-0 (new-TB)
+   * reception and reused for all retransmissions of that TB. HARQ requires the TBS
+   * (and thus the LDPC segmentation K/C/Z) to stay constant across retransmissions.
+   * The SL RX otherwise recomputes TBS from each retx slot's symbol count, so a
+   * retransmission landing on a numsym-12 slot (no PSFCH) derives a larger TBS than
+   * the numsym-9 round-0 slot, producing an incompatible mother code that never
+   * decodes. Keyed by SCI harq_pid; refreshed when the SCI NDI toggles. -1 = unset. */
+  int32_t slsch_rx_tbsize[NR_MAX_HARQ_PROCESSES];
+  int8_t  slsch_rx_ndi[NR_MAX_HARQ_PROCESSES];
 
 } sl_nr_ue_mac_params_t;
 
