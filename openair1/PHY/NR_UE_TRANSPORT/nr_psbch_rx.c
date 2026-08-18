@@ -195,12 +195,6 @@ int nr_psbch_decode(PHY_VARS_NR_UE *ue,
   uint8_t *result = NULL;
   result = decoded_pdu;
   sl_phy_params->psbch.rx_ok++;
-  LOG_I(NR_PHY,
-        "[UE%d] %d:%d PSBCH RX:OK. RSRP: %d dB/RE\n",
-        ue->Mod_id,
-        proc->frame_rx,
-        proc->nr_slot_rx,
-        sl_phy_params->psbch.rsrp_dB_per_RE);
 
   nr_fill_sl_indication(&sl_indication, &rx_ind, NULL, proc, ue, phy_data);
   nr_fill_sl_rx_indication(&rx_ind, SL_NR_RX_PDU_TYPE_SSB, ue, number_pdus, (void *)result, rx_slss_id);

@@ -28,6 +28,11 @@
 
 // episys SL PSFCH port (Stage 3): HARQ round cap + RX->TX feedback slot gap + SL scheduler mutex helpers.
 #define HARQ_ROUND_MAX 4
+/* Aperiodic CSI-RS: request only after N sustained HARQ NACKs (not the first), per
+ * TS 38.214 (trigger is implementation-defined). N must be >= 2.
+ * TESTING: lowered to 1 to trigger CSI-RS on the first NACK so the RX-side
+ * measurement/report/MCS chain is exercised more readily (revert to 2 for production). */
+#define SL_CSI_RS_NACK_TRIGGER_ROUNDS 1
 // PSFCH feedback is scheduled DURATION_RX_TO_TX slots after the PSSCH RX (fixed UE capability delay).
 // develop defines NR_UE_CAPABILITY_SLOT_RX_TO_TX in common/utils/nr/nr_common.h (pulled via nr_mac.h).
 #define DURATION_RX_TO_TX (NR_UE_CAPABILITY_SLOT_RX_TO_TX)
@@ -179,6 +184,12 @@ typedef struct {
                               */
 } nr_sl_transmission_params_t;
 
+/* SL CSI-RS trigger method selected from the sl_csi_rs conf block (sl_csi_mode). */
+typedef enum {
+  SL_CSI_TRIGGER_APERIODIC = 0, // production: fire CSI-RS on sustained HARQ NACKs (default)
+  SL_CSI_TRIGGER_PERIODIC  = 1, // debug: fire CSI-RS on a deterministic periodic slot
+} sl_csi_trigger_mode_e;
+
 typedef struct sl_nr_ue_mac_params {
 
   //Holds the RX resource pool from RRC and its related parameters
@@ -200,9 +211,30 @@ typedef struct sl_nr_ue_mac_params {
   uint32_t sl_SSB_PriorityNR;
   uint8_t sl_CSI_Acquisition;
 
+  /* SL CSI-RS trigger mode (sl_csi_mode in the sl_csi_rs conf block, config_ue_sl.c):
+   * production = aperiodic (fired on sustained HARQ NACKs, default), debug = periodic
+   * (deterministic slot-modulo occasion, ported from episys/sl-mode1-relay for USRP testing). */
+  uint8_t sl_csi_trigger_mode;
+
   /* BLER-based SL MCS adaptation options (harq_round_max, min/max mcs, lower/upper thresholds).
      Seeded at UE init; driven by get_mcs_from_bler() in the SLSCH scheduler. */
   NR_bler_options_t sl_bler;
+
+  /* CSI-RS resource parameters read from the sl_csi_rs conf block
+     (config_ue_sl.c) and used by the SLSCH scheduler to place a PC5 CSI-RS on the PSSCH grid;
+     row/cdm_type are derived from nb_antennas_tx. */
+  uint8_t sl_csi_symb_l0;
+  uint8_t sl_csi_type;
+  uint8_t sl_csi_power_control_offset;
+  uint8_t sl_csi_power_control_offset_ss;
+  uint8_t sl_csi_freq_density;
+  uint8_t sl_csi_row;
+  uint8_t sl_csi_cdm_type;
+  uint16_t sl_csi_freq_domain;
+  uint16_t sl_csi_start_rb;
+  uint16_t sl_csi_nr_of_rbs;
+  uint16_t sl_csi_scramb_id;
+  uint8_t sl_csi_measurement_bitmap;
 
   //MAC prepares this and sends it to PHY
   nr_sl_phy_config_t sl_phy_config;

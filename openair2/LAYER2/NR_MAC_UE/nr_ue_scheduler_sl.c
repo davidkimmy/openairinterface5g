@@ -18,6 +18,33 @@
 // episys SL PSFCH port (Stage 4b): RV sequence by HARQ round (TS 38.212 / episys nr_slsch_scheduler.c).
 static const uint8_t nr_rv_round_map[4] = {0, 2, 3, 1};
 
+/* PSFCH-overhead geometry for a TX slot: true when a PSSCH here reserves 3 PSFCH symbols (=>
+ * fewer PSSCH symbols => smaller TBS). Used both to fill sci_pdu->psfch_overhead and to keep
+ * retransmission geometry (hence TBS) identical to the round-0 slot so the receiver soft-combines.
+ * Only periods {2,4} carry the overhead bit; period 1 has PSFCH in every SL slot (geometry
+ * constant) and period 0 has none. */
+static bool sl_slot_psfch_overhead(NR_UE_MAC_INST_t *mac, int frameP, int slotP, bool is_fdbk_scheduled)
+{
+  uint8_t psfch_period = 0;
+  const uint8_t psfch_periods[] = {0, 1, 2, 4};
+  if (mac->sl_tx_res_pool && mac->sl_tx_res_pool->sl_PSFCH_Config_r16
+      && mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup
+      && mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16)
+    psfch_period = psfch_periods[*mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16];
+
+  bool overhead;
+  if (get_softmodem_params()->relay_type != 0) {
+    overhead = is_fdbk_scheduled;
+  } else {
+    uint8_t mu = mac->SL_MAC_PARAMS->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+    frameslot_t fs = {frameP, slotP};
+    uint64_t tx_abs_slot = normalize(&fs, mu);
+    bool periodic_psfch = slot_has_psfch(mac, tx_abs_slot, psfch_period);
+    overhead = periodic_psfch || is_fdbk_scheduled;
+  }
+  return (psfch_period == 2 || psfch_period == 4) && overhead;
+}
+
 /* Current SL MCS (read-only): CQI-adapted sl_max_mcs if a UE context exists, else --mcs / the default.
    Used by the RX pipeline only to synthesise an SCI-1 for PSCCH location/descrambling, so must not
    mutate state (the real PSSCH MCS comes from the decoded SCI-1A). */
@@ -429,6 +456,28 @@ static void sl_actions_after_new_timing(sl_nr_ue_mac_params_t *sl_mac, int ue_id
   sl_adjust_indices_based_on_timing(sl_mac, ue_id, frame, slot, slots_per_frame);
 }
 
+/* Fill the FAPI CSI-RS resource PDU (MAC->PHY) from the parsed CSI-RS config. Same values on TX
+   (generation) and RX (measurement) so the punctured REs match exactly. */
+void fill_sl_csi_rs_pdu(sl_nr_tti_csi_rs_pdu_t *csi, const sl_nr_ue_mac_params_t *sl_mac, uint8_t scs)
+{
+  memset(csi, 0, sizeof(*csi));
+  csi->subcarrier_spacing = scs;
+  csi->cyclic_prefix = 0;
+  csi->start_rb = sl_mac->sl_csi_start_rb;
+  csi->nr_of_rbs = sl_mac->sl_csi_nr_of_rbs;
+  csi->csi_type = sl_mac->sl_csi_type;   // 1 = NZP CSI-RS
+  csi->row = sl_mac->sl_csi_row;
+  csi->freq_domain = sl_mac->sl_csi_freq_domain;
+  csi->symb_l0 = sl_mac->sl_csi_symb_l0;
+  csi->symb_l1 = 0;
+  csi->cdm_type = sl_mac->sl_csi_cdm_type;
+  csi->freq_density = sl_mac->sl_csi_freq_density;
+  csi->scramb_id = sl_mac->sl_csi_scramb_id;
+  csi->power_control_offset = sl_mac->sl_csi_power_control_offset;
+  csi->power_control_offset_ss = sl_mac->sl_csi_power_control_offset_ss;
+  csi->measurement_bitmap = sl_mac->sl_csi_measurement_bitmap;
+}
+
 static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t *mac)
 {
 
@@ -465,7 +514,7 @@ static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       /* The PSCCH region is fixed by the pool config, so a synthesised SCI-1 is enough to describe where
        * SCI-1A sits and how to descramble it - it mirrors what the TX fills in fill_pssch_pscch_pdu. */
       nr_sci_pdu_t sci1 = {0}, sci2 = {0};
-      nr_schedule_slsch(respool, &sci1, &sci2, 0, 0, 0, 0, SL_F1_BROADCAST_DEST, sl_current_mcs(mac));
+      nr_schedule_slsch(respool, &sci1, &sci2, 0, 0, 0, 0, SL_F1_BROADCAST_DEST, sl_current_mcs(mac), 0 /*RX blind rebuild: overhead unknown pre-SCI*/);
       nr_sci_size(respool, &sci1, NR_SL_SCI_FORMAT_1A); // fill the 1st-stage nbits the RX config builder reads
       config_pscch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pscch_config_pdu, &sci1, bwp_gen, respool);
       rx_config.number_pdus = 1;
@@ -478,8 +527,8 @@ static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
     // TBD (F2 PSFCH)
   }
 
-  // episys SL PSFCH port (Stage 4d): if a HARQ process is awaiting feedback this slot, attach the PSFCH
-  // (HARQ ACK/NACK) decode config to the (blind) PSSCH RX config already built above and upgrade its type.
+  /* If a HARQ process is awaiting feedback this slot, attach the PSFCH (HARQ ACK/NACK) decode config
+     to the (blind) PSSCH RX config already built above and upgrade its type. */
   configure_psfch_params_rx(ue_id, mac, sl_ind->frame_rx, sl_ind->slot_rx, &rx_config);
 
   if (rx_config.number_pdus) {
@@ -499,9 +548,9 @@ static void sl_schedule_rx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
   }
 }
 
-// episys SL PSFCH port (Stage 4c): if any pending HARQ-feedback resource is scheduled for (frame,slot),
-// build the PSFCH TX config from the stored sched_psfch[] entries (filled at RX by configure_psfch_params_tx).
-// Returns the number of PSFCH PDUs scheduled (0 => nothing to send this slot).
+/* If any pending HARQ-feedback resource is scheduled for (frame,slot), build the PSFCH TX config from the
+   stored sched_psfch[] entries (filled at RX by configure_psfch_params_tx). Returns the number of PSFCH
+   PDUs scheduled (0 => nothing to send this slot). */
 static int nr_ue_sl_psfch_scheduler(NR_UE_MAC_INST_t *mac, int frame, int slot, sl_nr_tx_config_request_t *tx_config)
 {
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
@@ -532,26 +581,22 @@ static int nr_ue_sl_psfch_scheduler(NR_UE_MAC_INST_t *mac, int frame, int slot, 
       list[k].group_hop_flag = sp->group_hop_flag;
       list[k].sequence_hop_flag = sp->sequence_hop_flag;
       list[k].second_hop_prb = sp->second_hop_prb;
-      LOG_D(NR_MAC, "SL PSFCH TX %d.%d ics=%d mcs=%d prb=%d ssym=%d hop=%d nsym=%d bit_len=%d\n",
-            frame, slot, list[k].initial_cyclic_shift, list[k].mcs, list[k].prb, list[k].start_symbol_index,
-            list[k].hopping_id, list[k].nr_of_symbols, list[k].bit_len_harq);
       k++;
       sp->feedback_slot = -1;
       sp->feedback_frame = -1;
     }
   }
   if (k > 0) {
-    // MUX: attach the PSFCH to whatever TX config was already built for this slot. If PSSCH data is being
-    // sent (number_pdus>0, pdu_type TX_PSCCH_PSSCH), the PSFCH rides in the last symbol of the SAME slot
-    // (no data preemption). If no data, this is a standalone PSFCH TX. Either way psfch_pdu_list lives on
-    // list[0].tx_pscch_pssch_config_pdu and the PHY generates PSFCH after (any) PSSCH.
+    /* Attach the PSFCH to whatever TX config was already built for this slot: if PSSCH data is being sent
+       it rides the last symbol of the same slot (no preemption), otherwise this is a standalone PSFCH TX.
+       Either way psfch_pdu_list lives on list[0].tx_pscch_pssch_config_pdu. */
     if (tx_config->number_pdus == 0) {
       tx_config->number_pdus = 1;
       tx_config->tx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_TX_PSFCH;
     }
     tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu.psfch_pdu_list = list;
     tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu.num_psfch_pdus = k;
-    LOG_I(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSFCH %d pdu(s) (muxed=%d)\n", mac->ue_id, frame, slot, k,
+    LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSFCH %d pdu(s) (muxed=%d)\n", mac->ue_id, frame, slot, k,
           tx_config->tx_config_list[0].pdu_type == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH);
   }
   return k;
@@ -581,7 +626,7 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
     LOG_D(NR_MAC, "[UE%d] %d:%d CMD to PHY: TX PSBCH \n", ue_id, sl_ind->frame_tx, sl_ind->slot_tx);
 
   } else if (tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH) {
-    // episys SL data-plane port (F1 minimal): build the PSCCH+PSSCH grant and pull the SLSCH TB from the SL DRB.
+    // Build the PSCCH+PSSCH grant and pull the SLSCH TB from the SL DRB.
     const NR_SL_ResourcePool_r16_t *respool = mac->sl_tx_res_pool;
     const struct NR_SL_BWP_Generic_r16 *bwp_gen = sl_mac->sl_bwp_generic;
     if (respool && bwp_gen) {
@@ -592,9 +637,9 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       sl_ndi ^= 1;
       const uint8_t mcs = sl_effective_mcs(mac, sl_ind->frame_tx);
 
-      // episys SL PSFCH port (Stage 4b): HARQ-aware TX. When PSFCH is configured, allocate a HARQ
-      // process (retransmission first, else a fresh one), arm it to expect feedback, and request
-      // harq_feedback in the SCI. Falls back to the blind path (harq_pid 0, no feedback) otherwise.
+      /* HARQ-aware TX. When PSFCH is configured, allocate a HARQ process (retransmission first, else a
+         fresh one), arm it to expect feedback, and request harq_feedback in the SCI. Falls back to the
+         blind path (harq_pid 0, no feedback) otherwise. */
       int8_t harq_pid = 0;
       uint8_t rv = 0;
       bool arm_feedback = false;
@@ -605,9 +650,9 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
         const uint8_t psfch_periods[] = {0, 1, 2, 4};
         psfch_period = psfch_periods[*respool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16];
         NR_SL_UE_sched_ctrl_t *sc = &mac->sl_info.list[0]->UE_sched_ctrl;
-        // HARQ process selection: a NACKed process on retrans_sl_harq (round>0) is retransmitted FIRST
-        // (re-sending the buffered TB, see the TB-bridge below); otherwise take a fresh process from
-        // available_sl_harq for new data.
+        /* HARQ process selection: a NACKed process on retrans_sl_harq (round>0) is retransmitted first
+           (re-sending the buffered TB, see the TB-bridge below); otherwise take a fresh process from
+           available_sl_harq for new data. */
         int rp = sc->retrans_sl_harq.head;
         int ap = sc->available_sl_harq.head;
         if (rp >= 0) {
@@ -622,31 +667,54 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
         }
         if (psfch_period) {
           NR_UE_sl_harq_t *h = &sc->sl_harq_processes[harq_pid];
-          // Per-pid soft buffers let the RX soft-combine, so use the full RV cycle {0,2,3,1}.
-          rv = nr_rv_round_map[h->round % 4];
-          // The peer (receiver) sends the PSFCH in ITS TX half = my RX half. If I am SyncRef my RX half
-          // is {16-19} (use_first_half=false); if Nearby, {6-9} (true). So pass !sync_ref.
-          int fb_slot = get_feedback_slot(psfch_period, sl_ind->slot_tx, !get_softmodem_params()->sync_ref);
-          if (fb_slot >= 0) {
-            int fb_frame = sl_ind->frame_tx;
-            if (fb_slot < sl_ind->slot_tx)
-              fb_frame = (fb_frame + 1) & 1023;
-            h->feedback_slot = fb_slot;
-            h->feedback_frame = fb_frame;
-            h->is_waiting = true;
-            h->sl_harq_pid = harq_pid;
-            if (!is_retx)
-              h->ndi ^= 1; // toggle NDI only for new data; a retx keeps the same NDI
-            h->sched_pssch.slot = sl_ind->slot_tx; // PSSCH TX slot -> matching PSFCH RX PRB index (4d)
-            add_tail_nr_list(&sc->feedback_sl_harq, harq_pid);
-            arm_feedback = true;
-            LOG_D(NR_MAC, "[UE%d] %d:%d SL TX HARQ pid %d round %d rv %d -> feedback %d:%d\n",
-                  ue_id, sl_ind->frame_tx, sl_ind->slot_tx, harq_pid, h->round, rv, fb_frame, fb_slot);
+          // Feedback slot = first PSFCH-bearing SL slot at/after this TX slot + min gap (bitmap model).
+          const uint8_t psfch_time_gaps[] = {2, 3};
+          uint8_t min_time_gap = respool->sl_PSFCH_Config_r16
+                                     ? psfch_time_gaps[*respool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16]
+                                     : 0;
+          // Feedback slot lives on the PSFCH receive side, so derive it from the RX pool.
+          SL_ResourcePool_params_t *sl_rx_rsrc_pool = sl_mac->sl_RxPool[0];
+          const uint8_t mu = sl_mac->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+          size_t phy_map_sz = (sl_rx_rsrc_pool->phy_sl_bitmap.size << 3) - sl_rx_rsrc_pool->phy_sl_bitmap.bits_unused;
+          frameslot_t rx_fs = {sl_ind->frame_rx, sl_ind->slot_rx};
+          uint64_t rx_abs_slot = normalize(&rx_fs, mu);
+          /* Geometry guard: a retransmission must land on a slot with the same PSFCH-overhead as round 0,
+             so the receiver derives an identical TBS across all RVs and can soft-combine. */
+          bool cur_overhead = sl_slot_psfch_overhead(mac, sl_ind->frame_tx, sl_ind->slot_tx, true);
+          if (is_retx && h->round != 0 && cur_overhead != h->round0_psfch_overhead) {
+            // wrong geometry for this retx: keep it pending, blind-skip this slot
+            add_tail_nr_list(&sc->retrans_sl_harq, harq_pid);
+            psfch_period = 0;
+            LOG_D(NR_MAC, "[UE%d] %d:%d SL retx pid %d geometry mismatch (cur %d round0 %d) -> defer\n",
+                  ue_id, sl_ind->frame_tx, sl_ind->slot_tx, harq_pid, cur_overhead, h->round0_psfch_overhead);
           } else {
-            // feedback slot not resolvable for this TX slot -> release pid, blind TX
-            add_tail_nr_list(&sc->available_sl_harq, harq_pid);
-            LOG_D(NR_MAC, "[UE%d] %d:%d SL TX no PSFCH feedback slot (tx_slot %d) -> blind\n",
-                  ue_id, sl_ind->frame_tx, sl_ind->slot_tx, sl_ind->slot_tx);
+            int64_t fb_abs = get_feedback_abs_slot(&sl_rx_rsrc_pool->phy_sl_bitmap, phy_map_sz, rx_abs_slot, min_time_gap, psfch_period);
+            if (fb_abs >= 0) {
+              frameslot_t fb_fs;
+              de_normalize(fb_abs, mu, &fb_fs);
+              // Per-pid soft buffers (Task 6) let the RX soft-combine, so use the full RV cycle {0,2,3,1}.
+              rv = nr_rv_round_map[h->round % 4];
+              h->feedback_slot = fb_fs.slot;
+              h->feedback_frame = fb_fs.frame;
+              h->is_waiting = true;
+              h->sl_harq_pid = harq_pid;
+              if (!is_retx) {
+                h->ndi ^= 1; // toggle NDI only for new data; a retx keeps the same NDI
+                h->round0_psfch_overhead = cur_overhead; // freeze round-0 geometry for retx parity
+              }
+              h->sched_pssch.frame = sl_ind->frame_tx;
+              h->sched_pssch.slot = sl_ind->slot_tx; // PSSCH TX slot -> matching PSFCH RX PRB index (4d)
+              add_tail_nr_list(&sc->feedback_sl_harq, harq_pid);
+              arm_feedback = true;
+              LOG_D(NR_MAC, "[UE%d] %d:%d SL TX HARQ pid %d round %d rv %d -> feedback %d:%d\n",
+                    ue_id, sl_ind->frame_tx, sl_ind->slot_tx, harq_pid, h->round, rv, fb_fs.frame, fb_fs.slot);
+            } else {
+              // feedback slot not resolvable for this TX slot -> release pid, blind TX
+              add_tail_nr_list(&sc->available_sl_harq, harq_pid);
+              psfch_period = 0;
+              LOG_D(NR_MAC, "[UE%d] %d:%d SL TX no PSFCH feedback slot (tx_slot %d) -> blind\n",
+                    ue_id, sl_ind->frame_tx, sl_ind->slot_tx, sl_ind->slot_tx);
+            }
           }
         }
       }
@@ -657,14 +725,64 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
       uint8_t tx_ndi = sl_ndi;
       if (arm_feedback && mac->sl_info.list[0])
         tx_ndi = mac->sl_info.list[0]->UE_sched_ctrl.sl_harq_processes[harq_pid].ndi;
-      nr_schedule_slsch(respool, &sci1, &sci2, harq_pid, tx_ndi, rv, mac->src_id, SL_F1_BROADCAST_DEST, mcs);
+      /* PSFCH-overhead bit for the SCI: this TX slot's geometry via the single source of truth. For a retx
+         it equals round-0's (the geometry guard above defers a mismatched slot), keeping TBS parity. */
+      uint8_t tx_psfch_overhead = sl_slot_psfch_overhead(mac, sl_ind->frame_tx, sl_ind->slot_tx, arm_feedback) ? 1 : 0;
+      nr_schedule_slsch(respool, &sci1, &sci2, harq_pid, tx_ndi, rv, mac->src_id, SL_F1_BROADCAST_DEST, mcs, tx_psfch_overhead);
       if (arm_feedback)
         sci2.harq_feedback = 1;
-      fill_pssch_pscch_pdu(pdu, bwp_gen, respool, &sci1, &sci2, NR_SL_SCI_FORMAT_1A, NR_SL_SCI_FORMAT_2A);
-      // TB bridge: on a NEW transmission pull one SLSCH RLC PDU from the SL DRB (prefixed by the 2-byte
-      // SL-SCH subheader = RLC-PDU length) and BUFFER it in the HARQ process. On a HARQ RETRANSMISSION
-      // (is_retx) re-send the buffered TB instead (chase combining, rv=0) so the NACKed packet is actually
-      // resent rather than dropped.
+      /* CSI-RS trigger. Mode selected by sl_csi_mode (config_ue_sl.c):
+       *  - production (SL_CSI_TRIGGER_APERIODIC): request a CSI-RS on this (re)transmission when the
+       *    HARQ process has sustained NACKs (csi_req_pending), to remeasure a degraded link.
+       *  - debug (SL_CSI_TRIGGER_PERIODIC): request a CSI-RS on a deterministic periodic slot (ported
+       *    from episys/sl-mode1-relay), independent of NACKs, so the chain is easy to exercise on USRP.
+       * Both paths converge below: the TB-size math subtracts the CSI-RS REs, sci2.csi_req is set, and
+       * the TX action is promoted so the PHY generates it. Cleared so only this slot carries CSI-RS. */
+      NR_UE_sl_harq_t *csi_htx = (psfch_period && mac->sl_info.list[0])
+                                     ? &mac->sl_info.list[0]->UE_sched_ctrl.sl_harq_processes[harq_pid] : NULL;
+      bool csi_slot = false;
+      if (sl_mac->sl_csi_trigger_mode == SL_CSI_TRIGGER_PERIODIC) {
+        /* Debug: fire on the periodic CSI-RS occasion. Gate on CSI acquisition enabled, an armed non-retx
+           transmission, and a resolvable periodic slot. Independent of PSFCH/HARQ, so do NOT require csi_htx:
+           with PSFCH disabled (psfch_period==0) csi_htx is NULL yet a valid PSFCH-free CSI slot still resolves. */
+        bool csi_acq = !sl_mac->sl_CSI_Acquisition; // 0 = ENABLED
+        if (csi_acq && !is_retx && sl_mac->sl_TDD_config && mac->sl_tx_res_pool && mac->sl_info.list[0]) {
+          const uint8_t psfch_periods_dbg[] = {0, 1, 2, 4};
+          uint8_t real_psfch_period = (mac->sl_tx_res_pool->sl_PSFCH_Config_r16
+                                       && mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16)
+                                          ? psfch_periods_dbg[*mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16]
+                                          : 0;
+          NR_TDD_UL_DL_Pattern_t *tdd = &sl_mac->sl_TDD_config->pattern1;
+          NR_SL_UE_sched_ctrl_t *csc = &mac->sl_info.list[0]->UE_sched_ctrl;
+          int uid = mac->sl_info.list[0]->uid;
+          int period = 0, offset = 0;
+          SL_CSI_Report_t *rep = set_nr_ue_sl_csi_meas_periodicity(tdd, csc, mac, uid, real_psfch_period);
+          nr_ue_sl_csi_period_offset(rep, &period, &offset);
+          uint8_t mu_dbg = sl_mac->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs;
+          uint8_t spf = get_slots_per_frame_from_scs(mu_dbg);
+          csi_slot = rep->slot_valid && period > 0
+                     && !(((int)(spf * sl_ind->frame_tx + sl_ind->slot_tx) - offset) % period);
+          if (csi_slot)
+            LOG_D(NR_MAC, "[SL_CSI] %d.%d periodic CSI-RS trigger (period %d offset %d uid %d)\n",
+                  sl_ind->frame_tx, sl_ind->slot_tx, period, offset, uid);
+        }
+      } else {
+        csi_slot = (csi_htx && csi_htx->csi_req_pending);
+      }
+      sci2.csi_req = csi_slot ? 1 : 0;
+      fill_pssch_pscch_pdu(pdu, bwp_gen, respool, &sci1, &sci2, NR_SL_SCI_FORMAT_1A, NR_SL_SCI_FORMAT_2A,
+                           sl_mac->sl_csi_freq_density, csi_slot ? sl_mac->sl_csi_nr_of_rbs : 0);
+      if (csi_slot) {
+        fill_sl_csi_rs_pdu(&pdu->nr_sl_csi_rs_pdu, sl_mac, sl_mac->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs);
+        tx_action = SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS; // PHY generates CSI-RS + punctures the SLSCH
+        // csi_htx is NULL when PSFCH is disabled (periodic CSI still fires); only the aperiodic path uses this latch.
+        if (csi_htx)
+          csi_htx->csi_req_pending = false;
+      }
+      /* TB bridge: on a new transmission pull one SLSCH RLC PDU from the SL DRB (prefixed by the 2-byte
+         SL-SCH subheader = RLC-PDU length) and buffer it in the HARQ process. On a retransmission
+         (is_retx) re-send the buffered TB instead (chase combining) so the NACKed packet is actually
+         resent rather than dropped. */
       NR_UE_sl_harq_t *htx = (psfch_period && mac->sl_info.list[0])
                                  ? &mac->sl_info.list[0]->UE_sched_ctrl.sl_harq_processes[harq_pid] : NULL;
       tbs_size_t len = 0;
@@ -676,12 +794,10 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
         LOG_D(NR_MAC, "[UE%d] %d:%d SL HARQ RETX pid %d (buffered TB %d bytes)\n",
               ue_id, sl_ind->frame_tx, sl_ind->slot_tx, harq_pid, cap);
       } else {
-        // Proper SL-SCH MAC multiplexing (TS 38.321 6.1.6): write ONE SL-SCH fixed header (SRC/DST), then pack
-        // as many MAC sub-PDUs as fit, draining SRB0 > SRB1 > DRB, each behind a standard NR_MAC_SUBHEADER_LONG.
-        // Because we keep pulling from a bearer until its buffer empties (or the TB fills), an RLC-AM STATUS PDU
-        // and a data PDU ride the SAME TB — so ARQ never starves the RRC/user bytes. This is what lets the
-        // SL-SRB run on RLC-AM without the earlier 3-byte-STATUS-churn freeze (a single-sub-PDU TB could carry
-        // only STATUS *or* data, so STATUS displaced the 207-byte RRCSetup every slot).
+        /* SL-SCH MAC multiplexing (TS 38.321 6.1.6): write one SL-SCH fixed header (SRC/DST), then pack as
+           many MAC sub-PDUs as fit, draining SRB0 > SRB1 > DRB, each behind a standard NR_MAC_SUBHEADER_LONG.
+           Pulling from a bearer until it empties lets an RLC-AM STATUS PDU and a data PDU ride the same TB,
+           so ARQ never starves the RRC/user bytes (a single-sub-PDU TB could carry only STATUS or data). */
         uint32_t tb = pdu->tb_size > SL_NR_MAX_SLSCH_PAYLOAD_BYTES ? SL_NR_MAX_SLSCH_PAYLOAD_BYTES : pdu->tb_size;
         uint8_t *wr = pdu->slsch_payload;
         uint8_t *const end = pdu->slsch_payload + tb;
@@ -693,8 +809,8 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
           slh->DST = SL_F1_BROADCAST_DEST & 0xFF; // DST is a uint8_t:8 field = low 8 bits of the L2 dest ID
           wr += sizeof(NR_SLSCH_MAC_SUBHEADER_FIXED);
         }
-        // Bearer priority order: SRB0 (CCCH) > SRB1 (DCCH) > DRB1 (user data). SL-SRBs exist only on the
-        // mode-1 relay/remote; a plain mode-2 UE carries the DRB only.
+        /* Bearer priority order: SRB0 (CCCH) > SRB1 (DCCH) > DRB1 (user data). SL-SRBs exist only on the
+           mode-1 relay/remote; a plain mode-2 UE carries the DRB only. */
         const struct { uint8_t lcid; bool is_srb; uint8_t id; } sl_bearers[] = {
             {SL_SCH_LCID_SRB0, true, 0}, {SL_SCH_LCID_SRB1, true, 1}, {SL_SCH_LCID_DRB1, false, SL_F1_DRB_ID}};
         for (unsigned b = 0; b < sizeof(sl_bearers) / sizeof(sl_bearers[0]); b++) {
@@ -719,8 +835,31 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
             sh->L = htons((uint16_t)slen);
             wr += sizeof(NR_MAC_SUBHEADER_LONG) + slen;
             len += slen;
-            LOG_D(NR_MAC, "[UE%d] %d:%d SLDBG mux LCID %d len %d (tb_left %d)\n",
+            LOG_D(NR_MAC, "[UE%d] %d:%d SL mux LCID %d len %d (tb_left %d)\n",
                   ue_id, sl_ind->frame_tx, sl_ind->slot_tx, sl_bearers[b].lcid, slen, (int)(end - wr));
+          }
+        }
+        /* SL CSI report (TX side): pack a pending report as a MAC CE onto this new-data PSSCH,
+         * rather than the exact scheduled slot (which need not carry SLSCH data and would strand
+         * the report). Idempotent, so re-latch the freshest CQI/RI at pack time (avoids stale CQI 0). */
+        if (mac->sl_info.list[0]) {
+          NR_SL_UE_sched_ctrl_t *sc = &mac->sl_info.list[0]->UE_sched_ctrl;
+          if (sc->sched_csi_report.active
+              && (size_t)(end - wr) >= sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t)) {
+            set_csi_report_params(mac, sc); // re-latch freshest CQI/RI from mac->csirs_measurements
+            NR_MAC_SUBHEADER_FIXED *csi_sh = (NR_MAC_SUBHEADER_FIXED *)wr;
+            csi_sh->R = 0;
+            csi_sh->LCID = SL_SCH_LCID_SL_CSI_REPORT;
+            wr += sizeof(NR_MAC_SUBHEADER_FIXED);
+            nr_sl_csi_report_t *rep = (nr_sl_csi_report_t *)wr;
+            rep->RI = sc->sched_csi_report.ri;
+            rep->CQI = sc->sched_csi_report.cqi;
+            rep->R = 0;
+            wr += sizeof(nr_sl_csi_report_t);
+            len += sizeof(NR_MAC_SUBHEADER_FIXED) + sizeof(nr_sl_csi_report_t);
+            LOG_D(NR_MAC, "[SL_CSIREP_TX] %d:%d packed SL CSI report MAC CE (cqi %d ri %d)\n",
+                  sl_ind->frame_tx, sl_ind->slot_tx, rep->CQI, rep->RI);
+            sc->sched_csi_report.active = false; // packed onto this TB: clear the pending flag
           }
         }
         // Padding sub-PDU marks the end of meaningful data (RX stops here); the PHY fills the rest of the TB.
@@ -750,12 +889,12 @@ static void sl_schedule_tx_actions(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_I
     }
 
   } else if (tx_action == SL_NR_CONFIG_TYPE_TX_PSFCH) {
-    // TBD (F2 PSFCH)
+    /* TBD (F2 PSFCH) */
   }
 
-  // episys SL PSFCH port (Stage 4c/mux): attach any pending HARQ-feedback PSFCH to this slot's TX. If PSSCH
-  // data was scheduled above, the PSFCH rides the SAME slot (last symbol) with NO data preemption; if not,
-  // this becomes a standalone PSFCH TX. Must run AFTER the data branch so it muxes rather than replaces.
+  /* Attach any pending HARQ-feedback PSFCH to this slot's TX. If PSSCH data was scheduled above, the PSFCH
+     rides the same slot (last symbol) with no data preemption; otherwise this becomes a standalone PSFCH TX.
+     Must run after the data branch so it muxes rather than replaces. */
   nr_ue_sl_psfch_scheduler(mac, sl_ind->frame_tx, sl_ind->slot_tx, &tx_config);
 
   if (tx_config.number_pdus == 1) {
@@ -808,16 +947,14 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
       // Check if PSBCH slot and PSBCH should be transmitted or Received
       tti_action = sl_psbch_scheduler(sl_mac, ue_id, frame, slot, mac->frame_structure.numb_slots_frame);
 
-      // episys SL data-plane port (F1 minimal): if this SL slot isn't a PSBCH slot, arbitrate the PSSCH data
-      // plane. Half-duplex rule: transmit PSSCH when the SL DRB has data buffered, otherwise listen (RX PSSCH).
-      // (Bidirectional/half-duplex refinement + sensing are follow-ups.)
+      /* If this SL slot isn't a PSBCH slot, arbitrate the PSSCH data plane: transmit PSSCH when the SL DRB
+         has data buffered, otherwise listen (RX PSSCH). */
       if (!tti_action && mac->sl_tx_res_pool && sl_mac->sl_bwp_generic) {
         mac_rlc_status_resp_t st = nr_mac_rlc_status_ind_sl(mac->src_id, SL_F1_DRB_ID, frame);
         int tx_bytes = st.bytes_in_buffer;
-        // For a relay/remote (relay_type==1) the control plane rides SL-SRB0/SRB1 (RRCSetup, RRC replies,
-        // NAS) which are pulled ahead of the DRB in sl_schedule_tx_actions. The DRB may be idle while an SRB
-        // has data (e.g. relay forwarding RRCSetup to a not-yet-registered remote), so the TX/RX arbitration
-        // must consider the SRBs too — otherwise the slot is marked RX and the buffered SRB is never sent.
+        /* For a relay/remote (relay_type==1) the control plane rides SL-SRB0/SRB1 (RRCSetup, RRC replies,
+           NAS). The DRB may be idle while an SRB has data, so the TX/RX arbitration must consider the SRBs
+           too — otherwise the slot is marked RX and the buffered SRB is never sent. */
         int srb0b = 0, srb1b = 0;
         if (get_softmodem_params()->relay_type == 1) {
           srb0b = nr_mac_rlc_status_ind_sl_srb(mac->src_id, 0, frame).bytes_in_buffer;
@@ -825,14 +962,6 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
           if (tx_bytes == 0)
             tx_bytes = srb0b + srb1b;
         }
-        // FULL-DUPLEX (matches episci): the PC5 links are separate per-direction channels (vrtsim has distinct
-        // client_tx / server_tx channel models; rfsim uses separate sockets), so the relay and the remote may
-        // transmit in the SAME slot without collision — no half-duplex turn partition. Transmit a real
-        // PSCCH/PSSCH whenever this node has data (DRB or, for the mode-1 relay, SL-SRB control plane). The RU
-        // loop (nr-ue.c) keeps the sim channel's lock-step by writing every slot (zeros when there is no TX).
-        if (get_softmodem_params()->relay_type == 1 && (srb0b > 0 || srb1b > 0))
-          LOG_I(NR_MAC, "[UE%d] %d:%d SLDBG gate src_id=0x%x drb=%d srb0=%d srb1=%d -> tx_bytes=%d\n",
-                ue_id, frame, slot, mac->src_id, st.bytes_in_buffer, srb0b, srb1b, tx_bytes);
         /* Sensing-based resource selection (TS 38.214 8.1.4). Having data is necessary but no longer
          * sufficient: the slot must also be one of the resources selection left available, i.e. one that
          * no peer's SCI-1A reserved above the RSRP threshold. That is what stops two UEs with traffic
@@ -880,8 +1009,8 @@ void nr_ue_sidelink_scheduler(nr_sidelink_indication_t *sl_ind, NR_UE_MAC_INST_t
             List_t *selected =
                 get_candidate_resources(&frame_slot, mac, &mac->sl_sensing_data, &mac->sl_transmit_history);
             if (selected) {
-              // Release the previous grant before replacing it: selection runs every resel_counter
-              // slots, so keeping the old list would leak a few KB per reselection for the whole run.
+              /* Release the previous grant before replacing it: selection runs every resel_counter
+                 slots, so keeping the old list would leak a few KB per reselection for the whole run. */
               if (mac->sl_candidate_resources && mac->sl_candidate_resources != selected) {
                 free_list_mem(mac->sl_candidate_resources);
                 free(mac->sl_candidate_resources);

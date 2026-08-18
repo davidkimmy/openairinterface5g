@@ -368,7 +368,7 @@ static List_t get_nr_sl_comm_opportunities(NR_UE_MAC_INST_t *mac,
     if (psfch_period == 1) {
       num_psfch_symbols = 3;
     } else if (psfch_period == 2 || psfch_period == 4) {
-      sl_has_psfch = slot_has_psfch(mac, i, psfch_period, sl_mac->sl_TDD_config);
+      sl_has_psfch = slot_has_psfch(mac, i, psfch_period);
       if (sl_has_psfch)
         num_psfch_symbols = 3;
     }

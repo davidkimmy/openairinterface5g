@@ -144,7 +144,6 @@ apply_extended_delays() {
     sleep_timing["cn_init"]=5
 }
 
-echo "DEBUG: Sourcing config from: $SL_TEST_CONFIG_FILE"
 if [[ ! -f "$SL_TEST_CONFIG_FILE" ]]; then
     echo "ERROR: Config file not found: $SL_TEST_CONFIG_FILE"
     exit 1
@@ -166,6 +165,18 @@ echo "Test_profile: $test_profile"
 [[ -n "$use_gnome" ]] && USE_GNOME="$use_gnome"
 [[ "$use_sa" == "1" ]] && sa_flag="--sa"
 [[ "$use_sa" == "1" ]] && pdu_session_flag=""
+# When the preset sweep is disabled, use tdd_config_default as the scalar preset token
+# ("DL<dl>UL<ul>SL<sl>") and derive sl_slots from its SL field. The sweep path
+# (tdd_sweep_enable=1) selects a per-test preset from tdd_configs_mode1/mode2, so this
+# only matters when sweep=0.
+if [[ "$tdd_sweep_enable" != "1" ]]; then
+    tdd_config="$tdd_config_default"
+    sl_slots="${tdd_config_default##*SL}"
+fi
+# Pass the usable sidelink-slot count to every sidelink softmodem. sl_slots=0 (or
+# unset) keeps the built-in relay reservation, so the flag is only added when > 0.
+sl_slots_flag=""
+[[ -n "$sl_slots" && "$sl_slots" -gt 0 ]] 2>/dev/null && sl_slots_flag="--sl-slots $sl_slots"
 
 # Apply extended delays if enabled in config
 if [[ "$use_extended_delays" == "1" ]]; then
@@ -326,7 +337,16 @@ while getopts "d:g:" opt; do
 done
 shift $((OPTIND - 1))
 
+# Single per-invocation directory for summary CSVs and all test logs. A preset
+# sweep keeps every pass here (filenames stay unique via the name suffix).
 log_dir="$base_dir/test_${timestamp}"
+
+# Suffix on test names and log filenames to distinguish preset-sweep passes.
+# Empty unless sweeping. TDD_SWEEP_IDX is the current sweep pass index (into the
+# tdd_configs_mode1/mode2 arrays); 0 outside a sweep.
+TDD_SWEEP_SUFFIX=""
+TDD_SWEEP_IDX=0
+
 test_summary_file="$log_dir/test_summary_${timestamp}.csv"
 
 # --notest reprints an EXISTING folder, so none of the run set-up may happen: creating a new test_<stamp>
@@ -355,7 +375,14 @@ if [[ -z "$DEFAULT_PSFCH_PERIOD" ]]; then
     DEFAULT_PSFCH_PERIOD=$(grep "sl_PSFCH_Period" $CONF_PATH/sl_sync_ref.conf | grep -oP '\d+' | head -1)
 fi
 echo "Default CSI Acquisition = " $DEFAULT_CSI_ACQ
-echo "Default PSFCH Period = " $DEFAULT_PSFCH_PERIOD
+# sl_PSFCH_Period in the .conf is an ASN.1 INDEX (0..3); map[index] = {0,1,2,4}.
+# DEFAULT_PSFCH_PERIOD stays the index for downstream index-based logic.
+psfch_period_map=(0 1 2 4)
+if [[ -n "$DEFAULT_PSFCH_PERIOD" && "$DEFAULT_PSFCH_PERIOD" =~ ^[0-3]$ ]]; then
+    echo "Default PSFCH Period = ${psfch_period_map[$DEFAULT_PSFCH_PERIOD]} (index $DEFAULT_PSFCH_PERIOD)"
+else
+    echo "Default PSFCH Period = " $DEFAULT_PSFCH_PERIOD
+fi
 
 # Use TX/RX gain from config file, or set defaults if not defined
 TX_GAIN="${TX_GAIN:-0}"
@@ -923,28 +950,32 @@ rescore_folder() {
     while IFS=, read -r name itrn hosts mcs runtime rest; do
         [[ -z "${name:-}" || "$name" == "Test Name" ]] && continue
 
-        sref=$(ls "$dir"/result_syncref_"${name}"_*.log 2>/dev/null | head -1)
+        # SL Mode 1 writes result_nrUE_syncref_*, SL Mode 2 writes result_syncref_*; accept either.
+        sref=$(ls "$dir"/result_nrUE_syncref_"${name}"_*.log 2>/dev/null | head -1)
+        [[ -z "${sref:-}" ]] && sref=$(ls "$dir"/result_syncref_"${name}"_*.log 2>/dev/null | head -1)
         near=$(ls "$dir"/result_nearby_"${name}"_*.log  2>/dev/null | head -1)
         png=$(ls "$dir"/ping_result_"${name}"_*.txt     2>/dev/null | head -1)
 
-        LAST_PSSCH_TX_SYNCREF=0; LAST_PSSCH_RX_SYNCREF=0
-        LAST_PSSCH_TX_NEARBY=0;  LAST_PSSCH_RX_NEARBY=0
+        LAST_PSSCH_TX_SYNCREF=0; LAST_PSSCH_RX_SYNCREF=0; LAST_PSSCH_ERR_SYNCREF=0; LAST_PSSCH_DTX_SYNCREF=0
+        LAST_PSSCH_TX_NEARBY=0;  LAST_PSSCH_RX_NEARBY=0;  LAST_PSSCH_ERR_NEARBY=0;  LAST_PSSCH_DTX_NEARBY=0
         BASE_PSSCH_TX_SYNCREF=0; BASE_PSSCH_RX_SYNCREF=0
         BASE_PSSCH_TX_NEARBY=0;  BASE_PSSCH_RX_NEARBY=0
 
-        [[ -f "${sref:-}" ]] && read -r _ LAST_PSSCH_TX_SYNCREF LAST_PSSCH_RX_SYNCREF \
+        [[ -f "${sref:-}" ]] && read -r _ LAST_PSSCH_TX_SYNCREF LAST_PSSCH_RX_SYNCREF LAST_PSSCH_ERR_SYNCREF LAST_PSSCH_DTX_SYNCREF \
             < <(pssch_dumps "$sref" | tail -1)
         if [[ -f "${near:-}" ]]; then
-            read -r _ LAST_PSSCH_TX_NEARBY LAST_PSSCH_RX_NEARBY < <(pssch_dumps "$near" | tail -1)
+            read -r _ LAST_PSSCH_TX_NEARBY LAST_PSSCH_RX_NEARBY LAST_PSSCH_ERR_NEARBY LAST_PSSCH_DTX_NEARBY < <(pssch_dumps "$near" | tail -1)
             bf=$(pssch_dumps "$near" | head -1 | awk '{print $1}')
             if [[ -n "${bf:-}" ]]; then
-                read -r _ BASE_PSSCH_TX_NEARBY BASE_PSSCH_RX_NEARBY < <(pssch_dumps "$near" | head -1)
-                [[ -f "${sref:-}" ]] && read -r _ BASE_PSSCH_TX_SYNCREF BASE_PSSCH_RX_SYNCREF \
-                    < <(pssch_dumps "$sref" | awk -v F="$bf" '$1<=F' | tail -1)
+                read -r _ BASE_PSSCH_TX_NEARBY BASE_PSSCH_RX_NEARBY _ < <(pssch_dumps "$near" | head -1)
+                [[ -f "${sref:-}" ]] && read -r _ BASE_PSSCH_TX_SYNCREF BASE_PSSCH_RX_SYNCREF _ \
+                    < <(pssch_baseline_dump "$sref" "$bf")
             fi
         fi
         LAST_PSSCH_TX_SYNCREF=${LAST_PSSCH_TX_SYNCREF:-0}; LAST_PSSCH_RX_SYNCREF=${LAST_PSSCH_RX_SYNCREF:-0}
         LAST_PSSCH_TX_NEARBY=${LAST_PSSCH_TX_NEARBY:-0};   LAST_PSSCH_RX_NEARBY=${LAST_PSSCH_RX_NEARBY:-0}
+        LAST_PSSCH_ERR_SYNCREF=${LAST_PSSCH_ERR_SYNCREF:-0}; LAST_PSSCH_DTX_SYNCREF=${LAST_PSSCH_DTX_SYNCREF:-0}
+        LAST_PSSCH_ERR_NEARBY=${LAST_PSSCH_ERR_NEARBY:-0};   LAST_PSSCH_DTX_NEARBY=${LAST_PSSCH_DTX_NEARBY:-0}
         BASE_PSSCH_TX_SYNCREF=${BASE_PSSCH_TX_SYNCREF:-0}; BASE_PSSCH_RX_SYNCREF=${BASE_PSSCH_RX_SYNCREF:-0}
         BASE_PSSCH_TX_NEARBY=${BASE_PSSCH_TX_NEARBY:-0};   BASE_PSSCH_RX_NEARBY=${BASE_PSSCH_RX_NEARBY:-0}
 
@@ -977,65 +1008,51 @@ print_test_summary() {
         local ping_rate_str="N/A"
     fi
 
-    # Calculate PSSCH pass rates (RX/TX format).
-    # Report the counters as logged - do NOT clamp RX to its paired TX. The clamp used to be here to hide
-    # "impossible" >100% rates, but RX exceeding TX is a genuine signal that something is wrong, and hiding
-    # it cost real debugging time: PSSCH stats were being counted twice (decode completion AND the SLSCH
-    # indication), and the clamp turned 28/22 into a tidy 22/22 = 100%, so a 56% link read as perfect for
-    # weeks. Fixed in dfe48cafd5; if a rate ever exceeds 100% again, that is a counting bug to chase, not a
-    # display glitch to suppress.
-    # NOTE these rates are still not link quality: RX and TX are snapshots of each node's last periodic
-    # "PSSCH Stats" line, and a node that transmits in a slot cannot receive in it (PC5 is half-duplex), so
-    # RX ok is legitimately below the peer's TX. Use "RX not ok" for PHY quality and ping for delivery.
-    local rx_nearby_c=${LAST_PSSCH_RX_NEARBY:-0}
-    local rx_syncref_c=${LAST_PSSCH_RX_SYNCREF:-0}
-
-    # Counted from the baseline above, so pre-join transmissions are excluded from BOTH directions.
-    # Direction 1 needs it: the SyncRef transmits from frame 0 while the nearby cannot receive until it
-    # has synced, so its early TX would otherwise read as loss. Direction 2 has no pre-join window (the
-    # nearby only transmits after syncing) and is baselined for symmetry, so the total sums two rates
-    # measured over the same window.
+    # Calculate PSSCH (SLSCH) DECODE rates.
     #
-    # ONE CONSEQUENCE, so a >100% Rate2 is not misdiagnosed. The note above says a rate over 100% is a
-    # counting bug to chase - that is still true for Rate1 and for the raw counters, but Rate2 now has a
-    # second, benign cause: baseline SKEW. At the baseline frame the nearby may have counted a TX whose
-    # reception the SyncRef only counts in a later dump, giving BASE_TX_NEARBY=1 with BASE_RX_SYNCREF=0
-    # and so (RX - 0) / (TX - 1) - e.g. 11/10 = 110%. That is sampling skew of at most a packet or two at
-    # the join instant, not double counting. Distinguish them by size: skew is off by 1-2 and only ever
-    # just above 100%; the double-count bug fixed in dfe48cafd5 inflated 22 to 28.
-    local tx1=$(( ${LAST_PSSCH_TX_SYNCREF:-0} - ${BASE_PSSCH_TX_SYNCREF:-0} ))
-    local rx1=$(( rx_nearby_c            - ${BASE_PSSCH_RX_NEARBY:-0} ))
-    local tx2=$(( ${LAST_PSSCH_TX_NEARBY:-0}  - ${BASE_PSSCH_TX_NEARBY:-0} ))
-    local rx2=$(( rx_syncref_c           - ${BASE_PSSCH_RX_SYNCREF:-0} ))
+    # The denominator is the RECEIVER's OWN decode attempts, NOT the peer's total TX. This is the
+    # correction for the long-standing "flawless link reads 34%" problem: PC5 is half-duplex, so a node
+    # that transmits (data OR PSFCH feedback) in a slot never even attempts to receive the peer's PSSCH in
+    # that slot. Dividing RX-ok by the peer's TX therefore charged every such slot as a "loss" and drove
+    # the rate down to the listen-share of the pool (~1/3), even with zero decode errors. Verified per-slot
+    # against the [SL_PKT] frame.slot markers: the TX-minus-RX gap is entirely half-duplex / SCI-1A-not-locked
+    # slots, never a dropped-after-detection packet.
+    #
+    # Correct rate = decoded OK / (decoded OK + decode errors + DTX). Each term is from the receiver's own
+    # "PSSCH Stats: RX ok / RX not ok (a/b/c/d) / DTX" line, so it counts only slots the receiver actually
+    # tried to decode. When there are no errors and no DTX (RX not ok = 0, DTX = 0), the rate is 100% - the
+    # link decoded everything it heard. A rate below 100% now means REAL decode failures worth chasing.
+    #
+    # Rate1 is the syncref->nearby link, so it uses the NEARBY receiver's counters; Rate2 (nearby->syncref)
+    # uses the SYNCREF receiver's counters. TX/baseline no longer enter the rate (kept only for reference).
+    local ok1=${LAST_PSSCH_RX_NEARBY:-0}
+    local err1=$(( ${LAST_PSSCH_ERR_NEARBY:-0} + ${LAST_PSSCH_DTX_NEARBY:-0} ))
+    local att1=$(( ok1 + err1 ))
+    local ok2=${LAST_PSSCH_RX_SYNCREF:-0}
+    local err2=$(( ${LAST_PSSCH_ERR_SYNCREF:-0} + ${LAST_PSSCH_DTX_SYNCREF:-0} ))
+    local att2=$(( ok2 + err2 ))
 
-    # Rate1: syncref TX -> nearby RX
-    if [ "$tx1" -gt 0 ]; then
-        local pssch_rate1=$((rx1 * 100 / tx1))
-        local pssch_rate1_str="${rx1}/${tx1} (${pssch_rate1}%)"
+    # Rate1: nearby decode-success rate (syncref -> nearby)
+    if [ "$att1" -gt 0 ]; then
+        local pssch_rate1=$(( ok1 * 100 / att1 ))
+        local pssch_rate1_str="${ok1}/${att1} (${pssch_rate1}%)"
     else
         local pssch_rate1_str="N/A"
     fi
 
-    # Rate2: nearby TX -> syncref RX
-    if [ "$tx2" -gt 0 ]; then
-        local pssch_rate2=$((rx2 * 100 / tx2))
-        local pssch_rate2_str="${rx2}/${tx2} (${pssch_rate2}%)"
+    # Rate2: syncref decode-success rate (nearby -> syncref)
+    if [ "$att2" -gt 0 ]; then
+        local pssch_rate2=$(( ok2 * 100 / att2 ))
+        local pssch_rate2_str="${ok2}/${att2} (${pssch_rate2}%)"
     else
         local pssch_rate2_str="N/A"
     fi
 
-    local total_tx=0
-    local total_rx=0
-    if [ "$tx1" -gt 0 ]; then
-        total_tx=$(( total_tx + tx1 ))
-        total_rx=$(( total_rx + rx1 ))
-    fi
-    if [ "$tx2" -gt 0 ]; then
-        total_tx=$(( total_tx + tx2 ))
-        total_rx=$(( total_rx + rx2 ))
-    fi
-    if [ "$total_tx" -gt 0 ]; then
-        local pssch_total=$((total_rx * 100 / total_tx))
+    # Total: both receivers' decode attempts aggregated.
+    local total_att=$(( att1 + att2 ))
+    local total_ok=$(( ok1 + ok2 ))
+    if [ "$total_att" -gt 0 ]; then
+        local pssch_total=$(( total_ok * 100 / total_att ))
         local pssch_total_str="${pssch_total}%"
     else
         local pssch_total_str="N/A"
@@ -1073,9 +1090,21 @@ get_ping_stats_tuple() {
 pssch_dumps() {
     local f="$1"
     [ -f "$f" ] || return 0
-    grep -o '[0-9]*:[0-9]* PSSCH Stats: TX [0-9]*, RX ok [0-9]*' "$f" 2>/dev/null \
-        | sed 's/:[0-9]* PSSCH Stats: TX / /; s/, RX ok / /' \
-        | awk '{ if (NR > 1 && $1 < prev) wrap += 1024; prev = $1; print $1 + wrap, $2, $3 }'
+    # Emit "<frame> <tx> <rx_ok> <rx_err> <dtx>" per dump. rx_err sums the four per-RV
+    # "RX not ok (a/b/c/d)" counters. rx_err/dtx are the receiver's own decode failures,
+    # used to compute a decode-success rate over what it actually attempted to receive.
+    grep -oP '[0-9]+:[0-9]+ PSSCH Stats: TX [0-9]+, RX ok [0-9]+, RX not ok \([0-9/]+\), DTX [0-9]+' "$f" 2>/dev/null \
+        | sed -E 's/([0-9]+):[0-9]+ PSSCH Stats: TX ([0-9]+), RX ok ([0-9]+), RX not ok \(([0-9\/]+)\), DTX ([0-9]+)/\1 \2 \3 \4 \5/' \
+        | awk '{n=split($4,e,"/"); s=0; for(i=1;i<=n;i++) s+=e[i]; print $1, $2, $3, s, $5}'
+}
+
+# The syncref dump to baseline against: the last one at or before the nearby's join frame. Frame numbers
+# wrap at 1024, so a plain "$1<=frame" match also catches later wraps; unwrap (add 1024 on each decrease)
+# and compare absolute frames so the baseline is taken from the first wrap, not a late one.
+pssch_baseline_dump() {
+    local f="$1" join_frame="$2"
+    pssch_dumps "$f" | awk -v F="$join_frame" \
+        '{fr=$1; if (NR>1 && fr<prev) w+=1024; prev=fr; if (fr+w<=F) print}' | tail -1
 }
 
 get_pssch_stats() {
@@ -1088,20 +1117,26 @@ get_pssch_stats() {
     fi
 
     # Get the last PSSCH Stats line from the log
-    # Format: [UE0] 512:19 PSSCH Stats: TX 26, RX ok 17, RX not ok (0/0/0/0)
+    # Format: [UE0] 512:19 PSSCH Stats: TX 26, RX ok 17, RX not ok (0/0/0/0), DTX 0
     local pssch_line=$(grep "PSSCH Stats:" "$log_file" | tail -1)
 
     if [ -z "$pssch_line" ]; then
-        echo "0 0"
+        echo "0 0 0 0"
         return
     fi
 
-    # Extract TX and RX ok values
-    local tx=$(echo "$pssch_line" | grep -oP 'TX \K\d+')
+    # Extract TX and RX ok values. \bTX so the "DTX" field does not also match "TX".
+    local tx=$(echo "$pssch_line" | grep -oP '\bTX \K\d+')
     local rx_ok=$(echo "$pssch_line" | grep -oP 'RX ok \K\d+')
+    # RX not ok is four per-RV counters (a/b/c/d); sum them into a single error count.
+    local rx_err=$(echo "$pssch_line" | grep -oP 'RX not ok \(\K[0-9/]+' \
+        | awk -F/ '{s=0; for(i=1;i<=NF;i++) s+=$i; print s}')
+    local dtx=$(echo "$pssch_line" | grep -oP 'DTX \K\d+')
 
-    # Return as tuple: tx rx_ok
-    echo "${tx:-0} ${rx_ok:-0}"
+    # Return as tuple: tx rx_ok rx_err dtx. RX ok/err/dtx are the receiver's OWN decode
+    # attempts - the correct denominator for a decode-success rate (peer TX is not, because
+    # PC5 is half-duplex: a node transmitting in a slot never attempts to receive it).
+    echo "${tx:-0} ${rx_ok:-0} ${rx_err:-0} ${dtx:-0}"
 }
 
 
@@ -1191,6 +1226,330 @@ get_gnb_config_path() {
     echo "$base_config"
 }
 
+# Patch the DL/UL slot split and both pool sl_TimeResourceBitmaps of one sidelink
+# .conf. DL+UL stays 10 so periodicity is unchanged. The Rx pool precedes the Tx
+# pool, so bitmaps are patched by section (a value-based replace would clobber both).
+# Args: dl ul rx_bitmap tx_bitmap conf_file [ssh_host]
+apply_tdd_preset_file() {
+    local dl=$1 ul=$2 rx_bmap=$3 tx_bmap=$4 conf_file=$5 ssh_host=${6:-local}
+
+    # Set the slot counts, the Rx-pool bitmap in [sl_RxResPools, sl_TxResPools),
+    # and the Tx-pool bitmap from sl_TxResPools to end of file.
+    local sed_prog=""
+    sed_prog+="s/\(sl_nrofDownlinkSlots[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${dl}/g;"
+    sed_prog+="s/\(sl_nrofUplinkSlots[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${ul}/g;"
+    sed_prog+="/sl_RxResPools/,/sl_TxResPools/{s/\(sl_TimeResourceBitmap[[:space:]]*=[[:space:]]*\)\"[0-9A-Fa-f]*\"/\1\"${rx_bmap}\"/};"
+    sed_prog+="/sl_TxResPools/,\${s/\(sl_TimeResourceBitmap[[:space:]]*=[[:space:]]*\)\"[0-9A-Fa-f]*\"/\1\"${tx_bmap}\"/}"
+
+    if [[ "$ssh_host" == "local" ]]; then
+        sed -i "$sed_prog" "$conf_file"
+    else
+        safe_ssh "$ssh_host" "sed -i '$sed_prog' '$conf_file'" 2>/dev/null
+    fi
+}
+
+# Parse a "DL<dl>UL<ul>SL<sl>" preset token (e.g. DL4UL6SL4). Echoes "<dl> <ul> <sl>";
+# returns 1 if the token is malformed.
+parse_tdd_token() {
+    [[ "$1" =~ ^DL([0-9]+)UL([0-9]+)SL([0-9]+)$ ]] || return 1
+    echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+}
+
+# Rx/Tx sl_TimeResourceBitmaps for a UL-slot count: 2*ul content bits (two TDD periods,
+# MSB = first UL slot), byte-padded. The Rx pool sets period 1, the Tx pool sets period 2.
+# Echoes "<rx_hex> <tx_hex>". Reproduces the legacy presets exactly: 8UL=FF00/00FF,
+# 6UL=FC00/03F0, 4UL=F0/0F (and derives new splits, e.g. 5UL=F800/07C0).
+sl_bitmaps_for_ul() {
+    local ul=$1 nbytes=$(( (2*ul + 7) / 8 )) totbits rx=0 tx=0 i
+    totbits=$((nbytes * 8))
+    for ((i = 0; i < ul; i++));      do rx=$(( rx | (1 << (totbits - 1 - i)) )); done
+    for ((i = ul; i < 2 * ul; i++)); do tx=$(( tx | (1 << (totbits - 1 - i)) )); done
+    printf "%0*X %0*X\n" $((nbytes * 2)) "$rx" $((nbytes * 2)) "$tx"
+}
+
+# Map a test (function) name to its sidelink mode: 1 = SL Mode 1 relay, 2 = SL Mode 2
+# peer-to-peer, 0 = plain Uu (no sidelink). Keyed on the naming convention used
+# throughout the harness (slmode1* / slmode2*|pc5* / uu*).
+tdd_mode_of_test() {
+    case "${1%%:*}" in
+        *slmode1*)        echo 1 ;;
+        *slmode2*|*pc5*)  echo 2 ;;
+        *)                echo 0 ;;
+    esac
+}
+
+# In a preset sweep, pick the mode-appropriate preset for $1 (a test name) at the
+# current sweep index $TDD_SWEEP_IDX and set the tdd_config/sl_slots/sl_slots_flag/
+# TDD_SWEEP_SUFFIX globals from it. SL Mode 2 tests draw from tdd_configs_mode2;
+# Mode 1 (relay) and plain Uu tests draw from tdd_configs_mode1 (both carry a Uu
+# uplink that wants headroom). Outside a sweep the globals keep their default values
+# (suffix stays empty) and this is a no-op. Returns 1 if the relevant mode array has
+# no entry at this index, so the caller can skip the test.
+select_sweep_preset_for_test() {
+    [[ "$tdd_sweep_enable" != "1" ]] && return 0
+    local mode preset _ul
+    mode=$(tdd_mode_of_test "$1")
+    if [[ "$mode" == "2" ]]; then
+        preset="${tdd_configs_mode2[$TDD_SWEEP_IDX]}"
+    else
+        preset="${tdd_configs_mode1[$TDD_SWEEP_IDX]}"
+    fi
+    [[ -z "$preset" ]] && return 1
+    tdd_config="$preset"
+    sl_slots="${preset##*SL}"
+    sl_slots_flag=""
+    [[ -n "$sl_slots" && "$sl_slots" -gt 0 ]] 2>/dev/null && sl_slots_flag="--sl-slots $sl_slots"
+    _ul=$(ul_slots_for_tdd_config)
+    TDD_SWEEP_SUFFIX="_ul${_ul}sl${sl_slots}"
+    return 0
+}
+
+# Apply the TDD preset selected by the $tdd_config token (from run_sl_test_config.sh) to
+# every sidelink config file, locally and on the remote/relay hosts. Empty
+# $tdd_config means "leave the .conf files as they are".
+# Args: [sl_mode]
+apply_tdd_preset() {
+    local sl_mode=${1:-}
+    [[ -z "$tdd_config" ]] && return 0
+
+    local dl ul sl p1 p2 parsed
+    if ! parsed=$(parse_tdd_token "$tdd_config"); then
+        echo "ERROR: malformed tdd_config '$tdd_config' (expected DL<dl>UL<ul>SL<sl>, e.g. DL4UL6SL4)" >&2
+        return 1
+    fi
+    read -r dl ul sl <<<"$parsed"
+    # Rx pool = period 1 (p1), Tx pool = period 2 (p2), derived from the UL-slot count.
+    read -r p1 p2 <<<"$(sl_bitmaps_for_ul "$ul")"
+    # $sl_slots is explicitly configured (plumbed via --sl-slots), not derived from UL.
+    if [[ -n "$sl_slots" && "$sl_slots" -gt 0 ]] 2>/dev/null; then
+        echo "Applying TDD preset $tdd_config: DL${dl}/UL${ul}/SL${sl} (usable SL slots = $sl_slots, Uu-reserved = $((ul - sl_slots)))"
+    else
+        echo "Applying TDD preset $tdd_config: DL${dl}/UL${ul}/SL${sl}"
+    fi
+
+    # syncref/relay and gNB: Rx pool = period 2 (p2), Tx pool = period 1 (p1).
+    apply_tdd_preset_file "$dl" "$ul" "$p2" "$p1" "$CONF_PATH/sl_sync_ref.conf"
+    # nearby/remote UE: Rx pool = period 1 (p1), Tx pool = period 2 (p2).
+    apply_tdd_preset_file "$dl" "$ul" "$p1" "$p2" "$CONF_PATH/sl_ue1.conf"
+
+    # Local gNB relay config — only relevant for SL mode 1 (relay scenario).
+    if [[ "$sl_mode" == "1" ]] && [[ -f "$GNB_CONF_RELAY" ]]; then
+        apply_tdd_preset_file "$dl" "$ul" "$p2" "$p1" "$GNB_CONF_RELAY"
+    fi
+
+    # Remote UE host (runs sl_ue1.conf).
+    if [[ -n "$REMOTE_UE_HOST" ]] && [[ "$REMOTE_UE_HOST" != "local" ]]; then
+        local remote_user=$(find_user_name "$REMOTE_UE_HOST")
+        local remote_conf="/home/$remote_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf"
+        apply_tdd_preset_file "$dl" "$ul" "$p1" "$p2" "$remote_conf" "$REMOTE_UE_HOST"
+    fi
+
+    # Relay UE host (runs sl_sync_ref.conf) — only for SL mode 1.
+    if [[ "$sl_mode" == "1" ]] && [[ -n "$RELAY_UE_HOST" ]] && [[ "$RELAY_UE_HOST" != "local" ]]; then
+        local relay_user=$(find_user_name "$RELAY_UE_HOST")
+        local relay_conf="/home/$relay_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf"
+        apply_tdd_preset_file "$dl" "$ul" "$p2" "$p1" "$relay_conf" "$RELAY_UE_HOST"
+    fi
+
+    # PSFCH consistency: this patches TDD/bitmaps only, never sl_PSFCH_Period. A
+    # gNB-vs-UE PSFCH-index mismatch yields zero PSSCH TX and total decode failure,
+    # so take sl_sync_ref.conf as the source of truth and propagate its index to all nodes.
+    local psfch_idx=$(read_conf_int "sl_PSFCH_Period" "$CONF_PATH/sl_sync_ref.conf")
+    if [[ -n "$psfch_idx" ]]; then
+        sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_idx}/g" "$CONF_PATH/sl_ue1.conf"
+        if [[ "$sl_mode" == "1" ]] && [[ -f "$GNB_CONF_RELAY" ]]; then
+            sed -i "s/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_idx}/g" "$GNB_CONF_RELAY"
+        fi
+        if [[ -n "$REMOTE_UE_HOST" ]] && [[ "$REMOTE_UE_HOST" != "local" ]]; then
+            local ru=$(find_user_name "$REMOTE_UE_HOST")
+            safe_ssh "$REMOTE_UE_HOST" "sed -i 's/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_idx}/g' /home/$ru/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf" 2>/dev/null
+        fi
+        if [[ "$sl_mode" == "1" ]] && [[ -n "$RELAY_UE_HOST" ]] && [[ "$RELAY_UE_HOST" != "local" ]]; then
+            local lu=$(find_user_name "$RELAY_UE_HOST")
+            safe_ssh "$RELAY_UE_HOST" "sed -i 's/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_idx}/g' /home/$lu/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf" 2>/dev/null
+        fi
+    fi
+
+    echo "  ✓ TDD preset applied"
+
+    # Confirm the sidelink .conf files agree with each other and the slots-per-period
+    # invariant, else a node builds a different SL grid and crashes mid-run.
+    verify_sl_tdd_consistency "$sl_mode"
+}
+
+# Read a "name = value" integer parameter from a .conf file. Echoes the value, or
+# nothing if absent. Ignores commented lines and takes the first live match.
+read_conf_int() {
+    local name=$1 conf_file=$2
+    grep -E "^[[:space:]]*${name}[[:space:]]*=" "$conf_file" 2>/dev/null \
+        | grep -oE "=[[:space:]]*[0-9]+" | grep -oE "[0-9]+" | head -1
+}
+
+# Slots per 10 ms frame for a numerology (SCS index): 10 * 2^mu.
+slots_per_frame_for_mu() {
+    echo $(( 10 * (1 << $1) ))
+}
+
+# Periods per frame for a sl_dl_UL_TransmissionPeriodicity INDEX, mirroring
+# get_nb_periods_per_frame() in nr_common.c. Returns 1 for an out-of-range index.
+periods_per_frame_for_periodicity() {
+    case "$1" in
+        0) echo 20 ;; 1) echo 16 ;; 2) echo 10 ;; 3) echo 8 ;;
+        4) echo 5  ;; 5) echo 4  ;; 6) echo 2  ;; 7) echo 1 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Verify periodicity/DL/UL/SCS are consistent across the gNB relay, sync_ref and
+# ue1 configs, and DL+UL equals the derived slots-per-period. Fails fast (exit 1)
+# so a bad combination is caught here, not mid-run in the softmodem. The gNB relay
+# conf is only checked for SL mode 1. Skipped when $tdd_config is empty.
+# Args: [sl_mode]
+verify_sl_tdd_consistency() {
+    local sl_mode=${1:-}
+    [[ -z "$tdd_config" ]] && return 0
+
+    # Files to check: always the two SL UE confs; add the gNB relay conf on mode 1.
+    local files=("$CONF_PATH/sl_sync_ref.conf" "$CONF_PATH/sl_ue1.conf")
+    if [[ "$sl_mode" == "1" ]] && [[ -f "$GNB_CONF_RELAY" ]]; then
+        files+=("$GNB_CONF_RELAY")
+    fi
+
+    local ref_period="" ref_scs="" fail=0 f
+    for f in "${files[@]}"; do
+        if [[ ! -f "$f" ]]; then
+            echo "ERROR: sidelink config file not found: $f" >&2
+            fail=1; continue
+        fi
+        local period dl ul scs
+        period=$(read_conf_int "sl_dl_UL_TransmissionPeriodicity" "$f")
+        dl=$(read_conf_int "sl_nrofDownlinkSlots" "$f")
+        ul=$(read_conf_int "sl_nrofUplinkSlots" "$f")
+        scs=$(read_conf_int "sl_subcarrierSpacing" "$f")
+
+        if [[ -z "$period" || -z "$dl" || -z "$ul" || -z "$scs" ]]; then
+            echo "ERROR: $(basename "$f") is missing one of sl_dl_UL_TransmissionPeriodicity/" \
+                 "sl_nrofDownlinkSlots/sl_nrofUplinkSlots/sl_subcarrierSpacing" >&2
+            fail=1; continue
+        fi
+
+        # Derive slots-per-period as the softmodem does; require DL+UL to fill it.
+        local ppf spf spp
+        if ! ppf=$(periods_per_frame_for_periodicity "$period"); then
+            echo "ERROR: $(basename "$f"): sl_dl_UL_TransmissionPeriodicity index $period is out of range (0..7)" >&2
+            fail=1; continue
+        fi
+        spf=$(slots_per_frame_for_mu "$scs")
+        spp=$(( spf / ppf ))
+        if (( dl + ul != spp )); then
+            echo "ERROR: $(basename "$f"): sl_nrofDownlinkSlots($dl) + sl_nrofUplinkSlots($ul) = $((dl+ul))," \
+                 "but the TDD period holds $spp slots (slots/frame $spf / periods/frame $ppf," \
+                 "periodicity index $period, SCS index $scs). DL+UL must equal $spp." >&2
+            fail=1
+        fi
+
+        # All files must share one periodicity and numerology, else they build
+        # incompatible grids even if each one is internally valid.
+        if [[ -z "$ref_period" ]]; then
+            ref_period=$period; ref_scs=$scs
+        else
+            if [[ "$period" != "$ref_period" ]]; then
+                echo "ERROR: $(basename "$f") sl_dl_UL_TransmissionPeriodicity=$period disagrees with $ref_period in the other configs" >&2
+                fail=1
+            fi
+            if [[ "$scs" != "$ref_scs" ]]; then
+                echo "ERROR: $(basename "$f") sl_subcarrierSpacing=$scs disagrees with $ref_scs in the other configs" >&2
+                fail=1
+            fi
+        fi
+    done
+
+    if (( fail )); then
+        echo "ERROR: sidelink TDD configuration is inconsistent across configs; aborting before launch." >&2
+        exit 1
+    fi
+    echo "  ✓ Sidelink TDD consistent across ${#files[@]} configs (periodicity index $ref_period, SCS index $ref_scs)"
+}
+
+# UL slots per TDD period for the selected $tdd_config token; returns 1 if malformed/empty.
+ul_slots_for_tdd_config() {
+    local parsed
+    parsed=$(parse_tdd_token "$tdd_config") || return 1
+    echo "${parsed#* }" | cut -d' ' -f1   # the UL field (2nd of "dl ul sl")
+}
+
+# Distinct sl_PSFCH_Period indices this run will use: csi_acquisition_psfch tests
+# sweep 0..3, the bler profile uses $psfch_period, others use $DEFAULT_PSFCH_PERIOD.
+psfch_periods_in_use() {
+    local -A seen=()
+    local t base
+    for t in "${enabled_tests[@]}"; do
+        base="${t%%:*}"
+        if [[ "$base" == *"csi_acquisition_psfch"* ]]; then
+            seen[0]=1; seen[1]=1; seen[2]=1; seen[3]=1
+        elif [[ "$test_profile" == "bler" ]]; then
+            [[ -n "$psfch_period" ]] && seen[$psfch_period]=1
+        else
+            [[ -n "$DEFAULT_PSFCH_PERIOD" ]] && seen[$DEFAULT_PSFCH_PERIOD]=1
+        fi
+    done
+    echo "${!seen[@]}"
+}
+
+# Validate the sidelink slot configuration BEFORE any test is launched and before
+# any CSI/PSFCH value is written to the .conf files. Fails fast (exit 1) so a bad
+# combination is caught here instead of crashing later in the softmodem's
+# build_physical_sl_pool AssertFatal. Skipped when $tdd_config is empty (.conf kept
+# as-is) or $sl_slots is unset/0 (built-in relay reservation, nothing to check).
+validate_sl_config() {
+    [[ -z "$tdd_config" ]] && return 0
+    [[ -z "$sl_slots" || "$sl_slots" -eq 0 ]] 2>/dev/null && return 0
+
+    local ul
+    if ! ul=$(ul_slots_for_tdd_config); then
+        echo "ERROR: malformed tdd_config '$tdd_config' (expected DL<dl>UL<ul>SL<sl>, e.g. DL4UL6SL4)" >&2
+        exit 1
+    fi
+
+    # Rule 1: usable sidelink slots cannot exceed the UL slots of the TDD period.
+    if [[ "$sl_slots" -gt "$ul" ]]; then
+        echo "ERROR: sl_slots=$sl_slots exceeds the $ul UL slots of tdd_config=$tdd_config" >&2
+        exit 1
+    fi
+
+    # Rule 2: sl_PSFCH_Period is an INDEX into {sl0,sl1,sl2,sl4} (0..3). A period larger
+    # than sl_slots is spec-legal (TS 38.213 16.3 counts over the whole pool cycle): it
+    # just yields sparser occasions. Only reject an out-of-range index; note the sparse case.
+    local psfch_period_map=(0 1 2 4)
+    local idx period
+    for idx in $(psfch_periods_in_use); do
+        [[ "$idx" -le 0 ]] 2>/dev/null && continue
+        if (( idx < 0 || idx > 3 )); then
+            echo "ERROR: sl_PSFCH_Period index $idx is out of range (valid: 0..3 for {sl0,sl1,sl2,sl4})" >&2
+            exit 1
+        fi
+        period=${psfch_period_map[$idx]}
+        if (( sl_slots % period != 0 && sl_slots <= period )); then
+            echo "  note: sl_slots=$sl_slots < sl_PSFCH_Period=$period (index $idx): PSFCH occasions are" \
+                 "sparse (one per $period pool SL slots, spanning TDD periods) -- spec-legal per TS 38.213 16.3"
+        fi
+    done
+
+    # Rule 3: on SL Mode 1, sl_slots == ul hands every UL slot to the sidelink pool and
+    # can starve the Relay UE's Uu PUSCH (Remote UE registration over Uu may not complete).
+    # Warn but allow, so the full-slot-count behaviour can still be exercised. slmode2 has no Uu.
+    local t
+    for t in "${enabled_tests[@]}"; do
+        if [[ "${t%%:*}" == *"slmode1"* ]] && [[ "$sl_slots" -eq "$ul" ]]; then
+            echo "WARNING: sl_slots=$sl_slots leaves no UL slot for the relay's Uu uplink" \
+                 "(tdd_config=$tdd_config has $ul UL slots; SL Mode 1 relay test '${t}' enabled)." \
+                 "Uu PUSCH may starve; proceeding anyway." >&2
+        fi
+    done
+
+    echo "  ✓ Sidelink config validated: sl_slots=$sl_slots <= ${ul} UL (tdd_config=$tdd_config)"
+}
+
 sync_default_config_params() {
     # Sync sl_PSFCH_Period and sl_CSI_Acquisition across all config files
     # Args: csi_acq psfch_period [sl_mode]
@@ -1199,6 +1558,10 @@ sync_default_config_params() {
     local sl_mode=${3:-}   # optional; relay sync only applies to SL mode 1
 
     echo "Syncing default config params: CSI=$csi_acq, PSFCH=$psfch_period"
+
+    # Apply the TDD split and pool bitmaps first, so CSI/PSFCH edits below run on
+    # the correct slot layout.
+    apply_tdd_preset "$sl_mode"
 
     # Local sidelink configs
     sed -i "s/\(sl_CSI_Acquisition[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${csi_acq}/g" "$CONF_PATH/sl_sync_ref.conf"
@@ -1229,7 +1592,43 @@ sync_default_config_params() {
         safe_ssh "$RELAY_UE_HOST" "sed -i 's/\(sl_PSFCH_Period[[:space:]]*=[[:space:]]*\)[0-9]\+/\1${psfch_period}/g' $relay_conf" 2>/dev/null
     fi
 
+    # Apply the global SL CSI-RS trigger mode across the same set of config files.
+    apply_sl_csi_mode "$sl_mode"
+
     echo "  ✓ Config params synced"
+}
+
+apply_sl_csi_mode() {
+    # Write sl_csi_mode into every SL/gNB config file. Args: [sl_mode] (relay/gNB only for SL mode 1).
+    local sl_mode=${1:-}
+    local mode=production
+    [[ "${SL_CSI_DEBUG:-1}" == "1" ]] && mode=debug
+    local pat='s/\(sl_csi_mode[[:space:]]*=[[:space:]]*\)"[^"]*"/\1"'"${mode}"'"/g'
+
+    echo "Applying SL CSI-RS trigger mode: $mode"
+
+    # Local sidelink configs
+    sed -i "$pat" "$CONF_PATH/sl_sync_ref.conf"
+    sed -i "$pat" "$CONF_PATH/sl_ue1.conf"
+
+    # Local gNB relay config — only relevant for SL mode 1 (relay scenario)
+    if [[ "$sl_mode" == "1" ]] && [[ -f "$GNB_CONF_RELAY" ]]; then
+        sed -i "$pat" "$GNB_CONF_RELAY"
+    fi
+
+    # Remote config if REMOTE_UE_HOST is set
+    if [[ -n "$REMOTE_UE_HOST" ]] && [[ "$REMOTE_UE_HOST" != "local" ]]; then
+        local remote_user=$(find_user_name "$REMOTE_UE_HOST")
+        local remote_conf="/home/$remote_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf"
+        safe_ssh "$REMOTE_UE_HOST" "sed -i '$pat' $remote_conf" 2>/dev/null
+    fi
+
+    # Relay config — only relevant for SL mode 1 (relay scenario)
+    if [[ "$sl_mode" == "1" ]] && [[ -n "$RELAY_UE_HOST" ]] && [[ "$RELAY_UE_HOST" != "local" ]]; then
+        local relay_user=$(find_user_name "$RELAY_UE_HOST")
+        local relay_conf="/home/$relay_user/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_sync_ref.conf"
+        safe_ssh "$RELAY_UE_HOST" "sed -i '$pat' $relay_conf" 2>/dev/null
+    fi
 }
 
 sync_config_files() {
@@ -1296,6 +1695,83 @@ final_cmd() {
     else
         printf '%s' "$c"
     fi
+}
+
+# Emit vrtsim chanmod flags for a PC5 node. With no noise (empty) and no ploss (0) chanmod stays OFF.
+#
+# AWGN is driven by the GLOBAL --channelmod.noise_power_dBFS, NOT the per-model
+# --channelmod.modellist_vrtsim.[N].noise_power_dB. The per-model field is parsed and stored on the
+# channel_desc but is never read in vrtsim's sample path (vrtsim_write_with_chanmod -> channel_pipeline
+# -> noise_device use get_noise_power_dBFS() only), so setting it added ZERO noise and every "noisy" run
+# still decoded 100%. Path loss is different: ploss_dB maps to chan_desc->path_loss_dB and IS applied
+# (vrtsim.c pathloss_linear), so it stays per-model.
+#
+# dBFS scale (vrtsim.c: noise_power = 32767 / 10^(-dBFS/20)): value nearer 0 = louder noise,
+# more negative = quieter. Empty vrtsim_sl_noise_power_dBFS = no AWGN.
+vrtsim_sl_chanmod_flags() {
+    # Debug (periodic CSI-RS, the default) runs on a clean PC5 link: no noise/ploss injection.
+    # Only production (aperiodic, NACK-driven) adds impairment.
+    if [[ "${SL_CSI_DEBUG:-1}" == "1" ]]; then
+        printf -- '--vrtsim.chanmod 0'
+        return 0
+    fi
+    local noise=${vrtsim_sl_noise_power_dBFS:-}
+    local ploss=${vrtsim_sl_ploss_dB:-0}
+    local warmup=${vrtsim_sl_chanmod_warmup_sec:-0}
+    if [[ -z "$noise" && "$ploss" == "0" ]]; then
+        printf -- '--vrtsim.chanmod 0'
+    else
+        # chanmod_warmup_sec keeps the PC5 link clean until registration completes, then engages
+        # the impairment on established data (so noise/ploss drives NACK/CSI-RS, not the startup race).
+        local warmup_flag=''
+        [[ "$warmup" != "0" ]] && warmup_flag=$(printf -- ' --vrtsim.chanmod_warmup_sec %s' "$warmup")
+        local noise_flag=''
+        [[ -n "$noise" ]] && noise_flag=$(printf -- ' --channelmod.noise_power_dBFS %s' "$noise")
+        # ploss stays per-model ([0]=server_tx, [1]=client_tx); noise is global (one static for the process).
+        printf -- '--vrtsim.chanmod 1 --channelmod.modellist_vrtsim.[0].ploss_dB %s --channelmod.modellist_vrtsim.[1].ploss_dB %s%s%s' "$ploss" "$ploss" "$noise_flag" "$warmup_flag"
+    fi
+}
+
+# Emit rfsimulator chanmod flags for a PC5 node. With no noise (empty) and no ploss (empty) chanmod stays OFF.
+#
+# rfsimulator reads the PER-MODEL channelDesc->noise_power_dB / path_loss_dB directly
+# (apply_channelmod.c rxAddInput: pathLossLinear from ploss_dB, noise_per_sample from noise_power_dB),
+# so the per-model modellist_rfsimu_1.[N] flags ARE applied. The SL confs @include
+# channelmod_rfsimu_*.conf which now define THREE models in modellist_rfsimu_1:
+#   [0] = rfsimu_channel_ue0  -> nearby UE PC5 RX  (server, ru_id 0)   == PC5
+#   [1] = rfsimu_channel_enB0 -> relay UE Uu RX    (client, ru_id 0)   == Uu  (MUST STAY CLEAN)
+#   [2] = rfsimu_channel_enB1 -> relay UE PC5 RX   (client, ru_id 1)   == PC5
+# The relay's PC5 card (ru_id 1) looks up "rfsimu_channel_enB1"; before index [2] existed it fell back
+# to the Uu model enB0 (simulator.cpp addModule), so a "PC5" noise/ploss override on [1] also crushed the
+# relay's Uu CSI-RS SINR (-> CQI 0 -> gNB "invalid cqi_idx 0"). To keep PC5 impairment OFF the Uu link we
+# override only the PC5 RX models: index [0] (nearby PC5) and [2] (relay PC5). Index [1] (relay Uu) is
+# left untouched. (find_channel_desc_fromname returns a shared pointer, so per-index isolation is the fix.)
+#
+# noise_power_dB scale (apply_channelmod.c: noise_per_sample = 10^(noise_power_dB/10) * 256): value
+# nearer 0 = LOUDER noise, more negative = quieter. Empty rfsim_sl_noise_power_dB = no AWGN.
+#
+# NOTE: rfsimulator has NO warmup gate (that is a vrtsim-only feature), so any impairment engages from
+# t=0 and can break initial sync/registration. Keep both knobs empty for the functional ping baseline;
+# set them only when deliberately stressing an already-established PC5 link.
+rfsim_sl_chanmod_flags() {
+    # Debug (periodic CSI-RS, the default) runs on a clean PC5 link: no noise/ploss injection.
+    # Only production (aperiodic, NACK-driven) adds impairment.
+    if [[ "${SL_CSI_DEBUG:-1}" == "1" ]]; then
+        return 0
+    fi
+    local noise=${rfsim_sl_noise_power_dB:-}
+    local ploss=${rfsim_sl_ploss_dB:-}
+    if [[ -z "$noise" && -z "$ploss" ]]; then
+        return 0
+    fi
+    local flags='--rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1'
+    if [[ -n "$noise" ]]; then
+        flags+=$(printf -- ' --channelmod.modellist_rfsimu_1.[0].noise_power_dB %s --channelmod.modellist_rfsimu_1.[2].noise_power_dB %s' "$noise" "$noise")
+    fi
+    if [[ -n "$ploss" ]]; then
+        flags+=$(printf -- ' --channelmod.modellist_rfsimu_1.[0].ploss_dB %s --channelmod.modellist_rfsimu_1.[2].ploss_dB %s' "$ploss" "$ploss")
+    fi
+    printf -- '%s' "$flags"
 }
 
 run_cmd() {
@@ -1461,18 +1937,26 @@ evaluate_ping_test() {
         local pssch_syncref=$(get_pssch_stats "$syncref_log" "syncref")
         LAST_PSSCH_TX_SYNCREF=$(echo $pssch_syncref | awk '{print $1}')
         LAST_PSSCH_RX_SYNCREF=$(echo $pssch_syncref | awk '{print $2}')
+        LAST_PSSCH_ERR_SYNCREF=$(echo $pssch_syncref | awk '{print $3}')
+        LAST_PSSCH_DTX_SYNCREF=$(echo $pssch_syncref | awk '{print $4}')
     else
         LAST_PSSCH_TX_SYNCREF=0
         LAST_PSSCH_RX_SYNCREF=0
+        LAST_PSSCH_ERR_SYNCREF=0
+        LAST_PSSCH_DTX_SYNCREF=0
     fi
 
     if [ -f "$nearby_log" ]; then
         local pssch_nearby=$(get_pssch_stats "$nearby_log" "nearby")
         LAST_PSSCH_TX_NEARBY=$(echo $pssch_nearby | awk '{print $1}')
         LAST_PSSCH_RX_NEARBY=$(echo $pssch_nearby | awk '{print $2}')
+        LAST_PSSCH_ERR_NEARBY=$(echo $pssch_nearby | awk '{print $3}')
+        LAST_PSSCH_DTX_NEARBY=$(echo $pssch_nearby | awk '{print $4}')
     else
         LAST_PSSCH_TX_NEARBY=0
         LAST_PSSCH_RX_NEARBY=0
+        LAST_PSSCH_ERR_NEARBY=0
+        LAST_PSSCH_DTX_NEARBY=0
     fi
 
     # Baseline both directions at the moment the nearby UE joined the link. The SyncRef transmits from
@@ -1482,17 +1966,18 @@ evaluate_ping_test() {
     # FIRST dump marks when it started participating (the dump only runs on slots it actually processes),
     # so subtract both nodes' counters as of that frame. Genuine loss after that point still shows, which
     # is the point - half-duplex collisions and real misses are NOT baselined away.
-    # Limitation: frame numbers wrap at 1024, so a run crossing a wrap gets no baseline (falls back to raw).
+    # Frame numbers wrap at 1024; pssch_baseline_dump unwraps them so a multi-wrap run baselines against
+    # the first wrap, not a later one (a late match makes BASE==LAST -> a bogus 0 or negative rate).
     BASE_PSSCH_TX_SYNCREF=0; BASE_PSSCH_RX_SYNCREF=0
     BASE_PSSCH_TX_NEARBY=0;  BASE_PSSCH_RX_NEARBY=0
     if [ -f "$nearby_log" ] && [ -f "$syncref_log" ]; then
         local base_frame
         base_frame=$(pssch_dumps "$nearby_log" | head -1 | awk '{print $1}')
         if [ -n "${base_frame:-}" ]; then
-            read -r _ BASE_PSSCH_TX_NEARBY BASE_PSSCH_RX_NEARBY \
+            read -r _ BASE_PSSCH_TX_NEARBY BASE_PSSCH_RX_NEARBY _ \
                 < <(pssch_dumps "$nearby_log" | head -1)
-            read -r _ BASE_PSSCH_TX_SYNCREF BASE_PSSCH_RX_SYNCREF \
-                < <(pssch_dumps "$syncref_log" | awk -v F="$base_frame" '$1<=F' | tail -1)
+            read -r _ BASE_PSSCH_TX_SYNCREF BASE_PSSCH_RX_SYNCREF _ \
+                < <(pssch_baseline_dump "$syncref_log" "$base_frame")
             BASE_PSSCH_TX_NEARBY=${BASE_PSSCH_TX_NEARBY:-0};   BASE_PSSCH_RX_NEARBY=${BASE_PSSCH_RX_NEARBY:-0}
             BASE_PSSCH_TX_SYNCREF=${BASE_PSSCH_TX_SYNCREF:-0}; BASE_PSSCH_RX_SYNCREF=${BASE_PSSCH_RX_SYNCREF:-0}
         fi
@@ -2043,7 +2528,7 @@ evaluate_ping_and_rsrp_test() {
     [[ $# -ge 4 ]] && iteration=$4
     [[ $# -ge 5 ]] && host_name=$5
     [[ $# -ge 6 ]] && num_hosts=$6
-    [[ $# -ge 7 ]] && test_name=$7 || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 7 ]] && test_name=$7 || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     local sl_mode=2
     local src_if="oaitun_ue1"
@@ -2063,7 +2548,7 @@ run_gNB_cmd() {
     # Get config path using helper function
     local config_path=$(get_gnb_config_path $sl_mode $host_name 0)
 
-    [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --sl-mode 1" || sl_relay_tag=""
+    [[ $sl_mode -eq 1 ]] && sl_relay_tag="--relay-type 1 --remote-ue-id 1 --sl-mode 1 $sl_slots_flag" || sl_relay_tag=""
 
     if [[ $test_type == "rfsim" ]]; then
         if [[ $host_name == 'local' ]]; then
@@ -2095,7 +2580,6 @@ run_gNB_cmd() {
                 --log_config.global_log_level info $sl_relay_tag"
     fi
     log_file="/tmp/result_gNB.log"
-    echo $gNB_cmd; echo
 
     # Save command to commands.txt
     echo "=== gNB Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -2144,7 +2628,6 @@ run_nrUE_cmd() {
                     --log_config.global_log_level info"
     fi
     log_file="/tmp/result_nrUE.log"
-    echo $nrUE_cmd; echo
 
     # Save command to commands.txt
     echo "=== nrUE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -2163,6 +2646,11 @@ run_syncref_cmd() {
     # Get user name based on host
     local user_name=$(find_user_name "$host_name")
 
+    # PC5 impairment for rfsim (empty knobs -> no flags, clean link). For sl_mode 1 the relay shares
+    # rfsim channel models across its connections, so enabling chanmod also touches the relay's Uu link;
+    # that Uu-side effect is accepted for this loop-exercise test.
+    local rfsim_chanmod_flags=$(rfsim_sl_chanmod_flags)
+
     if [[ $sl_mode -eq 1 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
@@ -2171,7 +2659,7 @@ run_syncref_cmd() {
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                             --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 \
                             --rfsimulator.serveraddr 127.0.0.1 --rfsimulator.serverport 4048 \
-                            --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
+                            --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags \
                             --log_config.global_log_level info --relay-type 1 --is-relay-ue 1  $mcs"
             else
                 syncref_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
@@ -2180,7 +2668,7 @@ run_syncref_cmd() {
                             -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                             --rfsim $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 --relay-type 1 --is-relay-ue 1 \
                             --rfsimulator.serveraddr $GNB_HOST_IP  --rfsimulator.serverport 4048 \
-                            --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 \
+                            --rfsimulator.serveraddrsl $REMOTE_HOST_IP  --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags \
                             --log_config.global_log_level info $mcs"
             fi
         elif [[ $test_type == "usrp" ]]; then
@@ -2205,11 +2693,15 @@ run_syncref_cmd() {
         elif [[ $test_type == "vrtsim" ]]; then
             # vrtsim relay/SyncRef (sl_mode 1): Uu client + PC5 client, local host only.
             # --remote-ue-id 1 (SRAP header match) + --thread-pool -1,-1,-1,-1 (CPU) + PDU-session DNN, as above.
+            # PC5 impairment: chanmod is process-global here, so enabling it also touches the relay's Uu UL;
+            # that Uu-side effect is accepted for this loop-exercise test (the gNB Uu DL stays clean).
+            local sl_chanmod_flags=$(vrtsim_sl_chanmod_flags)
             syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                         -O $CONF_PATH/sl_sync_ref.conf \
                         -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                         $sa_flag --sync-ref --node-number 2 --sl-mode 1 --remote-ue-id 1 --thread-pool -1,-1,-1,-1 \
-                        --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 0 \
+                        --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client $sl_chanmod_flags \
+                        --sl-psfch-period ${DEFAULT_PSFCH_PERIOD:-2} \
                         --log_config.global_log_level info --relay-type 1 --is-relay-ue 1 $mcs"
         fi
         log_file="/tmp/result_nrUE_syncref.log"
@@ -2218,7 +2710,7 @@ run_syncref_cmd() {
             syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                          $OAI_BUILD_DIR/nr-uesoftmodem \
                         -O $CONF_PATH/sl_sync_ref.conf --sync-ref --sl-mode 2 --rfsim $sa_flag \
-                        --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 --log_config.global_log_level info  $mcs"
+                        --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags --log_config.global_log_level info  $mcs"
         elif [[ $test_type == "usrp" ]]; then
             syncref_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR \
                         $OAI_BUILD_DIR/nr-uesoftmodem \
@@ -2235,7 +2727,8 @@ run_syncref_cmd() {
         log_file="/tmp/result_syncref.log"
     fi
 
-    echo $syncref_cmd; echo;
+    # Append the usable sidelink-slot count (empty unless sl_slots > 0).
+    syncref_cmd="$syncref_cmd $sl_slots_flag"
 
     # Save command to commands.txt
     echo "=== Syncref UE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -2254,20 +2747,23 @@ run_nearby_cmd() {
     # Get user name based on host
     local user_name=$(find_user_name "$host_name")
 
+    # PC5 impairment for rfsim (empty knobs -> no flags, clean link). See rfsim_sl_chanmod_flags().
+    local rfsim_chanmod_flags=$(rfsim_sl_chanmod_flags)
+
     if [[ $sl_mode -eq 1 ]]; then
         if [[ $test_type == "rfsim" ]]; then
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                             -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 \
-                            --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
+                            --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags \
                             --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                             sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                             -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                             --rfsim $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 \
-                            --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 \
+                            --rfsimulator.serveraddrsl server --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags \
                             --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
@@ -2281,10 +2777,13 @@ run_nearby_cmd() {
             # vrtsim remote UE (sl_mode 1): PC5 server; own IMSI ...002 (registers with Core).
             # --remote-ue-id 1 (encoded in the SRAP header; must match gNB+relay), --thread-pool -1,-1,-1,-1
             # (avoid RT-thread CPU oversubscription that starves the relay Uu link), and the PDU-session DNN.
+            # PC5 impairment: sidelink-only node, so all of its chanmod noise is on PC5 (remote->relay TX).
+            local sl_chanmod_flags=$(vrtsim_sl_chanmod_flags)
             nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                         -O $CONF_PATH/sl_ue1.conf --uicc0.imsi 001010000000002 $pdu_session_flag \
                         $sa_flag --sl-mode 2 $mcs --node-number 3 --relay-type 1 --remote-ue-id 1 --thread-pool -1,-1,-1,-1 \
-                        --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 0 \
+                        --device.name vrtsim --vrtsim.role_sl server $sl_chanmod_flags \
+                        --sl-psfch-period ${DEFAULT_PSFCH_PERIOD:-2} \
                         --log_config.global_log_level info"
         fi
     elif [[ $sl_mode -eq 2 ]]; then
@@ -2292,12 +2791,12 @@ run_nearby_cmd() {
             if [[ $host_name == 'local' ]]; then
                 nearby_cmd="cd $OAI_BUILD_DIR; sudo -E LD_LIBRARY_PATH=$OAI_BUILD_DIR ./nr-uesoftmodem \
                         -O $CONF_PATH/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
-                        --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
+                        --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags --log_config.global_log_level info"
             else
                 nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH:$LD_LIBRARY_PATH \
                         sudo -E /home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH/nr-uesoftmodem \
                         -O /home/$user_name/$OAI_BASE_REL_PATH/$CONF_REL_PATH/sl_ue1.conf --rfsim $sa_flag --sl-mode 2 $mcs \
-                        --rfsimulator.serveraddrsl $LOCAL_HOST_IP --rfsimulator.serverportsl 4148 --log_config.global_log_level info"
+                        --rfsimulator.serveraddrsl $LOCAL_HOST_IP --rfsimulator.serverportsl 4148 $rfsim_chanmod_flags --log_config.global_log_level info"
             fi
         elif [[ $test_type == "usrp" ]]; then
             nearby_cmd="LD_LIBRARY_PATH=/home/$user_name/$OAI_BASE_REL_PATH/$BUILD_REL_PATH \
@@ -2313,8 +2812,10 @@ run_nearby_cmd() {
                         --device.name vrtsim --vrtsim.role_sl client --vrtsim.chanmod 0 --log_config.global_log_level info"
         fi
     fi
+    # Append the usable sidelink-slot count (empty unless sl_slots > 0).
+    nearby_cmd="$nearby_cmd $sl_slots_flag"
+
     log_file="/tmp/result_nearby.log"
-    echo $nearby_cmd; echo
 
     # Save command to commands.txt
     echo "=== Nearby UE Command (host: $host_name) ===" >> "$log_dir/commands.txt"
@@ -2338,7 +2839,7 @@ slmode1_srap_ping_test() {
     [[ $# -ge 6 ]] && syncref_host_name=$6
     [[ $# -ge 7 ]] && nearby_host_name=$7
     [[ $# -ge 8 ]] && num_hosts=$8
-    [[ $# -ge 9 ]] && test_name=$9 || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 9 ]] && test_name=$9 || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -2354,6 +2855,11 @@ slmode1_srap_ping_test() {
     pre1='docker ps | grep oai-upf | wc -l' # expecting: 1
     act1='echo "core network is required !!!"; cd ~/oai-cn5g; systemctl start docker.service; docker compose up -d; sleep 2'
     [[ $(eval "$pre1") -eq 1 ]] && echo "Requirements are satisfied !!!" || eval "$act1"
+
+    # Apply the TDD preset locally before syncing, so all nodes share one grid.
+    apply_tdd_preset $sl_mode
+    # Apply the global SL CSI-RS trigger mode before the configs are copied out.
+    apply_sl_csi_mode $sl_mode
 
     # Sync configuration files to remote hosts if needed
     if [[ $syncref_host_name != "local" ]]; then
@@ -2374,6 +2880,16 @@ slmode1_srap_ping_test() {
     # previous (killed) run corrupt the PC5/Uu sample exchange -> the remote's RRCSetupRequest never reaches
     # the gNB and registration fails. Clear them before launching so every run starts with fresh channels.
     [[ $test_type == "vrtsim" ]] && sudo rm -f /dev/shm/vrtsim* 2>/dev/null
+    # Kill any stale softmodems left by an aborted/crashed prior run BEFORE launching. rfsim exposes the Uu
+    # (4048) and PC5 (4148) links as TCP servers; the bind uses SO_REUSEADDR, which does NOT displace a still
+    # LISTENing socket. A leftover holder makes the fresh gNB/nearby fail with "could not open a socket" (the
+    # gNB then runs on void samples, the nearby aborts) while the relay connects to the stale server -> PC5
+    # never comes up and the test FAILs. Normal runs clean up at the end, but an interrupted run poisons the
+    # next one, so clear the slate here just like the vrtsim /dev/shm cleanup above.
+    kill_all $gnb_host_name nr-softmodem
+    kill_all $nearby_host_name nr-uesoftmodem
+    kill_all $syncref_host_name nr-uesoftmodem
+    sleep 2
     if [[ $test_type == "vrtsim" ]]; then
         run_gNB_cmd $test_type $sl_mode $gnb_host_name
         sleep 3
@@ -2467,7 +2983,7 @@ rfsim_slmode1_srap_ping_test_on_three_hosts() {
     local syncref_host_name=$RELAY_UE_HOST
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=3
-    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_slmode1_srap_ping_test_on_three_hosts() {
@@ -2482,7 +2998,7 @@ usrp_B210_slmode1_srap_ping_test_on_three_hosts() {
     local syncref_host_name=$RELAY_UE_HOST
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=3
-    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_slmode1_srap_ping_test_on_local_host() {
@@ -2497,7 +3013,7 @@ rfsim_slmode1_srap_ping_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_slmode1_srap_ping_test_on_local_host() {
@@ -2512,7 +3028,7 @@ vrtsim_slmode1_srap_ping_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_ping_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 #############################################################
@@ -2743,13 +3259,14 @@ run_syncref_cmd_with_noise() {
                      -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000001 $pdu_session_flag \
                      --sa --sync-ref --sl-mode 1 --node-number 2 \
                      --device.name vrtsim --vrtsim.role client --vrtsim.role_sl client --vrtsim.chanmod 1 \
-                     --channelmod.modellist_vrtsim.[0].noise_power_dB ${noise_power} \
+                     --channelmod.noise_power_dBFS ${noise_power} \
                      --channelmod.modellist_vrtsim.[0].ploss_dB ${ploss} \
-                     --channelmod.modellist_vrtsim.[1].noise_power_dB ${noise_power} \
                      --channelmod.modellist_vrtsim.[1].ploss_dB ${ploss} \
                      --log_config.global_log_level info --log_config.global_log_options time \
                      --relay-type 1 --is-relay-ue 1 --mcs ${mcs}"
     else
+        # rfsim relay: index [2]=rfsimu_channel_enB1 is the relay's PC5 RX model; impairing it leaves the
+        # relay's Uu RX (index [1]=enB0) clean. See rfsim_sl_chanmod_flags() for the full index->link map.
         syncref_cmd="cd $OAI_BUILD_DIR; \
                      sudo -E LD_LIBRARY_PATH=\$PWD ./nr-uesoftmodem \
                      -O $CONF_PATH/sl_sync_ref.conf \
@@ -2759,8 +3276,8 @@ run_syncref_cmd_with_noise() {
                      --rfsimulator.serveraddrsl 127.0.0.1 --rfsimulator.serverportsl 4148 \
                      --log_config.global_log_level info --log_config.global_log_options time \
                      --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
-                     --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
-                     --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
+                     --channelmod.modellist_rfsimu_1.[2].noise_power_dB ${noise_power} \
+                     --channelmod.modellist_rfsimu_1.[2].ploss_dB ${ploss} \
                      --relay-type 1 --is-relay-ue 1 --mcs ${mcs} --node-number 2"
     fi
 
@@ -2800,9 +3317,8 @@ run_nearby_cmd_with_noise() {
                     -r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi 001010000000002 $pdu_session_flag \
                     --sa --sl-mode 2 --node-number 3 --relay-type 1 \
                     --device.name vrtsim --vrtsim.role_sl server --vrtsim.chanmod 1 \
-                    --channelmod.modellist_vrtsim.[0].noise_power_dB ${noise_power} \
+                    --channelmod.noise_power_dBFS ${noise_power} \
                     --channelmod.modellist_vrtsim.[0].ploss_dB ${ploss} \
-                    --channelmod.modellist_vrtsim.[1].noise_power_dB ${noise_power} \
                     --channelmod.modellist_vrtsim.[1].ploss_dB ${ploss} \
                     --log_config.global_log_level info --log_config.global_log_options time \
                     --mcs ${mcs}"
@@ -2817,8 +3333,8 @@ run_nearby_cmd_with_noise() {
                     --rfsimulator.options chanmod --channelmod.modellist modellist_rfsimu_1 \
                     --channelmod.modellist_rfsimu_1.[0].noise_power_dB ${noise_power} \
                     --channelmod.modellist_rfsimu_1.[0].ploss_dB ${ploss} \
-                    --channelmod.modellist_rfsimu_1.[1].noise_power_dB ${noise_power} \
-                    --channelmod.modellist_rfsimu_1.[1].ploss_dB ${ploss} \
+                    --channelmod.modellist_rfsimu_1.[2].noise_power_dB ${noise_power} \
+                    --channelmod.modellist_rfsimu_1.[2].ploss_dB ${ploss} \
                     --mcs ${mcs} --node-number 3 --relay-type 1"
     fi
 
@@ -2845,7 +3361,7 @@ bler_test() {
     [[ $# -ge 7 ]] && syncref_host_name=$7
     [[ $# -ge 8 ]] && nearby_host_name=$8
     [[ $# -ge 9 ]] && num_hosts=$9
-    [[ $# -ge 10 ]] && test_name=${10} || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 10 ]] && test_name=${10} || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -2942,17 +3458,25 @@ bler_test() {
         local pssch_syncref=$(get_pssch_stats "$bler_syncref_log" "syncref")
         LAST_PSSCH_TX_SYNCREF=$(echo $pssch_syncref | awk '{print $1}')
         LAST_PSSCH_RX_SYNCREF=$(echo $pssch_syncref | awk '{print $2}')
+        LAST_PSSCH_ERR_SYNCREF=$(echo $pssch_syncref | awk '{print $3}')
+        LAST_PSSCH_DTX_SYNCREF=$(echo $pssch_syncref | awk '{print $4}')
     else
         LAST_PSSCH_TX_SYNCREF=0
         LAST_PSSCH_RX_SYNCREF=0
+        LAST_PSSCH_ERR_SYNCREF=0
+        LAST_PSSCH_DTX_SYNCREF=0
     fi
     if [ -f "$bler_nearby_log" ]; then
         local pssch_nearby=$(get_pssch_stats "$bler_nearby_log" "nearby")
         LAST_PSSCH_TX_NEARBY=$(echo $pssch_nearby | awk '{print $1}')
         LAST_PSSCH_RX_NEARBY=$(echo $pssch_nearby | awk '{print $2}')
+        LAST_PSSCH_ERR_NEARBY=$(echo $pssch_nearby | awk '{print $3}')
+        LAST_PSSCH_DTX_NEARBY=$(echo $pssch_nearby | awk '{print $4}')
     else
         LAST_PSSCH_TX_NEARBY=0
         LAST_PSSCH_RX_NEARBY=0
+        LAST_PSSCH_ERR_NEARBY=0
+        LAST_PSSCH_DTX_NEARBY=0
     fi
 
     # Print test summary
@@ -2976,7 +3500,7 @@ rfsim_slmode1_bler_test_on_local_host() {
     local nearby_host_name="local"
     local num_hosts=1
 
-    bler_test $duration $test_type $mcs $iteration $noise_power $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    bler_test $duration $test_type $mcs $iteration $noise_power $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 #############################################################
@@ -3013,7 +3537,7 @@ uu_ping_test() {
     [[ $# -ge 5 ]] && gnb_host_name=$5
     [[ $# -ge 6 ]] && nrue_host_name=$6
     [[ $# -ge 7 ]] && num_hosts=$7
-    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -3063,7 +3587,7 @@ rfsim_uu_ping_test_on_two_hosts() {
     local gnb_host_name="local"
     local nrue_host_name=$NR_UE_HOST
     local num_hosts=2
-    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}"
+    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_uu_ping_test_on_two_hosts() {
@@ -3077,7 +3601,7 @@ usrp_B210_uu_ping_test_on_two_hosts() {
     local gnb_host_name="local"
     local nrue_host_name=$NR_UE_HOST
     local num_hosts=2
-    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}"
+    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_uu_ping_test_on_local_host() {
@@ -3091,7 +3615,7 @@ rfsim_uu_ping_test_on_local_host() {
     local gnb_host_name="local"
     local nrue_host_name="local"
     local num_hosts=1
-    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}"
+    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_uu_ping_test_on_local_host() {
@@ -3105,7 +3629,7 @@ vrtsim_uu_ping_test_on_local_host() {
     local gnb_host_name="local"
     local nrue_host_name="local"
     local num_hosts=1
-    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}"
+    uu_ping_test $duration $test_type $mcs $iteration $gnb_host_name $nrue_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 pc5_ping_test() {
@@ -3117,7 +3641,7 @@ pc5_ping_test() {
     [[ $# -ge 5 ]] && syncref_host_name=$5
     [[ $# -ge 6 ]] && nearby_host_name=$6
     [[ $# -ge 7 ]] && num_hosts=$7
-    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -3131,6 +3655,11 @@ pc5_ping_test() {
     local dest_ip="10.0.0.100"
 
     echo "test_type:" $test_type " mcs: " $mcs " sl_mode: " $sl_mode " syncref_host_name: " $syncref_host_name " nearby_host_name: " $nearby_host_name
+
+    # Apply the TDD preset locally before syncing, so all nodes share one grid.
+    apply_tdd_preset $sl_mode
+    # Apply the global SL CSI-RS trigger mode before the configs are copied out.
+    apply_sl_csi_mode $sl_mode
 
     # Sync configuration files if using remote host
     if [[ $nearby_host_name != "local" ]]; then
@@ -3198,7 +3727,7 @@ rfsim_pc5_ping_test_on_two_hosts() {
     local num_hosts=2
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
-    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_pc5_ping_test_on_two_hosts() {
@@ -3212,7 +3741,7 @@ usrp_B210_pc5_ping_test_on_two_hosts() {
     local num_hosts=2
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
-    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_pc5_ping_test_on_local_host() {
@@ -3226,7 +3755,7 @@ rfsim_pc5_ping_test_on_local_host() {
     local num_hosts=1
     local syncref_host_name="local"
     local nearby_host_name="local"
-    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_pc5_ping_test_on_local_host() {
@@ -3240,7 +3769,7 @@ vrtsim_pc5_ping_test_on_local_host() {
     local num_hosts=1
     local syncref_host_name="local"
     local nearby_host_name="local"
-    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_ping_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 pc5_csi_acquisition_psfch_period_test() {
@@ -3254,7 +3783,7 @@ pc5_csi_acquisition_psfch_period_test() {
     [[ $# -ge 7 ]] && syncref_host_name=$7
     [[ $# -ge 8 ]] && nearby_host_name=$8
     [[ $# -ge 9 ]] && num_hosts=$9
-    [[ $# -ge 10 ]] && test_name=${10} || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 10 ]] && test_name=${10} || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -3294,7 +3823,7 @@ pc5_csi_acquisition_psfch_period_test() {
         sync_config_files $nearby_host_name
     fi
 
-    echo "========== Test: ${test_name}_csi${csi_acq}_psfch${period} ==========" >> "$log_dir/commands.txt"
+    echo "========== Test: ${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX} ==========" >> "$log_dir/commands.txt"
     # For SL mode 2 two-host tests: syncref runs locally, nearby runs remotely
     if [[ $nearby_host_name == "local" ]]; then
         run_syncref_cmd $test_type $mcs $sl_mode "local"
@@ -3337,11 +3866,11 @@ pc5_csi_acquisition_psfch_period_test() {
         sleep ${sleep_timing[sync_stab_45s_v2]}
     fi
 
-    evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}" "$ping_window"
+    evaluate_ping_test $syncref_host_name "oaitun_ue1" "10.0.0.100" $sl_mode "${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX}" "$ping_window"
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
-    save_softmodem_logs "${test_name}_csi${csi_acq}_psfch${period}"
+    save_softmodem_logs "${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX}"
 
     # Restore configs back to defaults for next test iteration
     echo "==> Restoring baseline: CSI=$DEFAULT_CSI_ACQ, PSFCH=$DEFAULT_PSFCH_PERIOD"
@@ -3359,7 +3888,7 @@ pc5_csi_acquisition_psfch_period_test() {
     print_runtime $start_time $end_time
 
     # Print test summary
-    print_test_summary "${test_name}_csi${csi_acq}_psfch${period}" "$iteration" "$num_hosts" "$mcs" "$elapsed" "$LAST_TX_PACKETS" "$LAST_RX_PACKETS" "$LAST_TEST_RESULT"
+    print_test_summary "${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX}" "$iteration" "$num_hosts" "$mcs" "$elapsed" "$LAST_TX_PACKETS" "$LAST_RX_PACKETS" "$LAST_TEST_RESULT"
 }
 #############################################################
 rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
@@ -3375,7 +3904,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=2
-    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
@@ -3391,7 +3920,7 @@ usrp_B210_pc5_csi_acquisition_psfch_period_test_on_two_hosts() {
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=2
-    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
@@ -3407,7 +3936,7 @@ rfsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
@@ -3423,7 +3952,7 @@ vrtsim_pc5_csi_acquisition_psfch_period_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 slmode1_srap_csi_acquisition_psfch_period_test() {
@@ -3438,7 +3967,7 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
     [[ $# -ge 8 ]] && syncref_host_name=$8
     [[ $# -ge 9 ]] && nearby_host_name=$9
     [[ $# -ge 10 ]] && num_hosts=${10}
-    [[ $# -ge 11 ]] && test_name=${11} || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 11 ]] && test_name=${11} || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -3495,7 +4024,7 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
         sync_config_files $syncref_host_name
     fi
 
-    echo "========== Test: ${test_name}_csi${csi_acq}_psfch${period} ==========" >> "$log_dir/commands.txt"
+    echo "========== Test: ${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX} ==========" >> "$log_dir/commands.txt"
     # For SL mode 1 three-host tests: gNB runs locally, syncref and nearby run remotely
     run_gNB_cmd $test_type $sl_mode $gnb_host_name
     sleep 1
@@ -3533,14 +4062,24 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
         echo "Waiting additional ${sleep_timing[sync_stab_45s_v2]} seconds for sidelink sync to stabilize..."
         sleep ${sleep_timing[sync_stab_45s_v2]}
     fi
-    sleep 3
-    evaluate_ping_test $nearby_host_name "oaitun_ue2" "8.8.8.8" $sl_mode "${test_name}_csi${csi_acq}_psfch${period}" "$ping_window"
+    # Gate the ping on remote UE Core registration (SL mode-1 relay). PC5 sync
+    # alone is not enough: the remote UE's oaitun_ue2 keeps its pre-registration
+    # default IP until the PDU Session Establishment Accept arrives via the relay,
+    # so pinging earlier loses the first several packets during registration warm-up.
+    if wait_for_remote_ue_core_ip 40; then
+        evaluate_ping_test $nearby_host_name "oaitun_ue2" "8.8.8.8" $sl_mode "${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX}" "$ping_window"
+    else
+        LAST_TEST_RESULT="FAIL"
+        LAST_TX_PACKETS=0
+        LAST_RX_PACKETS=0
+        echo "Skipping ping: remote UE registration did not complete (no Core IP)."
+    fi
 
     # Cleanup all processes (nrue_host_name was cleaned up in the evaluate_ping_test)
     kill_all $nearby_host_name nr-uesoftmodem
     kill_all $syncref_host_name nr-uesoftmodem
     kill_all $gnb_host_name nr-softmodem
-    save_softmodem_logs "${test_name}_csi${csi_acq}_psfch${period}"
+    save_softmodem_logs "${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX}"
 
 
     # Restore configs back to defaults for next test iteration
@@ -3559,7 +4098,7 @@ slmode1_srap_csi_acquisition_psfch_period_test() {
     print_runtime $start_time $end_time
 
     # Print test summary
-    print_test_summary "${test_name}_csi${csi_acq}_psfch${period}" "$iteration" "$num_hosts" "$mcs" "$elapsed" "$LAST_TX_PACKETS" "$LAST_RX_PACKETS" "$LAST_TEST_RESULT"
+    print_test_summary "${test_name%$TDD_SWEEP_SUFFIX}_csi${csi_acq}_psfch${period}${TDD_SWEEP_SUFFIX}" "$iteration" "$num_hosts" "$mcs" "$elapsed" "$LAST_TX_PACKETS" "$LAST_RX_PACKETS" "$LAST_TEST_RESULT"
 }
 #############################################################
 rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
@@ -3576,7 +4115,7 @@ rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
@@ -3593,7 +4132,7 @@ vrtsim_slmode1_srap_csi_acquisition_psfch_period_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
@@ -3610,7 +4149,7 @@ rfsim_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
     local syncref_host_name=$RELAY_UE_HOST
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=3
-    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
@@ -3627,7 +4166,7 @@ usrp_B210_slmode1_srap_csi_acquisition_psfch_period_test_on_three_hosts() {
     local syncref_host_name=$RELAY_UE_HOST
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=3
-    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_csi_acquisition_psfch_period_test $csi_acq $period $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 #############################################################
@@ -3641,7 +4180,7 @@ pc5_iperf3_test() {
     [[ $# -ge 5 ]] && syncref_host_name=$5
     [[ $# -ge 6 ]] && nearby_host_name=$6
     [[ $# -ge 7 ]] && num_hosts=$7
-    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 8 ]] && test_name=$8 || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -3710,7 +4249,7 @@ rfsim_pc5_iperf3_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_pc5_iperf3_test_on_local_host() {
@@ -3723,7 +4262,7 @@ vrtsim_pc5_iperf3_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_pc5_iperf3_test_on_two_hosts() {
@@ -3736,7 +4275,7 @@ rfsim_pc5_iperf3_test_on_two_hosts() {
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=2
-    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_pc5_iperf3_test_on_two_hosts() {
@@ -3749,7 +4288,7 @@ usrp_B210_pc5_iperf3_test_on_two_hosts() {
     local syncref_host_name="local"
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=2
-    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    pc5_iperf3_test $duration $test_type $mcs $iteration $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 slmode1_srap_iperf3_test() {
@@ -3761,7 +4300,7 @@ slmode1_srap_iperf3_test() {
     [[ $# -ge 6 ]] && syncref_host_name=$6
     [[ $# -ge 7 ]] && nearby_host_name=$7
     [[ $# -ge 8 ]] && num_hosts=$8
-    [[ $# -ge 9 ]] && test_name=$9 || test_name="${FUNCNAME[0]}"
+    [[ $# -ge 9 ]] && test_name=$9 || test_name="${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 
     # Validate test type for local host execution
     if [[ $num_hosts -eq 1 ]]; then
@@ -3783,6 +4322,12 @@ slmode1_srap_iperf3_test() {
     act1='echo "core network is required !!!"; cd ~/oai-cn5g; systemctl start docker.service; docker compose up -d; sleep 2'
     [[ $(eval "$pre1") -eq 1 ]] && echo "Requirements are satisfied !!!" || eval "$act1"
 
+    # Apply the TDD preset locally before syncing, so all nodes share one grid.
+    apply_tdd_preset $sl_mode
+    # Apply the global SL CSI-RS trigger mode before the configs are copied out.
+    apply_sl_csi_mode $sl_mode
+
+    # Sync configuration files to remote hosts if needed
     if [[ $syncref_host_name != "local" ]]; then
         sync_config_files $syncref_host_name
     fi
@@ -3875,7 +4420,7 @@ rfsim_slmode1_srap_iperf3_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 vrtsim_slmode1_srap_iperf3_test_on_local_host() {
@@ -3889,7 +4434,7 @@ vrtsim_slmode1_srap_iperf3_test_on_local_host() {
     local syncref_host_name="local"
     local nearby_host_name="local"
     local num_hosts=1
-    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 rfsim_slmode1_srap_iperf3_test_on_three_hosts() {
@@ -3903,7 +4448,7 @@ rfsim_slmode1_srap_iperf3_test_on_three_hosts() {
     local syncref_host_name=$RELAY_UE_HOST
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=3
-    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 #############################################################
 usrp_B210_slmode1_srap_iperf3_test_on_three_hosts() {
@@ -3917,7 +4462,7 @@ usrp_B210_slmode1_srap_iperf3_test_on_three_hosts() {
     local syncref_host_name=$RELAY_UE_HOST
     local nearby_host_name=$REMOTE_UE_HOST
     local num_hosts=3
-    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}"
+    slmode1_srap_iperf3_test $duration $test_type $mcs $iteration $gnb_host_name $syncref_host_name $nearby_host_name $num_hosts "${FUNCNAME[0]}${TDD_SWEEP_SUFFIX}"
 }
 
 #############################################################
@@ -3991,32 +4536,22 @@ main() {
 
     cleanup_zombie_processes
 
-    echo "DEBUG: enabled_tests before resolve: ${enabled_tests[@]}"
-    echo "DEBUG: Number of enabled_tests: ${#enabled_tests[@]}"
-    echo "DEBUG: test_profile: $test_profile"
-
     #########################################################
     ### Resolve group names in enabled_tests ###
     #########################################################
     resolve_test_entries() {
         local result=()
         for entry in "$@"; do
-            echo "DEBUG: Processing entry: '$entry'" >&2
             if [[ "$entry" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$ ]]; then
                 local array_name="${BASH_REMATCH[1]}"
                 local spec="${BASH_REMATCH[2]}"
-                echo "DEBUG: Matched array '$array_name' with spec '$spec'" >&2
                 local -n _g="$array_name"
-                echo "DEBUG: Array contents: ${_g[@]}" >&2
                 if [[ "$spec" == *:* ]]; then
                     local start=${spec%%:*} end=${spec##*:}
-                    echo "DEBUG: Range slice [$start:$end]" >&2
                     result+=("${_g[@]:$start:$((end - start + 1))}")
                 else
-                    echo "DEBUG: Index slice: $spec" >&2
                     for i in ${spec//,/ }; do result+=("${_g[$i]}"); done
                 fi
-                echo "DEBUG: Result after this entry: ${result[@]}" >&2
             elif declare -p "$entry" 2>/dev/null | grep -q 'declare -a'; then
                 local -n _g="$entry"
                 result+=("${_g[@]}")
@@ -4035,8 +4570,15 @@ main() {
     done
     enabled_tests=("${resolved_tests[@]}")
 
-    echo "DEBUG: Resolved tests: ${enabled_tests[@]}"
-    echo "DEBUG: Number of tests: ${#enabled_tests[@]}"
+    # Run validation + the full test loop once against the current tdd_config/sl_slots/
+    # suffix/log_dir globals. Factored out so a preset sweep can call it per pair; with
+    # no sweep it is called exactly once (behaviour unchanged).
+    run_enabled_tests_once() {
+    # Validate the sidelink slot/TDD/PSFCH config before any test launch, so an
+    # invalid combination fails fast here instead of crashing in the softmodem.
+    # In a preset sweep each test picks its own mode-specific preset below, so the
+    # per-test validation happens inside the loop instead of once here.
+    [[ "$tdd_sweep_enable" != "1" ]] && validate_sl_config
 
     #########################################################
     ### Execute tests in order specified by enabled_tests ###
@@ -4045,6 +4587,26 @@ main() {
         # Parse test name and optional CSI/PSFCH parameters
         # Format: test_name or test_name:csi_acq:psfch_period
         IFS=':' read -r test_name csi_param psfch_param <<< "$test_entry"
+
+        # Test functions clobber the GLOBAL `test_name`, so keep the function name in
+        # a local for re-dispatch (else the CSI/PSFCH 8-combo sweep breaks after call 1).
+        local test_fn="$test_name"
+
+        # In a preset sweep, apply the preset that matches this test's mode: SL Mode 2
+        # tests take tdd_configs_mode2[idx], SL Mode 1 / Uu tests take tdd_configs_mode1[idx]
+        # (sets tdd_config/sl_slots/suffix globals). Skip the test if that array has no
+        # entry at this index, and re-validate the freshly-selected preset before launch.
+        if [[ "$tdd_sweep_enable" == "1" ]]; then
+            if ! select_sweep_preset_for_test "$test_name"; then
+                echo "  note: no preset at sweep index $TDD_SWEEP_IDX for test '$test_name'; skipping."
+                continue
+            fi
+            if ! ( validate_sl_config ) >/dev/null 2>&1; then
+                echo "WARNING: preset $tdd_config/sl$sl_slots failed validation for '$test_name'; skipping." >&2
+                validate_sl_config || true
+                continue
+            fi
+        fi
 
         # Get test-specific configuration (four-tier resolution)
         local test_mcs_array=($(get_test_mcs_array "$test_name"))
@@ -4105,7 +4667,7 @@ main() {
                 for param in "${param_array[@]}"; do
                     for mcs in ${test_mcs_array[@]}; do  # Use test-specific MCS
                         # Call BLER test with noise_power as 4th parameter
-                        $test_name $test_duration $mcs $k $param  # Use test-specific duration
+                        $test_fn $test_duration $mcs $k $param  # Use test-specific duration
                         sleep 3
                     done
                 done
@@ -4116,34 +4678,34 @@ main() {
                 for k in $(seq $iteration_start_val 1 $iteration_end_val); do
                     for mcs in ${test_mcs_array[@]}; do  # Use test-specific MCS
                         # CSI/PSFCH tests need special handling
-                        if [[ $test_name == *"csi_acquisition_psfch"* ]]; then
+                        if [[ $test_fn == *"csi_acquisition_psfch"* ]]; then
                             if [[ -n "$csi_param" && -n "$psfch_param" ]]; then
                                 # Run specific CSI/PSFCH combination
-                                $test_name $csi_param $psfch_param $test_duration $mcs $k
+                                $test_fn $csi_param $psfch_param $test_duration $mcs $k
                             elif [[ -n "$csi_param" && -z "$psfch_param" ]]; then
                                 # Run specific CSI with all PSFCH values (e.g., test:1:)
                                 for psfch in 0 1 2 3; do
-                                    $test_name $csi_param $psfch $test_duration $mcs $k
+                                    $test_fn $csi_param $psfch $test_duration $mcs $k
                                 done
                             elif [[ -z "$csi_param" && -n "$psfch_param" ]]; then
                                 # Run specific PSFCH with all CSI values (e.g., test::1)
                                 for csi in 0 1; do
-                                    $test_name $csi $psfch_param $test_duration $mcs $k
+                                    $test_fn $csi $psfch_param $test_duration $mcs $k
                                 done
                             else
                                 # Run all 8 combinations
-                                $test_name 0 0 $test_duration $mcs $k
-                                $test_name 0 1 $test_duration $mcs $k
-                                $test_name 0 2 $test_duration $mcs $k
-                                $test_name 0 3 $test_duration $mcs $k
-                                $test_name 1 0 $test_duration $mcs $k
-                                $test_name 1 1 $test_duration $mcs $k
-                                $test_name 1 2 $test_duration $mcs $k
-                                $test_name 1 3 $test_duration $mcs $k
+                                $test_fn 0 0 $test_duration $mcs $k
+                                $test_fn 0 1 $test_duration $mcs $k
+                                $test_fn 0 2 $test_duration $mcs $k
+                                $test_fn 0 3 $test_duration $mcs $k
+                                $test_fn 1 0 $test_duration $mcs $k
+                                $test_fn 1 1 $test_duration $mcs $k
+                                $test_fn 1 2 $test_duration $mcs $k
+                                $test_fn 1 3 $test_duration $mcs $k
                             fi
                         else
                             # All other tests: just call with standard parameters
-                            $test_name $test_duration $mcs $k  # Use test-specific duration
+                            $test_fn $test_duration $mcs $k  # Use test-specific duration
                         fi
                         sleep 3 # delay in second between tests.
                     done
@@ -4151,6 +4713,38 @@ main() {
             done
         fi
     done
+    }  # end run_enabled_tests_once
+
+    #########################################################
+    ### Dispatch: single run, or pilot TDD/sl_slots sweep ###
+    #########################################################
+    # tdd_sweep_enable=0 runs the tests once against the scalar tdd_config/sl_slots.
+    # =1 sweeps the mode preset arrays index-by-index: pass i applies tdd_configs_mode1[i]
+    # to SL Mode 1 / Uu tests and tdd_configs_mode2[i] to SL Mode 2 tests, so each test
+    # always runs under a preset appropriate to its mode. The two arrays are index-aligned;
+    # the sweep runs for max(len) passes and a test whose mode array lacks entry i is
+    # skipped that pass. Each pass labels results with an _ul<UL>sl<slots> suffix (per test,
+    # since the UL/SL split can differ between modes); all passes share log_dir and stay
+    # unique via suffix + timestamp. Per-test preset selection + validation happen inside
+    # run_enabled_tests_once (see select_sweep_preset_for_test).
+    if [[ "$tdd_sweep_enable" == "1" ]]; then
+        local _npass=${#tdd_configs_mode1[@]}
+        [[ ${#tdd_configs_mode2[@]} -gt $_npass ]] && _npass=${#tdd_configs_mode2[@]}
+        echo "TDD/sl_slots preset sweep ENABLED ($_npass pass(es)):"
+        echo "  mode1 (relay/Uu): ${tdd_configs_mode1[*]}"
+        echo "  mode2 (peer-to-peer): ${tdd_configs_mode2[*]}"
+        for ((TDD_SWEEP_IDX = 0; TDD_SWEEP_IDX < _npass; TDD_SWEEP_IDX++)); do
+            echo ""
+            echo "=========================================="
+            echo "Sweep pass $((TDD_SWEEP_IDX + 1))/$_npass:" \
+                 "mode1=${tdd_configs_mode1[$TDD_SWEEP_IDX]:-<none>}" \
+                 "mode2=${tdd_configs_mode2[$TDD_SWEEP_IDX]:-<none>} -> $log_dir"
+            echo "=========================================="
+            run_enabled_tests_once
+        done
+    else
+        run_enabled_tests_once
+    fi
 
     #########################################################
     ### Display final summary ###
@@ -4161,7 +4755,7 @@ main() {
     echo "=========================================="
 
     local iperf3_csv
-    iperf3_csv=$(find "$log_dir" -maxdepth 1 -name 'iperf3_summary_*.csv' 2>/dev/null | head -1)
+    iperf3_csv=$(find "$log_dir" -maxdepth 2 -name 'iperf3_summary_*.csv' 2>/dev/null | head -1)
 
     if [ -n "$iperf3_csv" ]; then
         echo "iperf3 Summary: $iperf3_csv"

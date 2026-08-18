@@ -108,8 +108,10 @@ extern "C"
 #define IS_RELAY_UE         softmodem_params.is_relay_ue
 #define IP_DEMO             softmodem_params.ip_demo
 #define SL_PSFCH_PERIOD     softmodem_params.sl_psfch_period
+#define SL_SLOTS            softmodem_params.sl_slots
 
 #define CONFIG_HLP_SL_PSFCH_PERIOD "SL PSFCH (HARQ feedback) period index: 0=disabled/blind, 1=sl1, 2=sl2, 3=sl4"
+#define CONFIG_HLP_SL_SLOTS      "Number of usable sidelink slots per TDD period (must be <= UL slots per period). 0 (default) keeps the built-in behaviour: reserve 2 UL slots for the Uu uplink on a U2N relay, none otherwise."
 #define CONFIG_HLP_RELAY_TYPE    "Set Relay type to represent No Relay (0), U2N (1) and U2U (2) cases. Later this will be properly configured from RRC."
 #define CONFIG_HLP_REMOTE_UE_ID  "Set Remote UE ID to fill in SRAP header"
 #define CONFIG_HLP_IS_RELAY_UE   "Set to configure a UE Relay role"
@@ -161,6 +163,7 @@ extern int usrp_tx_thread;
   {"sl-psfch-period",       CONFIG_HLP_SL_PSFCH_PERIOD,0,             .u8ptr=&SL_PSFCH_PERIOD,                 .defintval=0,             TYPE_UINT8,  0},  \
   {"is-relay-ue",           CONFIG_HLP_IS_RELAY_UE,   0,              .u8ptr=&IS_RELAY_UE,                     .defintval=0,             TYPE_UINT8,  0},  \
   {"ip-demo",               CONFIG_HLP_IP_DEMO,       0,              .u8ptr=&IP_DEMO,                         .defintval=0,             TYPE_UINT8,  0},  \
+  {"sl-slots",              CONFIG_HLP_SL_SLOTS,      0,              .u8ptr=&SL_SLOTS,                        .defintval=0,             TYPE_UINT8,  0},  \
 }
 // clang-format on
 
@@ -195,6 +198,7 @@ extern int usrp_tx_thread;
                {"MONOLITHIC", "PNF", "VNF", "AERIAL","UE_STUB_PNF","UE_STUB_OFFNET","STANDALONE_PNF"}, \
                {NFAPI_MONOLITHIC, NFAPI_MODE_PNF, NFAPI_MODE_VNF, NFAPI_MODE_AERIAL,NFAPI_UE_STUB_PNF,NFAPI_UE_STUB_OFFNET,NFAPI_MODE_STANDALONE_PNF}, \
                7 } }, \
+    { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
     { .s5 = { NULL } },                     \
@@ -327,6 +331,7 @@ typedef struct {
   uint8_t        sl_psfch_period; /* SL PSFCH period index: 0=disabled, 1=sl1, 2=sl2, 3=sl4 */
   uint8_t        is_relay_ue;   /* set on the UE that plays the relay role (mode-1) */
   uint8_t        ip_demo;       /* SL demo mode: 0=normal, 1=drb per dest IP, 2=IP hdr decode */
+  uint8_t        sl_slots;      /* usable SL slots per TDD period; 0 = built-in relay reservation */
 } softmodem_params_t;
 
 #define IS_SA_MODE(sM_params) (!(sM_params)->phy_test && !(sM_params)->do_ra && !(sM_params)->nsa)

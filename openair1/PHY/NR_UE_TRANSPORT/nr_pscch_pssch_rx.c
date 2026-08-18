@@ -95,6 +95,101 @@ uint32_t nr_sl_get_G(uint16_t nb_rb, uint16_t nb_symb_sch, uint8_t nb_re_dmrs, u
   return slsch_re * Qm * Nl;
 }
 
+/* Single source of truth for CSI-RS RE positions on the PSSCH grid: the SLSCH TX RE-map, the RX
+   LLR extraction, and the rate-match count (get_nRECSI_RS) must all agree on which REs carry
+   CSI-RS or the SLSCH de-aligns. All derive positions from get_csi_mapping_parms() via these
+   helpers so they cannot diverge.
+
+   sl_csi_rs_re_in_symbol: mark is_csi[k]=true for every subcarrier carrying CSI-RS in symbol `l`;
+   returns the count. k is a PHYSICAL subcarrier index (includes first_carrier_offset), matching
+   the TX and RX RE loops. For SL rows (2, 3) lprime==0 so the resource is a single symbol. */
+int sl_csi_rs_re_in_symbol(bool *is_csi,
+                           int ofdm_symbol_size,
+                           int first_carrier_offset,
+                           int l,
+                           uint8_t row,
+                           uint16_t freq_domain,
+                           uint8_t symb_l0,
+                           uint8_t symb_l1,
+                           uint16_t start_rb,
+                           uint16_t nr_of_rbs,
+                           uint8_t freq_density)
+{
+  const csi_mapping_parms_t p = get_csi_mapping_parms(row, freq_domain, symb_l0, symb_l1);
+  int marked = 0;
+  for (int n = start_rb; n < start_rb + nr_of_rbs; n++) {
+    if (!((freq_density > 1) || (freq_density == (n % 2)))) // dot5 (idx 0/1) uses even/odd RBs only
+      continue;
+    for (int ji = 0; ji < p.size; ji++) {
+      for (int lp = 0; lp <= p.lprime; lp++) {
+        if ((lp + p.loverline[ji]) != l) // this CDM group is not in symbol l
+          continue;
+        for (int kp = 0; kp <= p.kprime; kp++) {
+          const int k = (first_carrier_offset + n * NR_NB_SC_PER_RB + p.koverline[ji] + kp) % ofdm_symbol_size;
+          if (!is_csi[k]) {
+            is_csi[k] = true;
+            marked++;
+          }
+        }
+      }
+    }
+  }
+  return marked;
+}
+
+/* Number of PSSCH REs occupied by the CSI-RS resource (removed from the SLSCH via nr_sl_get_G's
+   csi_rs_re argument). Summed over every symbol the resource spans using the same position logic
+   as sl_csi_rs_re_in_symbol, so the count equals what the TX/RX loops puncture. */
+int get_nRECSI_RS(uint8_t row,
+                  uint16_t freq_domain,
+                  uint8_t symb_l0,
+                  uint8_t symb_l1,
+                  uint16_t start_rb,
+                  uint16_t nr_of_rbs,
+                  uint8_t freq_density,
+                  int ofdm_symbol_size,
+                  int first_carrier_offset)
+{
+  const csi_mapping_parms_t p = get_csi_mapping_parms(row, freq_domain, symb_l0, symb_l1);
+  /* Collect the distinct OFDM symbols the resource spans; sl_csi_rs_re_in_symbol already sums all
+     CDM groups within a symbol, so call it once per distinct symbol to avoid double-counting. */
+  bool sym_seen[NR_SYMBOLS_PER_SLOT];
+  memset(sym_seen, 0, sizeof(sym_seen));
+  int total = 0;
+  for (int ji = 0; ji < p.size; ji++) {
+    for (int lp = 0; lp <= p.lprime; lp++) {
+      const int l = lp + p.loverline[ji];
+      if (l < 0 || l >= NR_SYMBOLS_PER_SLOT || sym_seen[l])
+        continue;
+      sym_seen[l] = true;
+      bool is_csi[ofdm_symbol_size];
+      memset(is_csi, 0, sizeof(is_csi));
+      total += sl_csi_rs_re_in_symbol(is_csi, ofdm_symbol_size, first_carrier_offset, l, row, freq_domain,
+                                      symb_l0, symb_l1, start_rb, nr_of_rbs, freq_density);
+    }
+  }
+  return total;
+}
+
+/* Total CSI-RS REs to de-rate-match from the SLSCH on this RX slot. Gated on
+   SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS: returns 0 on every other slot, so the SLSCH G is
+   unchanged whenever the MAC did not schedule CSI-RS. */
+uint16_t sl_pssch_csi_rs_re(const NR_DL_FRAME_PARMS *fp, const nr_phy_data_t *phy_data)
+{
+  if (phy_data->sl_rx_action != SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS)
+    return 0;
+  uint16_t total = 0;
+  for (int c = 0; c < phy_data->num_sl_csirs; c++) {
+    const NR_UE_SL_CSI_RS *v = &phy_data->sl_csirs_vars[c];
+    if (!v->active)
+      continue;
+    const sl_nr_tti_csi_rs_pdu_t *pdu = &v->csirs_config_pdu;
+    total += get_nRECSI_RS(pdu->row, pdu->freq_domain, pdu->symb_l0, pdu->symb_l1, pdu->start_rb,
+                           pdu->nr_of_rbs, pdu->freq_density, fp->ofdm_symbol_size, fp->first_carrier_offset);
+  }
+  return total;
+}
+
 // Layer de-mapping of PSSCH LLRs (TS 38.211 6.3.1.3), UE-native (was gNB nr_ulsch_layer_demapping).
 void nr_sl_layer_demapping(int16_t *llr_cw, uint8_t Nl, uint8_t mod_order, uint32_t length, int16_t **llr_layers)
 {
@@ -332,6 +427,19 @@ int nr_slsch_decoding(PHY_VARS_NR_UE *ue,
   TB.E2 = TB.E;
   TB.first_rE2 = TB.C;
   TB.R = nr_get_R_ldpc_decoder(TB.rv_index, TB.E, TB.BG, TB.Z, &harq->llrLen, harq->round);
+  /* Segments split into two rate-match sizes when (G/(Nl*Qm)) % C != 0 (TS 38.212 5.4.2.1). The
+     TX rate-matches each segment at its own per-r E, so the RX must find the first segment whose
+     E differs and set E2/first_rE2/R2 accordingly, else trailing segments read from the wrong LLR
+     offset and fail CRC. Mirrors nr_dlsch_decoding.c / nr_ulsch_decoding.c. */
+  for (int r = 1; r < TB.C; r++) {
+    int Er = nr_get_E(TB.G, TB.C, TB.Qm, TB.nb_layers, r);
+    if (Er != TB.E) {
+      TB.E2 = Er;
+      TB.R2 = nr_get_R_ldpc_decoder(TB.rv_index, TB.E2, TB.BG, TB.Z, &harq->llrLen, harq->round);
+      TB.first_rE2 = r;
+      break;
+    }
+  }
   TB.d_to_be_cleared = new_rx;
   for (int r = 0; r < TB.C; r++)
     TB.decodeSuccess[r] = false;
@@ -393,6 +501,7 @@ static int nr_sl_extract_rbs(int rxFsize,
                              int bwp_start_subcarrier,
                              int rb_size,
                              bool dmrs_symbol_flag,
+                             const bool *is_csi,
                              int aarx)
 {
   const c16_t *rxF = &rxdataF[aarx][rx_symbol_offset];
@@ -402,6 +511,8 @@ static int nr_sl_extract_rbs(int rxFsize,
     if (dmrs_symbol_flag && ((re & 1) == 0))
       continue; // type-1 PSSCH DMRS occupies the even REs -> not data
     const int k = (bwp_start_subcarrier + re) % fp->ofdm_symbol_size;
+    if (is_csi && is_csi[k])
+      continue; // episys SL CSI-RS port (Layer 4): CSI-RS RE -> not SLSCH data (mirrors the TX map skip)
     rxF_ext[j] = rxF[k];      // raw rxdataF is at the absolute subcarrier (bwp_start_subcarrier + re)
     ch_ext[j] = ul_ch[re];    // channel estimate is stored allocation-relative (contiguous from 0)
     j++;
@@ -906,16 +1017,34 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     }
     const int ch_est_offset = ch_sym * fp->ofdm_symbol_size;
 
+    /* CSI-RS subcarriers occupied in this symbol (physical k). The extractor skips them so
+       rxF_ext/ch_ext stay contiguous and transmitter-aligned; nb_re is then the count returned.
+       Mask is all-false off CSI-RS slots. ASSUMPTION (enforced by the MAC scheduler): the CSI-RS
+       resource does not overlap the PSCCH (SCI-1) region or a DMRS symbol, so the SCI-1
+       front-puncture and DMRS accounting stay valid, matching the TX map. */
+    bool is_csi[fp->ofdm_symbol_size];
+    memset(is_csi, 0, sizeof(is_csi));
+    if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS) {
+      for (int c = 0; c < phy_data->num_sl_csirs; c++) {
+        const NR_UE_SL_CSI_RS *v = &phy_data->sl_csirs_vars[c];
+        if (v->active && v->csirs_config_pdu.csi_type != NR_CSI_RS_TYPE_ZP)
+          sl_csi_rs_re_in_symbol(is_csi, fp->ofdm_symbol_size, fp->first_carrier_offset, sym,
+                                 v->csirs_config_pdu.row, v->csirs_config_pdu.freq_domain, v->csirs_config_pdu.symb_l0,
+                                 v->csirs_config_pdu.symb_l1, v->csirs_config_pdu.start_rb, v->csirs_config_pdu.nr_of_rbs,
+                                 v->csirs_config_pdu.freq_density);
+      }
+    }
+
     __attribute__((aligned(32))) c16_t rxF_ext[nbRx][buf_len];
     __attribute__((aligned(32))) c16_t ch_ext[nl][nbRx][buf_len];
     memset(rxF_ext, 0, sizeof(rxF_ext));
     memset(ch_ext, 0, sizeof(ch_ext));
 
     for (int aarx = 0; aarx < nbRx; aarx++)
-      nr_sl_extract_rbs(rxFsize, rxdataF, pssch_vars->ul_ch_estimates,
-                        sym * fp->ofdm_symbol_size, ch_est_offset,
-                        rxF_ext[aarx], ch_ext[0][aarx], fp, bwp_start_subcarrier,
-                        rb_size, dmrs_flag, aarx);
+      nb_re = nr_sl_extract_rbs(rxFsize, rxdataF, pssch_vars->ul_ch_estimates,
+                                sym * fp->ofdm_symbol_size, ch_est_offset,
+                                rxF_ext[aarx], ch_ext[0][aarx], fp, bwp_start_subcarrier,
+                                rb_size, dmrs_flag, is_csi, aarx);
     data_re_energy += signal_energy_nodc(rxF_ext[0], nb_re); // data-RE energy this symbol (DTX gate)
 
     /* Undo the residual-CFO phase ramp accumulated between this symbol and the DMRS symbol it is equalised
@@ -999,7 +1128,18 @@ void nr_rx_pssch(PHY_VARS_NR_UE *ue,
     if (nb_re <= 0)
       continue;
 
-    nr_compute_llr(&rxComp[0][off], &ch_maga[0][off], &ch_magb[0][off], &ch_magc[0][off],
+    /* nr_compute_llr's QAM16/64/256 kernels dereference ch_mag (and rxComp for 16/256-QAM) as an
+       aligned simde__m256i (vmovdqa), requiring a 32-byte-aligned base. c16_t is 4 bytes, so
+       &buf[0][off] is aligned only when off%8==0. Upstream always passes ch_mag at index 0; here
+       the SCI-1/SCI-2(+CSI-RS) puncture leaves off arbitrary, so a raw &ch_maga[0][off] faults.
+       Compact the surviving data REs to the aligned base, keeping RE order transmitter-aligned. */
+    if (off > 0) {
+      memmove(&rxComp[0][0], &rxComp[0][off], nb_re * sizeof(c16_t));
+      memmove(&ch_maga[0][0], &ch_maga[0][off], nb_re * sizeof(c16_t));
+      memmove(&ch_magb[0][0], &ch_magb[0][off], nb_re * sizeof(c16_t));
+      memmove(&ch_magc[0][0], &ch_magc[0][off], nb_re * sizeof(c16_t));
+    }
+    nr_compute_llr(&rxComp[0][0], &ch_maga[0][0], &ch_magb[0][0], &ch_magc[0][0],
                    &pssch_vars->llr_layers[0][llr_offset * Qm], nb_re, 0, Qm);
     llr_offset += nb_re;
   }
@@ -1081,6 +1221,10 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_ph
                                         pssch_pdu->targetCodeRate,
                                         slsch_pdu->mcs_table);
   const uint16_t sci1_re = pssch_pdu->pscch_numsym * pssch_pdu->pscch_numrbs * NR_NB_SC_PER_RB;
+  /* On a CSI-RS RX slot, remove the CSI-RS REs from the SLSCH rate-match count. Must equal the
+     count the transmitter removed (get_nRECSI_RS uses the same position logic on both ends) and
+     the REs punctured in nr_rx_pssch's LLR loop, or G de-aligns. Zero on non-CSI-RS slots. */
+  uint16_t csi_rs_re = sl_pssch_csi_rs_re(&sl_phy_params->sl_frame_params, phy_data);
   uint32_t G = nr_sl_get_G(rb_size,
                            number_symbols,
                            nb_re_dmrs,
@@ -1089,7 +1233,7 @@ int nr_slsch_procedures(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_ph
                            sci1_re,
                            pssch_pdu->pscch_numrbs,
                            sci2_re,
-                           0 /* CSI-RS REs: F3, deferred */,
+                           csi_rs_re,
                            pssch_pdu->mod_order,
                            pssch_pdu->num_layers);
   AssertFatal(G > 0, "SLSCH G is 0: rb_size %u nsym %d ndmrs %d Qm %d Nl %d\n",

@@ -62,6 +62,10 @@ typedef enum { ROLE_SERVER = 1, ROLE_CLIENT } role;
 // (episys feature re-port, Goal-2 F-gate)
 #define VRTSIM_PEER_WAIT_SEC 120
 #define TPOOL_HLP "Thread pool for channel modelling. Only used if CUDA support is disabled."
+/* Seconds of clean (impairment-free) link at stream start before the channel model is engaged.
+   Lets registration/sync complete race-free, then introduces noise/ploss on established data so
+   CSI-RS/HARQ retransmission paths are exercised without collapsing the control plane. 0 = off. */
+#define CHANMOD_WARMUP_HLP "Seconds of clean link before channel modelling engages (0 = immediate)"
 
 // clang-format off
 #define VRTSIM_PARAMS_DESC \
@@ -71,6 +75,7 @@ typedef enum { ROLE_SERVER = 1, ROLE_CLIENT } role;
      {"role_sl",                "either client or server (PC5/sidelink link)\n", 0, .strptr = &role_sl,             .defstrval = ROLE_CLIENT_STRING, TYPE_STRING, 0}, \
      {"timescale",              TIME_SCALE_HLP,              0, .dblptr = &vrtsim_state->timescale,              .defdblval = 1.0,                TYPE_DOUBLE, 0}, \
      {"chanmod",                "Enable channel modelling",  0, .iptr = &vrtsim_state->chanmod,                  .defintval = 0,                  TYPE_INT,    0}, \
+     {"chanmod_warmup_sec",     CHANMOD_WARMUP_HLP,          0, .dblptr = &vrtsim_state->chanmod_warmup_sec,     .defdblval = 0.0,                TYPE_DOUBLE, 0}, \
      {"taps-socket",            TAPS_SOCKET_HLP,             0, .strptr = &vrtsim_state->taps_socket,            .defstrval = NULL,               TYPE_STRING, 0}, \
      /* CIR DB enable and paths */ \
      {"cirdb",                  "Use CIR database for channel taps (1 yes, 0 no)", 0, .iptr = &vrtsim_state->use_cirdb,  .defintval = 0, TYPE_INT, 0}, \
@@ -136,6 +141,8 @@ typedef struct {
   bool run_timing_thread;
   double timescale;
   double sample_rate;
+  double chanmod_warmup_sec; // clean-link warmup before channel modelling engages (0 = off)
+  bool chanmod_warmup_done;  // set once warmup elapsed (for a single "engaged" log line)
   uint64_t rx_samples_late;
   uint64_t rx_early;
   uint64_t rx_samples_total;
@@ -901,6 +908,19 @@ static int vrtsim_write(openair0_device_t *device,
   timestamp -= device->openair0_cfg->command_line_sample_advance;
   vrtsim_state_t *vrtsim_state = (vrtsim_state_t *)device->priv;
   bool channel_modelling = vrtsim_state->chanmod || vrtsim_state->taps_socket || vrtsim_state->use_cirdb;
+  /* Warmup: keep the link clean (bypass channel modelling) until chanmod_warmup_sec of stream time
+     has elapsed, so registration/sync completes on the same race-free path a no-impairment run uses.
+     Once warmup passes, impairment engages on established data (drives CSI-RS/HARQ retx). Logged once. */
+  if (channel_modelling && vrtsim_state->chanmod_warmup_sec > 0.0 && vrtsim_state->sample_rate > 0.0) {
+    double elapsed_sec = (double)timestamp / vrtsim_state->sample_rate;
+    if (elapsed_sec < vrtsim_state->chanmod_warmup_sec) {
+      channel_modelling = false;
+    } else if (!vrtsim_state->chanmod_warmup_done) {
+      vrtsim_state->chanmod_warmup_done = true;
+      LOG_I(HW, "VRTSIM: chanmod warmup (%.1fs) elapsed at stream time %.1fs; channel modelling now engaged\n",
+            vrtsim_state->chanmod_warmup_sec, elapsed_sec);
+    }
+  }
   if (channel_modelling) {
     struct timespec ts;
     int ret = clock_gettime(CLOCK_MONOTONIC, &ts);

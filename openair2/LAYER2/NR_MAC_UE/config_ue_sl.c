@@ -2,17 +2,23 @@
  * SPDX-License-Identifier: LicenseRef-CSSL-1.0
  */
 
+#include <strings.h> // strcasecmp for sl_csi_mode parsing
 #include "openair2/LAYER2/NR_MAC_UE/mac_defs.h"
 #include "NR_SidelinkPreconfigNR-r16.h"
 #include "mac_proto.h"
 #include "executables/softmodem-common.h" // get_softmodem_params() - numerology for the sensing window
 #include "common/config/config_userapi.h" // config_get / paramdef_t for the resource-selection config
 #include "RRC/NR_UE/sl_preconfig_paramvalues.h" // SL_CONFIG_STRING_SL_PRECONFIGURATION
+#include "executables/nr-uesoftmodem.h"  // episys SL CSI-RS port (Layer 6): get_nrUE_params() -> nb_antennas_tx
 
 // Which of the TS 38.214 8.1.4 resource-selection configurations the mode-2 TX path uses.
 #define SL_CONFIG_STRING_SL_ALLOWED_RESOURCE_SELECTION_CONFIG "sl_AllowedResourceSelectionConfig"
 #define SL_CONFIG_RESOURCE_SELECTION(resource_selection_cfg) { \
 {SL_CONFIG_STRING_SL_ALLOWED_RESOURCE_SELECTION_CONFIG, NULL, 0, .u16ptr=resource_selection_cfg, .defuintval=3, TYPE_UINT16, 0}}
+
+/* episys SL CSI-RS port (Layer 6): conf-block field name for the sl_csi_rs sub-block (prefix
+   SL_CONFIG_STRING_SL_PRECONFIGURATION comes from sl_preconfig_paramvalues.h above). */
+#define SL_CONFIG_STRING_SL_CSI_RS_LIST       "sl_csi_rs"
 
 void sl_ue_mac_free(NR_UE_MAC_INST_t *mac)
 {
@@ -60,6 +66,15 @@ void sl_set_tdd_config_nr_ue(fapi_nr_tdd_table_t *tdd_table,
   const int nb_periods_per_frame = get_nb_periods_per_frame(pattern->dl_UL_TransmissionPeriodicity);
   const int nb_slots_per_period = ((1 << mu) * NR_NUMBER_OF_SUBFRAMES_PER_FRAME) / nb_periods_per_frame;
   tdd_table->tdd_period_in_slots = nb_slots_per_period;
+
+  /* The nearby/mib path decodes only the UL slot count from the SL-MIB and leaves
+     nrofDownlinkSlots/Symbols at 0. Back-fill the DL slots from the period; without this every slot
+     is treated as UL and build_physical_sl_pool overruns its bitmap. Guarded on DL==0 so the
+     sync_ref/preconfig path (DL read from .conf) is left unchanged. */
+  if (pattern->nrofDownlinkSlots == 0 && pattern->nrofDownlinkSymbols == 0) {
+    pattern->nrofDownlinkSymbols = nrofUplinkSymbols ? (NR_SYMBOLS_PER_SLOT - nrofUplinkSymbols) : 0;
+    pattern->nrofDownlinkSlots = nb_slots_per_period - nrofUplinkSlots - (pattern->nrofDownlinkSymbols ? 1 : 0);
+  }
 
   LOG_I(PHY,"UL slots:%d, symbols:%d, slots_per_period:%d\n",
                           nrofUplinkSlots, nrofUplinkSymbols, nb_slots_per_period);
@@ -248,14 +263,72 @@ static void  sl_prepare_phy_config(int module_id,
   return;
 }
 
+/* build the physical SL slot bitmap for the TX and RX pools.
+   is_sl_slot()/slot_has_psfch()/get_feedback_abs_slot() all read phy_sl_bitmap, so it must be
+   populated once the TDD config and pools are known. The UE-side UL-slot bitmap is derived from the
+   SL TDD pattern (UL when the slot index within the period is at/after the first UL slot), then
+   build_physical_sl_pool lays out the canonical physical grid identically on every peer. */
+static void sl_ue_build_physical_pool(NR_UE_MAC_INST_t *mac)
+{
+  sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
+  if (!sl_mac || !sl_mac->sl_TDD_config || !sl_mac->sl_TxPool[0] || !sl_mac->sl_RxPool[0]
+      || !mac->sl_tx_res_pool || !mac->sl_rx_res_pool
+      || !mac->sl_tx_res_pool->ext1 || !mac->sl_tx_res_pool->ext1->sl_TimeResource_r16
+      || !mac->sl_rx_res_pool->ext1 || !mac->sl_rx_res_pool->ext1->sl_TimeResource_r16)
+    return;
+  if (sl_mac->sl_TxPool[0]->phy_sl_bitmap.buf) // already built
+    return;
+
+  const uint8_t mu = get_softmodem_params()->numerology;
+  const int nr_slots_frame = 10 << mu; // slots per frame; nr_slots_per_frame[] is not exported to MAC_UE
+  NR_TDD_UL_DL_Pattern_t *tdd = &sl_mac->sl_TDD_config->pattern1;
+  const int nr_slots_period = tdd ? nr_slots_frame / get_nb_periods_per_frame(tdd->dl_UL_TransmissionPeriodicity) : nr_slots_frame;
+  // First UL slot within a TDD period (mirrors the SL-local helper in nr_ue_procedures_sl.c).
+  const int nr_ulstart_slot = tdd ? tdd->nrofDownlinkSlots + (tdd->nrofDownlinkSymbols != 0 && tdd->nrofUplinkSymbols == 0) : 0;
+  for (int slot = 0; slot < nr_slots_frame; ++slot) {
+    if (!tdd || (slot % nr_slots_period) >= nr_ulstart_slot)
+      mac->ulsch_slot_bitmap[slot / 64] |= (uint64_t)1 << (slot % 64);
+  }
+
+  /* On a U2N relay PC5 link (relay_type == 1) reserve the first 2 UL slots per period for the Uu
+     uplink (see build_physical_sl_pool); the --sl-slots override, if set, supersedes this in the builder. */
+  const int uu_reserved_sl_slots = (get_softmodem_params()->relay_type == 1) ? 2 : 0;
+
+  BIT_STRING_t *tx_time_rsrc = mac->sl_tx_res_pool->ext1->sl_TimeResource_r16;
+  BIT_STRING_t *rx_time_rsrc = mac->sl_rx_res_pool->ext1->sl_TimeResource_r16;
+  // Size both physical bitmaps from the canonical TX bit count (TX and RX share the same grid).
+  const int ul_slots_period = tdd ? tdd->nrofUplinkSlots + (tdd->nrofUplinkSymbols > 0 ? 1 : 0) : nr_slots_frame;
+  const int sl_time_bits = sl_canonical_time_resource_len(tx_time_rsrc, ul_slots_period, nr_slots_period, nr_slots_frame);
+  const int total_dl_slots = sl_time_bits / ul_slots_period * (nr_slots_period - ul_slots_period);
+  const int phy_sl_size = sl_time_bits + total_dl_slots;
+  const size_t byte_capacity = (phy_sl_size + 7) / 8;
+
+  BIT_STRING_t *tx_map = &sl_mac->sl_TxPool[0]->phy_sl_bitmap;
+  tx_map->buf = malloc16_clear(byte_capacity);
+  tx_map->size = byte_capacity;
+  tx_map->bits_unused = ((byte_capacity << 3) - phy_sl_size) % 8;
+  const int tx_sz = build_physical_sl_pool(tdd, mu, mac->ulsch_slot_bitmap, tx_time_rsrc, tx_map, uu_reserved_sl_slots);
+
+  BIT_STRING_t *rx_map = &sl_mac->sl_RxPool[0]->phy_sl_bitmap;
+  rx_map->buf = malloc16_clear(byte_capacity);
+  rx_map->size = byte_capacity;
+  rx_map->bits_unused = ((byte_capacity << 3) - phy_sl_size) % 8;
+  const int rx_sz = build_physical_sl_pool(tdd, mu, mac->ulsch_slot_bitmap, rx_time_rsrc, rx_map, uu_reserved_sl_slots);
+
+  AssertFatal(tx_sz == rx_sz, "TX %d and RX %d physical SL pool sizes differ\n", tx_sz, rx_sz);
+  LOG_I(NR_MAC, "Built physical SL pool: phy_map_sz %d (bytes %zu, uu_reserved %d)\n",
+        tx_sz, byte_capacity, uu_reserved_sl_slots);
+}
+
 /* episys SL PSFCH port (Stage 4b): initialize the per-connection SL context (HARQ process pool +
    feedback/retrans lists + PSFCH feedback-scheduling buffer + the sched_ctrl that carries uid, the
    TX MCS and CSI-report state). Idempotent; needs only the TX pool + TDD config to be ready.
    NOTE: do NOT gate this on sl_PSFCH_Config_r16 - the per-connection context is also required by the
-   CQI-driven MCS adaptation, which runs even when PSFCH is disabled (psfch0); the HARQ/feedback lists
-   are simply left unused in that case. Called from both SL config entry points. */
+   CSI-RS trigger and CQI-driven MCS adaptation, which run even when PSFCH is disabled (psfch0); the
+   HARQ/feedback lists are simply left unused in that case. Called from both SL config entry points. */
 static void sl_ue_harq_ctx_init(NR_UE_MAC_INST_t *mac)
 {
+  sl_ue_build_physical_pool(mac);
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
   if (!sl_mac || !mac->sl_tx_res_pool || !sl_mac->sl_TDD_config)
     return;
@@ -295,8 +368,93 @@ static void sl_ue_harq_ctx_init(NR_UE_MAC_INST_t *mac)
     sc->sched_psfch[i].feedback_frame = -1;
     sc->sched_psfch[i].feedback_slot = -1;
   }
-  LOG_I(NR_MAC, "SL PSFCH HARQ ctx init: n_ul_slots_period %d, num_subch %d, sched_psfch entries %d\n",
-        n_ul_slots_period, num_subch, nfb);
+  LOG_I(NR_MAC, "SL UE ctx init: n_ul_slots_period %d, num_subch %d, sched_psfch entries %d, PSFCH %s\n",
+        n_ul_slots_period, num_subch, nfb, mac->sl_tx_res_pool->sl_PSFCH_Config_r16 ? "enabled" : "disabled");
+}
+
+/* read the custom sl_csi_rs conf sub-block into sl_mac.
+   Config-driven, NOT a CLI flag. Fields not carried in the conf (row/cdm_type/freq_density/
+   freq_domain) are derived from nb_antennas_tx per 38.211 Table 7.4.1.5.3-1; start_rb/nr_of_rbs come
+   from the SL BWP. The SLSCH scheduler uses these to place a PC5 CSI-RS on the PSSCH grid and gate csi_req. */
+static void sl_read_csi_rs_conf(NR_UE_MAC_INST_t *mac)
+{
+  sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
+  if (!sl_mac)
+    return;
+
+  uint8_t symb_l0 = 1, csi_type = 1, pco = 1, pco_ss = 1;
+  /* Default acquisition to the ASN.1-derived value already on sl_mac so a missing conf key doesn't
+     silently flip the feature; the sl_csi_rs conf block below overrides it. 0=ENABLED, 1=DISABLED. */
+  uint8_t csi_acquisition = sl_mac->sl_CSI_Acquisition;
+  /* CSI-RS trigger mode string: "debug" (periodic, default) or "production" (aperiodic). The run
+     script sets sl_csi_mode in the sl_csi_rs conf block before each test. */
+  char *csi_mode = NULL;
+  paramdef_t SL_CSI_RS_PARAMS[] = {
+    {"symb_l0",                 NULL, 0, .u8ptr = &symb_l0,           .defuintval = 1, TYPE_UINT8, 0},
+    {"csi_Type",                NULL, 0, .u8ptr = &csi_type,          .defuintval = 1, TYPE_UINT8, 0},
+    {"sl_powerControlOffset",   NULL, 0, .u8ptr = &pco,               .defuintval = 1, TYPE_UINT8, 0},
+    {"sl_powerControlOffsetSS", NULL, 0, .u8ptr = &pco_ss,            .defuintval = 1, TYPE_UINT8, 0},
+    {"sl_CSI_Acquisition",      NULL, 0, .u8ptr = &csi_acquisition,   .defuintval = csi_acquisition, TYPE_UINT8, 0},
+    {"sl_csi_mode",             NULL, 0, .strptr = &csi_mode,         .defstrval = "debug", TYPE_STRING, 0},
+  };
+
+  char aprefix[MAX_OPTNAME_SIZE * 2 + 8];
+  paramlist_def_t SL_CSI_RS_List = {SL_CONFIG_STRING_SL_CSI_RS_LIST, NULL, 0};
+  sprintf(aprefix, "%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0);
+  config_getlist(config_get_if(), &SL_CSI_RS_List, NULL, 0, aprefix);
+  sprintf(aprefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0, SL_CONFIG_STRING_SL_CSI_RS_LIST, 0);
+  config_get(config_get_if(), SL_CSI_RS_PARAMS, sizeofArray(SL_CSI_RS_PARAMS), aprefix);
+
+  sl_mac->sl_csi_symb_l0                = symb_l0;
+  sl_mac->sl_csi_type                   = csi_type;
+  sl_mac->sl_csi_power_control_offset   = pco;
+  sl_mac->sl_csi_power_control_offset_ss = pco_ss;
+  sl_mac->sl_CSI_Acquisition            = csi_acquisition;  // sl_csi_rs conf value wins over ASN.1 default
+  sl_mac->sl_csi_scramb_id              = 0;
+  /* SL CSI report per TS 38.321 sec. 6.1.3.35 carries RI + CQI only (nr_sl_csi_report_t).
+   * measurement_bitmap is OAI's Uu-borrowed convention (see sidelink_nr_ue_interface.h),
+   * not a 3GPP field: bit0 RSRP, bit1 RI, bit3 PMI, bit4 CQI. In the SL RX path (csi_rx.c)
+   * it also gates PHY compute: bit3 = single-port SINR estimate, bit4 = CQI (nested under
+   * bit3). Value carried over unchanged from episys/sl-mode1-relay. */
+  sl_mac->sl_csi_measurement_bitmap     = (1 << NR_CSI_MEAS_RSRP_BIT) | (1 << NR_CSI_MEAS_RI_BIT)
+                                        | (1 << NR_CSI_MEAS_PMI_BIT) | (1 << NR_CSI_MEAS_CQI_BIT); // == 0b00011011
+
+  // Resolve CSI-RS trigger mode: "production" -> aperiodic, anything else (incl. missing/invalid) -> debug periodic.
+  if (csi_mode && strcasecmp(csi_mode, "production") == 0)
+    sl_mac->sl_csi_trigger_mode = SL_CSI_TRIGGER_APERIODIC;
+  else {
+    if (csi_mode && strcasecmp(csi_mode, "debug") != 0)
+      LOG_W(NR_MAC, "SL CSI-RS: unknown sl_csi_mode \"%s\", defaulting to debug (periodic)\n", csi_mode);
+    sl_mac->sl_csi_trigger_mode = SL_CSI_TRIGGER_PERIODIC;
+  }
+
+  /* 38.211 Table 7.4.1.5.3-1: density 1, ports 1&2 -> {noCDM, fd-CDM2}. Only 1 CSI-RS port when
+     nb_antennas_tx==1 (row 2, noCDM), else 2 ports (row 3, fd-CDM2). */
+  int nant = get_nrUE_params()->nb_antennas_tx;
+  sl_mac->sl_csi_cdm_type   = (nant == 1) ? 0 : 1;
+  sl_mac->sl_csi_row        = (nant == 1) ? 2 : 3;
+  sl_mac->sl_csi_freq_density = 1;                 // 38.211 8.4.1.5.3: CSI-RS in every RB
+  sl_mac->sl_csi_freq_domain  = 0b000000000001;    // bitmap length 12 (row 2) / 6 (row 3); pick lowest RE
+
+  // start_rb / nr_of_rbs from the cached SL BWP (locationAndBandwidth). start_rb must be a multiple of 4.
+  struct NR_SL_BWP_Generic_r16 *bwp_generic = sl_mac->sl_bwp_generic;
+  if (bwp_generic && bwp_generic->sl_BWP_r16) {
+    int loc_bw = bwp_generic->sl_BWP_r16->locationAndBandwidth;
+    uint16_t bwp_start = NRRIV2PRBOFFSET(loc_bw, MAX_BWP_SIZE);
+    sl_mac->sl_csi_start_rb = (bwp_start % 4 == 0) ? bwp_start : ((bwp_start >> 2) << 2) + 4;
+    uint16_t max_rbs = (NRRIV2BW(loc_bw, MAX_BWP_SIZE) >> 2) << 2;  // multiple of 4
+    sl_mac->sl_csi_nr_of_rbs = min(24, max_rbs);
+  } else {
+    sl_mac->sl_csi_start_rb  = 0;
+    sl_mac->sl_csi_nr_of_rbs = 24;
+  }
+
+  LOG_I(NR_MAC,
+        "SL CSI-RS conf: acquisition %s, trigger %s, row %d, cdm %d, symb_l0 %d, start_rb %d, nr_of_rbs %d\n",
+        sl_mac->sl_CSI_Acquisition == 0 ? "ENABLED" : "DISABLED",
+        sl_mac->sl_csi_trigger_mode == SL_CSI_TRIGGER_PERIODIC ? "PERIODIC(debug)" : "APERIODIC(production)",
+        sl_mac->sl_csi_row, sl_mac->sl_csi_cdm_type, sl_mac->sl_csi_symb_l0,
+        sl_mac->sl_csi_start_rb, sl_mac->sl_csi_nr_of_rbs);
 }
 
 // RRC calls this API when RRC is configured with Sidelink PRE-configuration I.E
@@ -537,6 +695,9 @@ int nr_rrc_mac_config_req_sl_preconfig(module_id_t module_id,
   LOG_I(NR_MAC, "SL resource selection method: cfg %d -> %d\n", resource_selection_cfg, mac->rsc_selection_method);
 
   sl_ue_harq_ctx_init(mac);
+
+  // parse the sl_csi_rs conf block (needs sl_bwp_generic, set above).
+  sl_read_csi_rs_conf(mac);
   return 0;
 }
 

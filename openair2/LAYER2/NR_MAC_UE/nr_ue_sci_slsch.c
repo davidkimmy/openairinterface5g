@@ -248,7 +248,9 @@ int get_nREDMRS(const NR_SL_ResourcePool_r16_t *sl_res_pool)
 }
 
 // Number of REs occupied by CSI-RS in a PSSCH slot (F3; 0 on the F1 minimal path). (episys SL port)
-int get_nRECSI_RS(uint8_t freq_density, uint16_t nr_of_rbs)
+/* static: file-local MAC divisor-form helper; the PHY has a same-named row-form get_nRECSI_RS with a
+   different signature (nr_pscch_pssch_rx.c). Internal linkage keeps the two symbols from colliding at link. */
+static int get_nRECSI_RS(uint8_t freq_density, uint16_t nr_of_rbs)
 {
   AssertFatal(freq_density > 0, "freq_density must be greater than 0\n");
   uint8_t nr_rbs_w_csi_rs = nr_of_rbs / freq_density;
@@ -441,7 +443,12 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
     return -1;
   }
 
+  /* the transmitter multiplexes a CSI-RS onto this PSSCH whenever the
+   * decoded SCI-2 carries csi_req. When set, the SLSCH TB-size math must subtract the CSI-RS REs (matching
+   * the PHY G reduction) and the PHY must be told to measure the CSI-RS on this slot alongside the SLSCH
+   * decode - hence the RX action promotes to *_CSI_RS and the CSI-RS PDU is filled outside the union. */
   sl_nr_ue_mac_params_t *sl_mac = mac->SL_MAC_PARAMS;
+  const bool csi_slot = (sci_pdu->csi_req != 0);
 
   sl_nr_rx_config_request_t rx_config;
   memset(&rx_config, 0, sizeof(rx_config));
@@ -449,7 +456,7 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
   rx_config.sfn = frame;
   rx_config.slot = slot;
   config_pssch_slsch_pdu_rx(&rx_config.sl_rx_config_list[0].rx_pssch_config_pdu, sci_pdu, sl_bwp_generic,
-                            sl_res_pool);
+                            sl_res_pool, sl_mac->sl_csi_freq_density, csi_slot ? sl_mac->sl_csi_nr_of_rbs : 0);
   /* Freeze TBS across retransmissions: config_pssch_slsch_pdu_rx recomputed tb_size from THIS
    * slot's symbol count, which on a retx landing on a different-numsym slot than round-0 gives
    * a different TBS -> different LDPC segmentation -> can't decode/combine. Cache the RV0 TBS
@@ -471,7 +478,13 @@ int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id,
         pssch->tb_size = (uint32_t)sl_mac->slsch_rx_tbsize[hpid]; // retx: reuse RV0 TBS
     }
   }
-  rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+  if (csi_slot) {
+    rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS;
+    fill_sl_csi_rs_pdu(&rx_config.sl_rx_config_list[0].rx_csi_rs_config_pdu, sl_mac,
+                       sl_mac->sl_phy_config.sl_config_req.sl_bwp_config.sl_scs);
+  } else {
+    rx_config.sl_rx_config_list[0].pdu_type = SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH;
+  }
 
   nr_scheduled_response_t scheduled_response = {.sl_rx_config = &rx_config,
                                                 .module_id = mod_id,
@@ -622,7 +635,9 @@ void fill_pssch_pscch_pdu(sl_nr_tx_config_pscch_pssch_pdu_t *pdu,
                           nr_sci_pdu_t *sci_pdu,
                           nr_sci_pdu_t *sci2_pdu,
                           const nr_sci_format_t format1,
-                          const nr_sci_format_t format2)
+                          const nr_sci_format_t format2,
+                          uint8_t csi_freq_density,
+                          uint16_t csi_nr_of_rbs)
 {
   uint64_t *sci_payload = (uint64_t *)pdu->pscch_sci_payload;
   uint64_t *sci2_payload = (uint64_t *)pdu->sci2_payload;
@@ -668,12 +683,16 @@ void fill_pssch_pscch_pdu(sl_nr_tx_config_pscch_pssch_pdu_t *pdu,
   // Pack SCI-1A into the PSCCH payload.
   nr_pack_sci1(sci_pdu, pdu->pscch_sci_payload_len, sci_payload);
 
-  // SLSCH TB size (F1: no CSI-RS REs).
+  /* SLSCH TB size. When this slot also carries a CSI-RS (sci2_pdu->csi_req set), the CSI-RS REs are not
+     available for SLSCH data, so subtract them per RB — this MUST equal the PHY G reduction (nr_pscch_tx.c
+     removes csi_rs_re from G) or the receiver cannot decode. num_CSI_REs_per_RB = subcarriers_used (rows 2/3). */
   int mcs_tb_ind = (sci_pdu->additional_mcs.nbits > 0) ? sci_pdu->additional_mcs.val : 0;
   pdu->mcs = sci_pdu->mcs;
   int nohPRB = (sl_res_pool->sl_X_Overhead_r16) ? 3 * (*sl_res_pool->sl_X_Overhead_r16) : 0;
   int nREDMRS = get_nREDMRS(sl_res_pool);
-  int N_REprime = 12 * pdu->pssch_numsym - nohPRB - nREDMRS;
+  int num_CSI_REs = (sci2_pdu->csi_req && csi_nr_of_rbs) ? get_nRECSI_RS(csi_freq_density, csi_nr_of_rbs) : 0;
+  int num_CSI_REs_per_RB = (sci2_pdu->csi_req && csi_nr_of_rbs) ? (num_CSI_REs / csi_nr_of_rbs) : 0;
+  int N_REprime = 12 * pdu->pssch_numsym - nohPRB - nREDMRS - num_CSI_REs_per_RB;
   int N_REsci1 = 12 * pdu->pscch_numrbs * pdu->pscch_numsym;
   int N_REsci2 = get_NREsci2(pdu->sci2_alpha_times_100, pdu->sci2_payload_len, pdu->sci2_beta_offset, pdu->pssch_numsym,
                              pdu->pscch_numsym, pdu->pscch_numrbs, pdu->l_subch, pdu->subchannel_size,
@@ -730,7 +749,9 @@ static int sl_num_psfch_symbols(const struct NR_SL_ResourcePool_r16 *sl_res_pool
 void config_pssch_slsch_pdu_rx(sl_nr_rx_config_pssch_pdu_t *nr_sl_pssch_pdu,
                                nr_sci_pdu_t *sci_pdu,
                                const NR_SL_BWP_Generic_r16_t *sl_bwp_generic,
-                               const NR_SL_ResourcePool_r16_t *sl_res_pool)
+                               const NR_SL_ResourcePool_r16_t *sl_res_pool,
+                               uint8_t csi_freq_density,
+                               uint16_t csi_nr_of_rbs)
 {
   nr_sl_pssch_pdu->target_coderate = nr_get_code_rate_ul(sci_pdu->mcs, sci_pdu->additional_mcs.val);
   nr_sl_pssch_pdu->harq_pid = sci_pdu->harq_pid;
@@ -751,7 +772,11 @@ void config_pssch_slsch_pdu_rx(sl_nr_rx_config_pssch_pdu_t *nr_sl_pssch_pdu,
   int nREDMRS = get_nREDMRS(sl_res_pool);
   int pscch_numsym = pscch_tda[*sl_res_pool->sl_PSCCH_Config_r16->choice.setup->sl_TimeResourcePSCCH_r16];
   int pscch_numrbs = pscch_rb_table[*sl_res_pool->sl_PSCCH_Config_r16->choice.setup->sl_FreqResourcePSCCH_r16];
-  int N_REprime = 12 * pssch_numsym - nohPRB - nREDMRS; // F1: no CSI-RS REs
+  /* Mirror the TX: subtract the CSI-RS REs per RB when this RX slot carries a CSI-RS (csi_req set), so the
+     RX SLSCH de-rate-match matches the transmitter's TB size exactly. */
+  int num_CSI_REs = (sci_pdu->csi_req && csi_nr_of_rbs) ? get_nRECSI_RS(csi_freq_density, csi_nr_of_rbs) : 0;
+  int num_CSI_REs_per_RB = (sci_pdu->csi_req && csi_nr_of_rbs) ? (num_CSI_REs / csi_nr_of_rbs) : 0;
+  int N_REprime = 12 * pssch_numsym - nohPRB - nREDMRS - num_CSI_REs_per_RB;
   int N_REsci1 = 12 * pscch_numrbs * pscch_numsym;
   int sci2_beta_offset =
       *sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_BetaOffsets2ndSCI_r16->list.array[sci_pdu->beta_offset_indicator];
@@ -768,7 +793,7 @@ void config_pssch_slsch_pdu_rx(sl_nr_rx_config_pssch_pdu_t *nr_sl_pssch_pdu,
   int N_RE = N_REprime * l_subch * subchannel_size - N_REsci1 - N_REsci2;
   nr_sl_pssch_pdu->tb_size =
       (nr_compute_tbs_sl(nr_sl_pssch_pdu->mod_order, nr_sl_pssch_pdu->target_coderate, N_RE, nr_sl_pssch_pdu->num_layers) + 7) >> 3;
-  nr_sl_pssch_pdu->tbslbrm = 0; // SL: servingCellConfig rate-matching disabled (matches episys)
+  nr_sl_pssch_pdu->tbslbrm = 0; // SL: servingCellConfig rate-matching disabled
 }
 
 // Build the SCI-2/PSSCH RX config (blind decode: l_subch=1, sense_pssch=0) from a SCI-1 PDU + PSCCH Nid.
@@ -864,7 +889,8 @@ void nr_schedule_slsch(const NR_SL_ResourcePool_r16_t *sl_tx_res_pool,
                        uint8_t rv,
                        uint16_t src_id,
                        uint16_t dest_id,
-                       uint8_t mcs)
+                       uint8_t mcs,
+                       uint8_t psfch_overhead)
 {
   const uint8_t sl_num_subch = *sl_tx_res_pool->sl_NumSubchannel_r16;
   const uint16_t sl_max_num_reserve = *sl_tx_res_pool->sl_UE_SelectedConfigRP_r16->sl_MaxNumPerReserve_r16;
@@ -890,7 +916,10 @@ void nr_schedule_slsch(const NR_SL_ResourcePool_r16_t *sl_tx_res_pool,
     sci_pdu->additional_mcs.nbits = 0;
     sci_pdu->additional_mcs.val = 0;
   }
-  sci_pdu->psfch_overhead.val = 0;
+  /* PSFCH-overhead geometry bit (TS 38.212 8.3.1.1): set when this TX slot reserves 3 PSFCH symbols,
+     so the receiver derives the reduced PSSCH numsym / TBS. Only carried for PSFCH period 2/4 (nbits set
+     in nr_sci_size); the caller computes it via sl_slot_psfch_overhead. RX blind-rebuild passes 0. */
+  sci_pdu->psfch_overhead.val = psfch_overhead ? 1 : 0;
 
   // ---- SCI-2A (2nd stage) ----
   sci2_pdu->harq_pid = harq_pid;

@@ -128,6 +128,17 @@ void nr_ue_csi_rs_procedures(PHY_VARS_NR_UE *ue,
                              const int res_idx,
                              const int trs_sym0);
 
+/* episys SL CSI-RS port: sidelink (PC5) CSI-RS receive procedure. Defined in csi_rx.c alongside the Uu
+   nr_ue_csi_rs_procedures so it can reuse that file's static CSI helpers. Measures every active
+   sl_csirs_vars[] resource carried in phy_data (populated by fapi_nr_ue_l1.c). */
+void nr_ue_sl_csi_rs_procedures(PHY_VARS_NR_UE *ue,
+                                const UE_nr_rxtx_proc_t *proc,
+                                const c16_t rxdataF[][ue->frame_parms.samples_per_slot_wCP],
+                                nr_phy_data_t *phy_data);
+
+/* episys SL CSI-RS port: sidelink SINR->CQI mapping (signed SINR). Defined in csi_rx.c. */
+int nr_csi_rs_cqi_estimation_sl(const int32_t precoded_sinr, uint8_t *cqi);
+
 void trs_freq_correction(PHY_VARS_NR_UE *ue, int cfo);
 
 int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data);
@@ -164,6 +175,14 @@ uint32_t nr_generate_sci1(const PHY_VARS_NR_UE *ue,
                           const sl_nr_tx_config_pscch_pssch_pdu_t *pscch_pssch_pdu);
 /* episys SL data-plane port: UE-native PSSCH data transmit (SLSCH encode + SCI-2 + DMRS + RE map). In nr_pscch_tx.c. */
 void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr_phy_data_tx_t *phy_data, c16_t **txdataF);
+/* place a sidelink CSI-RS resource onto the PSSCH grid (after the SLSCH RE map
+   punctured its REs). Defined in nr_pscch_tx.c. Called only on the SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS action. */
+void nr_generate_csi_rs_sl(PHY_VARS_NR_UE *ue,
+                           c16_t **txdataF,
+                           const NR_DL_FRAME_PARMS *fp,
+                           const int slot,
+                           const uint16_t scramb_id,
+                           const sl_nr_tti_csi_rs_pdu_t *sl_csi);
 /* episys SL PSFCH port (Stage 1 PHY TX): generate the PSFCH (HARQ feedback) on PC5. In nr_psfch_tx.c. */
 void nr_generate_psfch0(const PHY_VARS_NR_UE *ue,
                         c16_t **txdataF,

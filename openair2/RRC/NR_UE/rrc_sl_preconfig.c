@@ -113,30 +113,21 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
     ASN_SEQUENCE_ADD(&sl_res_pool->sl_PSSCH_Config_r16->choice.setup->sl_PSSCH_DMRS_TimePatternList_r16->list, p);
   }
 
-  // PSFCH configuration (episys SL PSFCH port, Stage 4). Period index comes from --sl-psfch-period
-  // (0=disabled/blind, 1=sl1, 2=sl2, 3=sl4). Index 0 leaves the config NULL = the original blind data
-  // plane. The sl_PSFCH_RB_Set_r16 bitmap is computed after the conf overlay below, once
-  // sl_NumSubchannel_r16 / sl_RB_Number_r16 have their final values.
-  uint8_t sl_psfch_period_idx = get_softmodem_params()->sl_psfch_period;
-  if (sl_psfch_period_idx == 0) {
-    sl_res_pool->sl_PSFCH_Config_r16 = NULL;
-  } else {
-    sl_res_pool->sl_PSFCH_Config_r16 = calloc(1, sizeof(*sl_res_pool->sl_PSFCH_Config_r16));
-    sl_res_pool->sl_PSFCH_Config_r16->present = NR_SetupRelease_SL_PSFCH_Config_r16_PR_setup;
-    sl_res_pool->sl_PSFCH_Config_r16->choice.setup = calloc(1, sizeof(NR_SL_PSFCH_Config_r16_t));
-    NR_SL_PSFCH_Config_r16_t *psfch = sl_res_pool->sl_PSFCH_Config_r16->choice.setup;
-    psfch->sl_PSFCH_Period_r16 = calloc(1, sizeof(long));
-    *psfch->sl_PSFCH_Period_r16 = sl_psfch_period_idx; // 1->sl1, 2->sl2, 3->sl4
-    psfch->sl_NumMuxCS_Pair_r16 = calloc(1, sizeof(long));
-    *psfch->sl_NumMuxCS_Pair_r16 = NR_SL_PSFCH_Config_r16__sl_NumMuxCS_Pair_r16_n1;
-    psfch->sl_MinTimeGapPSFCH_r16 = calloc(1, sizeof(long));
-    *psfch->sl_MinTimeGapPSFCH_r16 = NR_SL_PSFCH_Config_r16__sl_MinTimeGapPSFCH_r16_sl2;
-    psfch->sl_PSFCH_HopID_r16 = calloc(1, sizeof(long));
-    *psfch->sl_PSFCH_HopID_r16 = 0;
-    psfch->sl_PSFCH_CandidateResourceType_r16 = calloc(1, sizeof(long));
-    *psfch->sl_PSFCH_CandidateResourceType_r16 = NR_SL_PSFCH_Config_r16__sl_PSFCH_CandidateResourceType_r16_startSubCH;
-    psfch->sl_PSFCH_RB_Set_r16 = calloc(1, sizeof(*psfch->sl_PSFCH_RB_Set_r16)); // buf filled after conf overlay
-  }
+  /* PSFCH configuration (episys SL PSFCH port, Stage 4): conf-driven period index (sl_PSFCH_Period
+     0=blind, 1=sl1, 2=sl2, 3=sl4) read by config_get(SL_POOLPARAMS) below, so every sub-field is
+     allocated up front for the paramdef pointers to be valid. After the conf overlay, period 0 frees
+     the config (blind data plane); otherwise sl_PSFCH_RB_Set_r16 is computed once
+     sl_NumSubchannel_r16 / sl_RB_Number_r16 are final. */
+  sl_res_pool->sl_PSFCH_Config_r16 = calloc(1, sizeof(*sl_res_pool->sl_PSFCH_Config_r16));
+  sl_res_pool->sl_PSFCH_Config_r16->present = NR_SetupRelease_SL_PSFCH_Config_r16_PR_setup;
+  sl_res_pool->sl_PSFCH_Config_r16->choice.setup = calloc(1, sizeof(NR_SL_PSFCH_Config_r16_t));
+  NR_SL_PSFCH_Config_r16_t *psfch = sl_res_pool->sl_PSFCH_Config_r16->choice.setup;
+  psfch->sl_PSFCH_Period_r16 = calloc(1, sizeof(long));                 // conf sl_PSFCH_Period
+  psfch->sl_NumMuxCS_Pair_r16 = calloc(1, sizeof(long));                // conf sl_NumMuxCS_Pair
+  psfch->sl_MinTimeGapPSFCH_r16 = calloc(1, sizeof(long));              // conf sl_MinTimeGapPSFCH
+  psfch->sl_PSFCH_HopID_r16 = calloc(1, sizeof(long));                  // conf sl_PSFCH_HopID
+  psfch->sl_PSFCH_CandidateResourceType_r16 = calloc(1, sizeof(long));  // conf sl_PSFCH_CandidateResourceType
+  psfch->sl_PSFCH_RB_Set_r16 = calloc(1, sizeof(*psfch->sl_PSFCH_RB_Set_r16)); // buf filled after conf overlay
 
   // indicates allowed sync sources which are allowed to use this resource pool
   sl_res_pool->sl_SyncAllowed_r16 = calloc(1, sizeof(NR_SL_SyncAllowed_r16_t));
@@ -236,21 +227,11 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
   sl_res_pool->ext1 = calloc(1, sizeof(*sl_res_pool->ext1));
   sl_res_pool->ext1->sl_TimeResource_r16 = calloc(1, sizeof(*sl_res_pool->ext1->sl_TimeResource_r16));
 
-  /* Per-pool sidelink-slot bitmap. Optional hex string from the .conf (MSB of byte 0 = the first
-   * sidelink slot, so "F0" selects the first four); when absent, fall back to a TX/RX partition keyed
-   * on whether this node is the PC5 sync source.
-   *
-   * The default is deliberately COMPLEMENTARY, both between the two roles and between the two pools:
-   *   sync source : TX = 0xF0, RX = 0x0F
-   *   peer        : TX = 0x0F, RX = 0xF0
-   * so the two nodes' TX slot sets are disjoint and each node listens exactly when the other
-   * transmits. That is what makes a same-slot collision structurally impossible. Leaving every node
-   * TX-eligible in every sidelink slot is what previously let two UEs that got data at the same
-   * instant choose the same slot and destroy a TB in EACH direction - a node running its TX chain in
-   * a slot does not run its RX chain, so one collision costs one TB per direction.
-   *
-   * A conf override MUST be applied to both ends of a link: this node's RX bitmap has to equal the
-   * peer's TX bitmap, and each node derives its pools from its own conf. */
+  /* Optional per-pool sl_TimeResourceBitmap from the .conf: a hex string (MSB of first byte =
+   * first UL slot, e.g. "FC00" = first 6 UL slots). Valid bits are auto-derived as the largest
+   * multiple of the UL-slots-per-period that fits the bytes; sl_TimeResourceBitmapLen may
+   * override. When absent, fall back to the hardcoded alternating default. Must match the peer
+   * (gNB/UE) bitmap so both ends derive the same SL slot map. */
   char sl_time_res_prefix[MAX_OPTNAME_SIZE * 2 + 8];
   sprintf(sl_time_res_prefix, "%s.[%i].%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0,
           is_txpool ? SL_CONFIG_STRING_SL_TX_RPOOL_LIST : SL_CONFIG_STRING_SL_RX_RPOOL_LIST, 0);
@@ -260,10 +241,27 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
   config_get(config_get_if(), SL_TIMERES_PARAM, sizeofArray(SL_TIMERES_PARAM), sl_time_res_prefix);
 
   if (sl_time_res_hex != NULL && strlen(sl_time_res_hex) > 0) {
-    const size_t hexlen = strlen(sl_time_res_hex);
-    const int nbytes = (hexlen + 1) / 2;
-    const int raw_bits = nbytes * 8;
-    const int nbits = (sl_time_res_len > 0 && sl_time_res_len <= raw_bits) ? sl_time_res_len : raw_bits;
+    // UL slots per period; the bitmap must be a whole number of periods.
+    long sl_nrof_ul_slots = 0, sl_nrof_ul_symbols = 0;
+    paramdef_t SL_ULCNT_PARAM[] = {
+      {SL_CONFIG_STRING_NROFUPLINKSLOTS,   NULL, 0, .i64ptr = &sl_nrof_ul_slots,   .defint64val = 0, TYPE_INT64, 0},
+      {SL_CONFIG_STRING_NROFUPLINKSYMBOLS, NULL, 0, .i64ptr = &sl_nrof_ul_symbols, .defint64val = 0, TYPE_INT64, 0}
+    };
+    char sl_tdd_prefix[MAX_OPTNAME_SIZE * 2 + 8];
+    sprintf(sl_tdd_prefix, "%s.[%i]", SL_CONFIG_STRING_SL_PRECONFIGURATION, 0);
+    config_get(config_get_if(), SL_ULCNT_PARAM, sizeofArray(SL_ULCNT_PARAM), sl_tdd_prefix);
+    int n_ul_slots_period = (int)sl_nrof_ul_slots + (sl_nrof_ul_symbols > 0 ? 1 : 0);
+    if (n_ul_slots_period <= 0)
+      n_ul_slots_period = 1; // guard; real value validated later in config_ue_sl.c
+
+    size_t hexlen = strlen(sl_time_res_hex);
+    int nbytes = (hexlen + 1) / 2;
+    int raw_bits = nbytes * 8;
+    // Valid bits = largest multiple of UL-slots-per-period that fits; len overrides.
+    int nbits = (sl_time_res_len > 0) ? sl_time_res_len
+                                      : (raw_bits / n_ul_slots_period) * n_ul_slots_period;
+    if (nbits <= 0 || nbits > raw_bits)
+      nbits = raw_bits;
     sl_res_pool->ext1->sl_TimeResource_r16->size = nbytes;
     sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = raw_bits - nbits;
     sl_res_pool->ext1->sl_TimeResource_r16->buf = calloc(nbytes, sizeof(uint8_t));
@@ -273,8 +271,9 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
       byte_str[1] = (2 * b + 1 < (int)hexlen) ? sl_time_res_hex[2 * b + 1] : '0';
       sl_res_pool->ext1->sl_TimeResource_r16->buf[b] = (uint8_t)strtoul(byte_str, NULL, 16);
     }
-    LOG_I(RRC, "SL %s pool sl_TimeResourceBitmap \"%s\": %d bytes, %d valid bits\n",
-          is_txpool ? "TX" : "RX", sl_time_res_hex, nbytes, nbits);
+    LOG_I(NR_RRC, "SL %s pool sl_TimeResourceBitmap \"%s\": %d bytes, %d valid bits (ul_slots/period %d, bits_unused %d)\n",
+          is_txpool ? "TX" : "RX", sl_time_res_hex, nbytes, nbits, n_ul_slots_period,
+          (int)sl_res_pool->ext1->sl_TimeResource_r16->bits_unused);
   } else {
     sl_res_pool->ext1->sl_TimeResource_r16->size = 8;
     sl_res_pool->ext1->sl_TimeResource_r16->bits_unused = 4;
@@ -318,12 +317,15 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
         sl_res_pool->sl_UE_SelectedConfigRP_r16->sl_ResourceReservePeriodList_r16->list.array[0]
             ->choice.sl_ResourceReservePeriod1_r16);
 
-  // episys SL PSFCH port (Stage 4a): compute the PSFCH RB-set bitmap now that sl_NumSubchannel_r16 /
-  // sl_RB_Number_r16 have their final (conf-overlaid) values. num_prbs is the largest multiple of
-  // (NumSubchannel * period) not exceeding RB_Number; that many low PRBs are marked available (0xFF...).
-  if (sl_res_pool->sl_PSFCH_Config_r16) {
-    NR_SL_PSFCH_Config_r16_t *psfch = sl_res_pool->sl_PSFCH_Config_r16->choice.setup;
+  /* the conf sl_PSFCH_Period (read above) decides the data plane.
+     Index 0 means no PSFCH resource -> free the config, leave NULL (blind data plane). Otherwise
+     compute the PSFCH RB-set bitmap now that sl_NumSubchannel_r16 / sl_RB_Number_r16 are final:
+     num_prbs is the largest multiple of (NumSubchannel * period) not exceeding RB_Number, and that
+     many low PRBs are marked available (0xFF...). */
+  psfch = sl_res_pool->sl_PSFCH_Config_r16->choice.setup;
+  if (*psfch->sl_PSFCH_Period_r16 > 0) {
     const uint8_t psfch_periods[] = {0, 1, 2, 4};
+    AssertFatal(*psfch->sl_PSFCH_Period_r16 < 4, "sl_PSFCH_Period index must be < 4\n");
     uint8_t psfch_period = psfch_periods[*psfch->sl_PSFCH_Period_r16];
     long num_subch = sl_res_pool->sl_NumSubchannel_r16 ? *sl_res_pool->sl_NumSubchannel_r16 : 0;
     long rb_number = sl_res_pool->sl_RB_Number_r16 ? *sl_res_pool->sl_RB_Number_r16 : 0;
@@ -344,6 +346,17 @@ static void prepare_NR_SL_ResourcePool(NR_SL_ResourcePool_r16_t *sl_res_pool,
     }
     LOG_I(NR_RRC, "SL PSFCH provisioned: period %d, num_subch %ld, rb_number %ld, num_prbs %d, rb_set_bytes %d\n",
           psfch_period, num_subch, rb_number, num_prbs, num_bytes);
+  } else {
+    LOG_I(NR_RRC, "SL PSFCH disabled (conf sl_PSFCH_Period = 0), freeing PSFCH config (blind data plane)\n");
+    free(psfch->sl_PSFCH_CandidateResourceType_r16);
+    free(psfch->sl_PSFCH_HopID_r16);
+    free(psfch->sl_MinTimeGapPSFCH_r16);
+    free(psfch->sl_NumMuxCS_Pair_r16);
+    free(psfch->sl_PSFCH_RB_Set_r16);
+    free(psfch->sl_PSFCH_Period_r16);
+    free(psfch);
+    free(sl_res_pool->sl_PSFCH_Config_r16);
+    sl_res_pool->sl_PSFCH_Config_r16 = NULL;
   }
 }
 

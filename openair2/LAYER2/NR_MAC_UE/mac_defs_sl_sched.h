@@ -23,7 +23,7 @@
  *        so develop's mac_defs.h stays a thin include. Depends on types in scope at the
  *        include point in mac_defs.h: nr_mac_common.h (frameslot_t, NR_bler_stats_t, NR_list_t,
  *        MAX_SL_* macros, NR_UE_sl_mac_stats_t), mac_defs_sl.h -> sidelink_nr_ue_interface.h
- *        (sl_config_grant_t, cg_type_t, NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR),
+ *        (sl_config_grant_t, cg_type_t),
  *        platform_types.h (mac_rlc_status_resp_t).
  */
 
@@ -69,9 +69,18 @@ typedef struct {
   bool is_active;
   uint8_t ndi;
   uint8_t round;
+  /* Set after SL_CSI_RS_NACK_TRIGGER_ROUNDS NACKs; requests aperiodic CSI-RS (sci2.csi_req)
+   * on the next (re)transmission. Cleared on ACK and after send. */
+  bool csi_req_pending;
   uint16_t feedback_slot;
   uint16_t feedback_frame;
   int8_t sl_harq_pid;
+  /* PSFCH geometry (PSSCH symbol count) of the round-0 transmission. On
+   * sl_PSFCH_Period {2,4} a PSFCH slot carries 3 fewer PSSCH symbols, giving a
+   * different TBS. Retransmissions must land on a slot with the SAME geometry so
+   * the receiver derives an identical TBS across all RVs and can soft-combine.
+   * true  = round-0 was sent on a PSFCH (overhead) slot, false = non-PSFCH slot. */
+  bool round0_psfch_overhead;
 
   // Transport block to be sent using this HARQ process, its size is in sched_pssch
   uint32_t transportBlock[38016]; // valid up to 4 layers
@@ -81,18 +90,20 @@ typedef struct {
   NR_sched_pssch_t sched_pssch;
 } NR_UE_sl_harq_t;
 
+/* NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR (used below for the periodic/debug CSI-RS occasion)
+ * is defined in nfapi sidelink_nr_ue_interface.h, pulled in via NR_IF_Module.h -> mac_defs.h. */
 typedef struct SL_CSI_Report {
   uint8_t ri;
   int8_t cqi;
   uint8_t cqi_table;
-  uint32_t frame;
-  uint32_t slot;
   bool active;
+  /* Periodic (debug-mode) CSI-RS scheduling, ported from episys/sl-mode1-relay. slot_offset and
+   * slot_periodicity_offset define the CSI-RS occasion; slot_valid is false when no PSFCH-free
+   * sidelink slot exists in the assigned TDD period, so CSI-RS must not be scheduled. */
   uint8_t slot_offset;
-  uint8_t slot_periodicity;
   NR_UE_SL_CSI_ResourcePeriodicityAndOffset_PR slot_periodicity_offset;
+  bool slot_valid;
 } SL_CSI_Report_t;
-  //
 
 typedef struct SL_sched_feedback {
   int16_t feedback_slot;

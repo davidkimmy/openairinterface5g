@@ -45,14 +45,19 @@
 /*Sidelink Resource pool related parameters in SL-Preconfig */
 #define SL_CONFIG_STRING_SL_RX_RPOOL_LIST                     "sl_RxResPools"
 #define SL_CONFIG_STRING_SL_TX_RPOOL_LIST                     "sl_TxResPools"
+#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP        "sl_TimeResourceBitmap"
+#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN    "sl_TimeResourceBitmapLen"
 #define SL_CONFIG_STRING_RESPOOL_PSCCH_NUMSYM                 "sl_TimeResourcePSCCH"
 #define SL_CONFIG_STRING_RESPOOL_PSCCH_NUMRBS                 "sl_FreqResourcePSCCH"
 #define SL_CONFIG_STRING_RESPOOL_SUBCH_SIZE_IN_RBS            "sl_SubchannelSize"
 #define SL_CONFIG_STRING_RESPOOL_SUBCH_START_RB               "sl_StartRB_Subchannel"
 #define SL_CONFIG_STRING_RESPOOL_NUM_RBS                      "sl_RB_Number"
 #define SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS                   "sl_NumSubchannel"
-#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP         "sl_TimeResourceBitmap"
-#define SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN     "sl_TimeResourceBitmapLen"
+#define SL_CONFIG_STRING_RESPOOL_PSFCH_PERIOD                 "sl_PSFCH_Period"
+#define SL_CONFIG_STRING_RESPOOL_PSFCH_NUMMUXCS_PAIR          "sl_NumMuxCS_Pair"
+#define SL_CONFIG_STRING_RESPOOL_PSFCH_MINTIMEGAP             "sl_MinTimeGapPSFCH"
+#define SL_CONFIG_STRING_RESPOOL_PSFCH_HOPID                  "sl_PSFCH_HopID"
+#define SL_CONFIG_STRING_RESPOOL_PSFCH_CANDIDATERESOURCETYPE  "sl_PSFCH_CandidateResourceType"
 
 /* Sensing-based resource selection parameters (TS 38.214 8.1.4).
    Read from the "rsrc_selection_params" list of the SL preconfiguration. Without these the pool's
@@ -145,17 +150,21 @@
 {SL_CONFIG_STRING_RESPOOL_SUBCH_SIZE_IN_RBS,NULL,0,.i64ptr=sl_res_pool->sl_SubchannelSize_r16,.defint64val=0,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_SUBCH_START_RB,NULL,0,.i64ptr=sl_res_pool->sl_StartRB_Subchannel_r16,.defint64val=0,TYPE_INT64,0},\
 {SL_CONFIG_STRING_RESPOOL_NUM_RBS,NULL,0,.i64ptr=sl_res_pool->sl_RB_Number_r16,.defint64val=106,TYPE_INT64,0},\
-{SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS,NULL,0,.i64ptr=sl_res_pool->sl_NumSubchannel_r16,.defint64val=10,TYPE_INT64,0}}
+{SL_CONFIG_STRING_RESPOOL_NUM_SUBCHS,NULL,0,.i64ptr=sl_res_pool->sl_NumSubchannel_r16,.defint64val=10,TYPE_INT64,0},\
+{SL_CONFIG_STRING_RESPOOL_PSFCH_PERIOD,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16,.defint64val=0,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RESPOOL_PSFCH_NUMMUXCS_PAIR,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_NumMuxCS_Pair_r16,.defint64val=1,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RESPOOL_PSFCH_MINTIMEGAP,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_MinTimeGapPSFCH_r16,.defint64val=1,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RESPOOL_PSFCH_HOPID,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_HopID_r16,.defint64val=0,TYPE_INT64,0}, \
+{SL_CONFIG_STRING_RESPOOL_PSFCH_CANDIDATERESOURCETYPE,NULL,0,.i64ptr=sl_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_CandidateResourceType_r16,.defint64val=0,TYPE_INT64,0}}
 
-/* Per-pool sl_TimeResourceBitmap: a hex string selecting which sidelink slots belong to this pool.
-   Bit order is MSB of byte 0 = first sidelink slot, so "F0" selects the first four. Optional
-   sl_TimeResourceBitmapLen overrides the number of valid bits (default: all bits of the bytes given).
-   The TX and RX bitmaps of one node must be complementary, and a node's RX bitmap must equal its
-   peer's TX bitmap - overriding one side of a link therefore requires overriding the other. */
-#define SL_TIMERESPARAMS_DESC(bitmap, bitmap_len) { \
-{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP,NULL,0,.strptr=bitmap,.defstrval=NULL,TYPE_STRING,0}, \
-{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN,NULL,0,.iptr=bitmap_len,.defintval=0,TYPE_INT,0} \
-}
+/* Per-pool sl_TimeResourceBitmap: a hex string (MSB of byte0 = first UL slot) parsed into the
+   pool's sl_TimeResource_r16 BIT_STRING, and an optional explicit valid-bit length. Unlike the
+   other resource-pool params these read into caller-owned locals (hexptr/lenptr) rather than
+   straight into the ASN.1 struct, because the hex string needs post-processing (hex->bytes,
+   deriving bits_unused from the UL-slots-per-period) done in the .c after config_get. */
+#define SL_TIMERESPARAMS_DESC(hexptr, lenptr) { \
+{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP,NULL,0,.strptr=(hexptr),.defstrval=NULL,TYPE_STRING,0}, \
+{SL_CONFIG_STRING_RESPOOL_TIME_RESOURCE_BITMAP_LEN,NULL,0,.iptr=(lenptr),.defintval=0,TYPE_INT,0}}
 
 /* Sensing-based resource selection parameters.
    Note sl_SensingWindow is consumed as MILLISECONDS by config_ue_sl.c (time_to_slots), not as an enum

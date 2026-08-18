@@ -859,10 +859,14 @@ static int startServer(openair0_device_t *device)
     }
 
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &disable, sizeof(int)) != 0) {
+      close(sock);
+      sock = -1;
       continue;
     }
 
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) != 0) {
+      close(sock);
+      sock = -1;
       continue;
     }
 

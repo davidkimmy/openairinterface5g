@@ -426,8 +426,12 @@ void nr_ue_sl_phy_config_request(nr_sl_phy_config_t *phy_config)
 void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
 {
   module_id_t module_id = scheduled_response->module_id;
-  const char *sl_rx_action[] = {"NONE", "RX_PSBCH", "RX_PSCCH", "RX_SCI2_ON_PSSCH", "RX_SLSCH_ON_PSSCH"};
-  const char *sl_tx_action[] = {"TX_PSBCH", "TX_PSCCH_PSSCH", "TX_PSFCH"};
+  // Indexed by sl_nr_rx_config_type_enum_t value; must cover every RX config type (see sidelink_nr_ue_interface.h).
+  const char *sl_rx_action[] = {"NONE",              "RX_PSBCH",       "RX_PSCCH", "RX_SCI2_ON_PSSCH",
+                                "RX_SLSCH_ON_PSSCH", "RX_SLSCH_PSFCH", "RX_PSFCH", "RX_SLSCH_CSI_RS"};
+  /* Indexed by (tx pdu_type - SL_NR_CONFIG_TYPE_TX_PSBCH); must cover every TX config type in enum
+     order (TX_PSBCH, TX_PSCCH_PSSCH, TX_PSFCH, TX_PSCCH_PSSCH_CSI_RS — see sidelink_nr_ue_interface.h). */
+  const char *sl_tx_action[] = {"TX_PSBCH", "TX_PSCCH_PSSCH", "TX_PSFCH", "TX_PSCCH_PSSCH_CSI_RS"};
 
   if (scheduled_response->sl_rx_config != NULL) {
     sl_nr_rx_config_request_t *sl_rx_config = scheduled_response->sl_rx_config;
@@ -462,15 +466,27 @@ void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
         break;
       case SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH:
       case SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH:
+      case SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS:
         // stage 3: SLSCH transport config built from the decoded SCI-2 (real harq_pid / ndi / rv_index).
         phy_data->sl_rx_action = sl_rx_config->sl_rx_config_list[0].pdu_type;
         phy_data->nr_sl_pssch_pdu = sl_rx_config->sl_rx_config_list[0].rx_pssch_config_pdu;
         // episys SL PSFCH port (Stage 4d): also carry the PSFCH decode config (list[0].psfch_pdu_list).
         phy_data->psfch_pdu_list = (sl_nr_tx_rx_config_psfch_pdu_t *)sl_rx_config->sl_rx_config_list[0].psfch_pdu_list;
         phy_data->num_psfch_pdus = sl_rx_config->sl_rx_config_list[0].num_psfch_pdus;
-        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSSCH_SLSCH (harq %d rv %d ndi %d, psfch %d)\n",
+        /* On a CSI-RS RX slot, also carry the CSI-RS resource to measure. It coexists with the
+           PSSCH RX config (outside the union), so populate sl_csirs_vars[] in addition to the
+           PSSCH fields above. Mirrors the Uu CSI-RS case; consumed in nr_rx_pssch. */
+        if (sl_rx_config->sl_rx_config_list[0].pdu_type == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS) {
+          AssertFatal(phy_data->num_sl_csirs < MAX_CSI_RES_SLOT, "SL CSI resources per slot exceeded limit\n");
+          const int c = phy_data->num_sl_csirs;
+          AssertFatal(!phy_data->sl_csirs_vars[c].active, "SL CSI resource active before it is configured\n");
+          phy_data->sl_csirs_vars[c].csirs_config_pdu = sl_rx_config->sl_rx_config_list[0].rx_csi_rs_config_pdu;
+          phy_data->sl_csirs_vars[c].active = true;
+          phy_data->num_sl_csirs++;
+        }
+        LOG_D(PHY, "Recvd CONFIG_TYPE_RX_PSSCH_SLSCH (harq %d rv %d ndi %d, psfch %d, sl_csirs %d)\n",
               phy_data->nr_sl_pssch_pdu.harq_pid, phy_data->nr_sl_pssch_pdu.rv_index,
-              phy_data->nr_sl_pssch_pdu.ndi, phy_data->num_psfch_pdus);
+              phy_data->nr_sl_pssch_pdu.ndi, phy_data->num_psfch_pdus, phy_data->num_sl_csirs);
         break;
       default:
         AssertFatal(0, "Incorrect sl_rx config req pdutype \n");
@@ -500,13 +516,18 @@ void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
         phy_data_tx->psbch_vars.tx_slss_id = sl_tx_config->tx_config_list[0].tx_psbch_config_pdu.tx_slss_id;
         break;
       case SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH:
+      case SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS:
         // episys SL data-plane port: carry the PSCCH+PSSCH TX PDU (SCI-1/SCI-2 payloads + TB params) to PHY.
-        phy_data_tx->sl_tx_action = SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH;
+        /* TX_PSCCH_PSSCH_CSI_RS additionally carries the CSI-RS resource (pdu.nr_sl_csi_rs_pdu);
+           the PHY TX path generates it and punctures the SLSCH when sl_tx_action == ..._CSI_RS.
+           Same PDU copy for both; only the action differs. */
+        phy_data_tx->sl_tx_action = sl_tx_config->tx_config_list[0].pdu_type;
         phy_data_tx->nr_sl_pssch_pscch_pdu = sl_tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu;
         // episys SL PSFCH port (mux): a HARQ-feedback PSFCH may ride this same slot (last symbol).
         phy_data_tx->psfch_pdu_list = (sl_nr_tx_rx_config_psfch_pdu_t *)sl_tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu.psfch_pdu_list;
         phy_data_tx->num_psfch_pdus = sl_tx_config->tx_config_list[0].tx_pscch_pssch_config_pdu.num_psfch_pdus;
-        LOG_D(PHY, "Recvd CONFIG_TYPE_TX_PSCCH_PSSCH (tb_size %d, psfch %d)\n",
+        LOG_D(PHY, "Recvd CONFIG_TYPE_TX_PSCCH_PSSCH%s (tb_size %d, psfch %d)\n",
+              phy_data_tx->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS ? "_CSI_RS" : "",
               phy_data_tx->nr_sl_pssch_pscch_pdu.tb_size, phy_data_tx->num_psfch_pdus);
         break;
       case SL_NR_CONFIG_TYPE_TX_PSFCH:
@@ -527,7 +548,7 @@ void sl_handle_scheduled_response(nr_scheduled_response_t *scheduled_response)
           module_id,
           sl_tx_config->sfn,
           sl_tx_config->slot,
-          sl_tx_action[phy_data_tx->sl_tx_action - 6],
+          sl_tx_action[phy_data_tx->sl_tx_action - SL_NR_CONFIG_TYPE_TX_PSBCH],
           phy_data_tx->psbch_vars.tx_slss_id,
           *((uint32_t *)phy_data_tx->psbch_vars.psbch_payload),
           phy_data_tx->psbch_vars.psbch_tx_power);

@@ -193,16 +193,20 @@ static int nr_get_csi_rs_signal(const PHY_VARS_NR_UE *ue,
               meas_count++;
 
 #ifdef NR_CSIRS_DEBUG
-              int dataF_offset = proc->nr_slot_rx * fp->samples_per_slot_wCP;
+              /* TX signal is indexed by k_tx = rb*NR_NB_SC_PER_RB + koverline + kp (no
+                 first_carrier_offset), the RX signal by k (with first_carrier_offset). The
+                 channel estimation reads these two different indices; mirror that here. */
               uint16_t port_tx = s + csi_mapping->j[cdm_id] * CDM_group_size;
-              c16_t *tx_csi_rs_signal = &nr_csi_info->csi_rs_generated_signal[port_tx][symbol_offset + dataF_offset];
+              uint16_t k_tx = (rb * NR_NB_SC_PER_RB) + csi_mapping->koverline[cdm_id] + kp;
+              const c16_t *tx_csi_rs_signal = &nr_csi_info->csi_rs_generated_signal[port_tx][symbol_offset];
               LOG_I(NR_PHY,
-                    "l,k (%2d,%4d) |\tport_tx %d (%4d,%4d)\tant_rx %d (%4d,%4d)\n",
+                    "l,k (%2d,%4d) |\tport_tx %d k_tx %4d (%4d,%4d)\tant_rx %d (%4d,%4d)\n",
                     symb,
                     k,
                     port_tx+3000,
-                    tx_csi_rs_signal[k].r,
-                    tx_csi_rs_signal[k].i,
+                    k_tx,
+                    tx_csi_rs_signal[k_tx].r,
+                    tx_csi_rs_signal[k_tx].i,
                     ant_rx,
                     rx_csi_rs_signal[k].r,
                     rx_csi_rs_signal[k].i);
@@ -710,6 +714,46 @@ int nr_csi_rs_cqi_estimation(const uint32_t precoded_sinr,
   return 0;
 }
 
+/* Sidelink SINR->CQI mapping. Same table (TS 38.214 5.2.2.1-2) as nr_csi_rs_cqi_estimation
+   but takes a signed SINR: PC5 links can have negative SINR, and CQI 1..3 cover that range. */
+int nr_csi_rs_cqi_estimation_sl(const int32_t precoded_sinr, uint8_t *cqi)
+{
+  *cqi = 0;
+  if (precoded_sinr >= -20 && precoded_sinr < -6) {
+    *cqi = 1;
+  } else if (precoded_sinr >= -6 && precoded_sinr < -3) {
+    *cqi = 2;
+  } else if (precoded_sinr >= -3 && precoded_sinr <= 0) {
+    *cqi = 3;
+  } else if (precoded_sinr > 0 && precoded_sinr <= 2) {
+    *cqi = 4;
+  } else if (precoded_sinr == 3) {
+    *cqi = 5;
+  } else if (precoded_sinr > 3 && precoded_sinr <= 5) {
+    *cqi = 6;
+  } else if (precoded_sinr > 5 && precoded_sinr <= 7) {
+    *cqi = 7;
+  } else if (precoded_sinr > 7 && precoded_sinr <= 9) {
+    *cqi = 8;
+  } else if (precoded_sinr == 10) {
+    *cqi = 9;
+  } else if (precoded_sinr > 10 && precoded_sinr <= 12) {
+    *cqi = 10;
+  } else if (precoded_sinr > 12 && precoded_sinr <= 15) {
+    *cqi = 11;
+  } else if (precoded_sinr == 16) {
+    *cqi = 12;
+  } else if (precoded_sinr > 16 && precoded_sinr <= 18) {
+    *cqi = 13;
+  } else if (precoded_sinr == 19) {
+    *cqi = 14;
+  } else if (precoded_sinr > 19) {
+    *cqi = 15;
+  }
+
+  return 0;
+}
+
 static void nr_csi_im_power_estimation(const PHY_VARS_NR_UE *ue,
                                        const fapi_nr_dl_config_csiim_pdu_rel15_t *csiim_config_pdu,
                                        uint32_t *interference_plus_noise_power,
@@ -1057,4 +1101,181 @@ void nr_ue_csi_rs_procedures(PHY_VARS_NR_UE *ue,
       .rx_ind = &rx_ind,
   };
   ue->if_inst->dl_indication(&dl_indication);
+}
+
+/* Sidelink (PC5) CSI-RS receive procedure. Companion to nr_ue_csi_rs_procedures; kept in this
+   file to reuse the static helpers and nr_generate_csi_rs. The SL config PDU is
+   sl_nr_tti_csi_rs_pdu_t (field-identical to the Uu PDU except trailing last_trs_slot), so we
+   build a Uu-shaped PDU and drive the existing chain. Single-port sidelink -> N_ports==1 (SISO)
+   path in nr_csi_rs_pmi_estimation and signed-SINR nr_csi_rs_cqi_estimation_sl. */
+void nr_ue_sl_csi_rs_procedures(PHY_VARS_NR_UE *ue,
+                                const UE_nr_rxtx_proc_t *proc,
+                                const c16_t rxdataF[][ue->frame_parms.samples_per_slot_wCP],
+                                nr_phy_data_t *phy_data)
+{
+  const NR_DL_FRAME_PARMS *frame_parms = &ue->frame_parms;
+
+  for (int res_idx = 0; res_idx < phy_data->num_sl_csirs; res_idx++) {
+    NR_UE_SL_CSI_RS *sl_csirs = &phy_data->sl_csirs_vars[res_idx];
+    if (!sl_csirs->active) {
+      continue;
+    }
+    const sl_nr_tti_csi_rs_pdu_t *sl_pdu = &sl_csirs->csirs_config_pdu;
+
+    if (sl_pdu->csi_type == NR_CSI_RS_TYPE_ZP) {
+      LOG_E(NR_PHY, "Handling of ZP CSI-RS not handled yet at PHY (sidelink)\n");
+      sl_csirs->active = false;
+      continue;
+    }
+
+    /* Build a Uu-shaped CSI-RS PDU from the SL PDU to reuse the Uu chain. The scrambling ID must
+       match the SLSCH Nid used by the PSSCH transmitter (derived from the PSCCH CRC), not an
+       RRC-configured scramb_id; the gold sequence is generated per that Nid on both TX and RX. */
+    fapi_nr_dl_config_csirs_pdu_rel15_t csirs_config_pdu = {
+        .subcarrier_spacing = sl_pdu->subcarrier_spacing,
+        .cyclic_prefix = sl_pdu->cyclic_prefix,
+        .start_rb = sl_pdu->start_rb,
+        .nr_of_rbs = sl_pdu->nr_of_rbs,
+        .csi_type = sl_pdu->csi_type,
+        .row = sl_pdu->row,
+        .freq_domain = sl_pdu->freq_domain,
+        .symb_l0 = sl_pdu->symb_l0,
+        .symb_l1 = sl_pdu->symb_l1,
+        .cdm_type = sl_pdu->cdm_type,
+        .freq_density = sl_pdu->freq_density,
+        .scramb_id = phy_data->nr_sl_pssch_sci_pdu.Nid % (1 << 10),
+        .power_control_offset = sl_pdu->power_control_offset,
+        .power_control_offset_ss = sl_pdu->power_control_offset_ss,
+        .measurement_bitmap = sl_pdu->measurement_bitmap,
+        .last_trs_slot = 0,
+    };
+
+    if (csirs_config_pdu.measurement_bitmap == 0) {
+      LOG_E(NR_PHY, "Handling of CSI-RS for tracking not handled yet at PHY (sidelink)\n");
+      sl_csirs->active = false;
+      continue;
+    }
+
+    /* Regenerate the transmitted CSI-RS to correlate against. Amplitude is scaled by the number
+       of layers (1 for the single-port case supported here, so beta==AMP). */
+    const uint8_t num_of_layers = min(frame_parms->nb_antennas_tx, frame_parms->nb_antennas_rx);
+    AssertFatal(num_of_layers > 0, "Number of layers MUST be greater than zero\n");
+    const int16_t beta_csirs =
+        (int16_t)((uint16_t)(AMP * ceil(sqrt((double)num_of_layers / frame_parms->nb_antennas_tx))) & 0xFFFF);
+
+    csi_mapping_parms_t mapping_parms = get_csi_mapping_parms(csirs_config_pdu.row,
+                                                              csirs_config_pdu.freq_domain,
+                                                              csirs_config_pdu.symb_l0,
+                                                              csirs_config_pdu.symb_l1);
+    nr_csi_info_t *csi_info = ue->nr_csi_info;
+    nr_generate_csi_rs(frame_parms,
+                       &mapping_parms,
+                       beta_csirs,
+                       proc->nr_slot_rx,
+                       csirs_config_pdu.freq_density,
+                       csirs_config_pdu.start_rb,
+                       csirs_config_pdu.nr_of_rbs,
+                       csirs_config_pdu.symb_l0,
+                       csirs_config_pdu.symb_l1,
+                       csirs_config_pdu.row,
+                       csirs_config_pdu.scramb_id,
+                       csirs_config_pdu.power_control_offset_ss,
+                       csirs_config_pdu.cdm_type,
+                       csi_info->csi_rs_generated_signal);
+    csi_info->csi_rs_generated_signal_bits = log2_approx(beta_csirs);
+
+    c16_t csi_rs_ls_estimated_channel[frame_parms->nb_antennas_rx][mapping_parms.ports][frame_parms->ofdm_symbol_size];
+    c16_t csi_rs_estimated_channel_freq[frame_parms->nb_antennas_rx][mapping_parms.ports][frame_parms->ofdm_symbol_size];
+
+    int CDM_group_size = get_cdm_group_size(csirs_config_pdu.cdm_type);
+    c16_t csi_rs_received_signal[frame_parms->nb_antennas_rx][frame_parms->samples_per_slot_wCP];
+    uint32_t rsrp = 0;
+    int rsrp_dBm = 0;
+    nr_get_csi_rs_signal(ue,
+                         proc,
+                         &csirs_config_pdu,
+                         csi_info,
+                         &mapping_parms,
+                         CDM_group_size,
+                         csi_rs_received_signal,
+                         &rsrp,
+                         &rsrp_dBm,
+                         rxdataF);
+
+    uint32_t noise_power = 0;
+    int16_t log2_re = 0;
+    int16_t log2_maxh = 0;
+    if (csirs_config_pdu.measurement_bitmap != 1) {
+      nr_csi_rs_channel_estimation(frame_parms,
+                                   &csirs_config_pdu,
+                                   csi_info,
+                                   (const c16_t **)csi_info->csi_rs_generated_signal,
+                                   csi_rs_received_signal,
+                                   &mapping_parms,
+                                   CDM_group_size,
+                                   csi_rs_ls_estimated_channel,
+                                   csi_rs_estimated_channel_freq,
+                                   &log2_re,
+                                   &log2_maxh,
+                                   &noise_power);
+    }
+
+    uint8_t cqi = 0;
+    int32_t precoded_sinr_dB = 0;
+    // bit 3: PMI/SINR. Single-port sidelink -> N_ports==1 SISO branch of nr_csi_rs_pmi_estimation.
+    if (csirs_config_pdu.measurement_bitmap & 8) {
+      uint8_t i2[1] = {0};
+      nr_csi_rs_pmi_estimation(ue,
+                               &csirs_config_pdu,
+                               mapping_parms.ports,
+                               csi_rs_estimated_channel_freq,
+                               csi_info->csi_im_meas_computed ? csi_info->interference_plus_noise_power : noise_power,
+                               0 /* rank_indicator: single layer */,
+                               log2_re,
+                               i2,
+                               &precoded_sinr_dB);
+
+      // bit 4: CQI.
+      if (csirs_config_pdu.measurement_bitmap & 16) {
+        nr_csi_rs_cqi_estimation_sl(precoded_sinr_dB, &cqi);
+      }
+    }
+
+    LOG_D(NR_PHY,
+          "[SL_CSIRS_RX] %4d.%2d sinr %d dB rsrp %d dBm cqi %d (scramb_id %d)\n",
+          proc->frame_rx, proc->nr_slot_rx, precoded_sinr_dB, rsrp_dBm, cqi, csirs_config_pdu.scramb_id);
+
+    /* Deliver measured SL CSI to MAC via the generic L1-measurement indication (as Uu CSI-RS
+     * does): stored into mac->csirs_measurements, later packed into the SL CSI report MAC CE.
+     * Single sidelink layer -> rank_indicator 0. Only when a dl_indication path exists. */
+    if (ue->if_inst && ue->if_inst->dl_indication) {
+      fapi_nr_l1_measurements_t l1_measurements = {
+          .gNB_index = proc->gNB_id,
+          .meas_type = NFAPI_NR_CSI_MEAS,
+          .Nid_cell = frame_parms->Nid_cell,
+          .is_neighboring_cell = false,
+          .rsrp_dBm = rsrp_dBm,
+          .rank_indicator = 0,
+          .cqi = cqi,
+          .radiolink_monitoring = RLM_no_monitoring,
+      };
+      fapi_nr_rx_indication_t rx_ind;
+      rx_ind.number_pdus = 0;
+      nr_fill_rx_indication(&rx_ind, FAPI_NR_MEAS_IND, ue, 0, 0, NULL, proc, (void *)&l1_measurements);
+      nr_downlink_indication_t dl_indication = (nr_downlink_indication_t){
+          .gNB_index = proc->gNB_id,
+          .module_id = ue->Mod_id,
+          .cc_id = ue->CC_id,
+          .hfn = proc->hfn_rx,
+          .frame = proc->frame_rx,
+          .slot = proc->nr_slot_rx,
+          .rx_ind = &rx_ind,
+      };
+      ue->if_inst->dl_indication(&dl_indication);
+    }
+
+    // Clear the resource so a stale config is not re-measured next slot.
+    sl_csirs->active = false;
+  }
+  phy_data->num_sl_csirs = 0;
 }

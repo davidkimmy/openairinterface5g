@@ -46,6 +46,7 @@
 #include "PHY/NR_REFSIG/dmrs_nr.h"                          // get_dmrs_freq_idx_ul
 #include "PHY/NR_TRANSPORT/nr_sch_dmrs.h"                   // get_Wt, get_Wf, get_delta
 #include "PHY/NR_UE_TRANSPORT/nr_transport_ue.h"            // NR_UE_ULSCH_t
+#include "PHY/nr_phy_common/inc/nr_phy_common.h"            // nr_generate_csi_rs, get_csi_mapping_parms (SL CSI-RS)
 #include "common/utils/LOG/log.h"
 #include "common/utils/LOG/vcd_signal_dumper.h"
 
@@ -58,6 +59,13 @@ uint32_t nr_sl_get_G(uint16_t nb_rb, uint16_t nb_symb_sch, uint8_t nb_re_dmrs, u
 int nr_sl_get_NREsci2(int sci2_alpha, int sci2_payload_len, int sci2_beta_offset, int pssch_numsym,
                       int pscch_numsym, int pscch_numrbs, int l_subch, int subchannel_size,
                       int target_coderate, int mcs_table_index);
+/* Shared CSI-RS RE-position helpers, defined in nr_pscch_pssch_rx.c so the TX RE-map, the RX LLR
+   extraction, and the rate-match count derive positions from one source (cannot diverge). */
+int sl_csi_rs_re_in_symbol(bool *is_csi, int ofdm_symbol_size, int first_carrier_offset, int l, uint8_t row,
+                           uint16_t freq_domain, uint8_t symb_l0, uint8_t symb_l1, uint16_t start_rb,
+                           uint16_t nr_of_rbs, uint8_t freq_density);
+int get_nRECSI_RS(uint8_t row, uint16_t freq_domain, uint8_t symb_l0, uint8_t symb_l1, uint16_t start_rb,
+                  uint16_t nr_of_rbs, uint8_t freq_density, int ofdm_symbol_size, int first_carrier_offset);
 // develop UE-lib helpers (declared in nr_ulsch_coding.c / dmrs); forward-declared for the SL TX path.
 int nr_ulsch_pre_encoding(PHY_VARS_NR_UE *ue, const NR_UE_ULSCH_t *ulsch, const uint32_t frame, const uint8_t slot,
                           const unsigned int *G, const int nb_ulsch, const uint8_t *ULSCH_ids);
@@ -193,8 +201,18 @@ void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr
   const int sci2_re = nr_sl_get_NREsci2(pdu->sci2_alpha_times_100, pdu->sci2_payload_len, pdu->sci2_beta_offset,
                                         pdu->pssch_numsym, pdu->pscch_numsym, pdu->pscch_numrbs, pdu->l_subch,
                                         pdu->subchannel_size, pdu->target_coderate, pdu->mcs_table);
+  /* When this TX slot also carries a CSI-RS resource, those REs are not available for SLSCH data,
+     so remove them from G. Must equal the RX reduction (both use get_nRECSI_RS) and the REs
+     skipped in the map loop below, or the SLSCH de-aligns. Zero on non-CSI-RS TX slots. */
+  const bool csi_rs_slot = phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS;
+  const sl_nr_tti_csi_rs_pdu_t *csi_pdu = &pdu->nr_sl_csi_rs_pdu;
+  const uint16_t csi_rs_re =
+      (csi_rs_slot && csi_pdu->csi_type != NR_CSI_RS_TYPE_ZP)
+          ? get_nRECSI_RS(csi_pdu->row, csi_pdu->freq_domain, csi_pdu->symb_l0, csi_pdu->symb_l1, csi_pdu->start_rb,
+                          csi_pdu->nr_of_rbs, csi_pdu->freq_density, fp->ofdm_symbol_size, fp->first_carrier_offset)
+          : 0;
   unsigned int G = nr_sl_get_G(nb_rb, number_of_symbols, 6, number_dmrs_symbols, sci1_dmrs_overlap, sci1_re,
-                               pdu->pscch_numrbs, sci2_re, 0, mod_order, Nl);
+                               pdu->pscch_numrbs, sci2_re, csi_rs_re, mod_order, Nl);
 
   // --- SLSCH TB encode via develop's UE UL-SCH encoder (TB already in ul_harq_processes[harq_pid].payload_AB) ---
   NR_UE_ULSCH_t ulsch = {0};
@@ -279,7 +297,7 @@ void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr
   // --- RE mapping onto txdataF[0] (single layer/antenna): DMRS on DMRS REs, data (SCI-2 first via m) elsewhere,
   //     skipping the PSCCH (SCI-1) region in the PSCCH symbols (written by nr_generate_sci1). ---
   const int delta = get_delta(0, dmrs_type);
-  int8_t Wf[2], Wt[2];
+  int Wf[2], Wt[2];
   get_Wf(Wf, 0, dmrs_type);
   get_Wt(Wt, 0, dmrs_type);
   int m = 0;
@@ -298,6 +316,15 @@ void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr
       const uint32_t *pssch_dmrs = nr_gold_pusch(fp->N_RB_UL, fp->symbols_per_slot, Nid, 0 /* nscid */, slot, l);
       nr_modulation(pssch_dmrs, (nb_rb + start_rb) * 6 * 2, DMRS_MOD_ORDER, mod_dmrs);
     }
+    /* CSI-RS subcarriers occupied in this symbol (physical k), so the data RE-map skips them.
+       Positions come from get_csi_mapping_parms (same source as RX + the generator), so the TX
+       puncture, RX puncture, and G reduction remove exactly the same REs. */
+    bool is_csi[fp->ofdm_symbol_size];
+    memset(is_csi, 0, sizeof(is_csi));
+    if (csi_rs_slot && csi_pdu->csi_type != NR_CSI_RS_TYPE_ZP)
+      sl_csi_rs_re_in_symbol(is_csi, fp->ofdm_symbol_size, fp->first_carrier_offset, l, csi_pdu->row,
+                             csi_pdu->freq_domain, csi_pdu->symb_l0, csi_pdu->symb_l1, csi_pdu->start_rb,
+                             csi_pdu->nr_of_rbs, csi_pdu->freq_density);
     for (int i = 0; i < nb_rb * NR_NB_SC_PER_RB; i++) {
       // Skip the PSCCH region at the start of the PSSCH allocation in PSCCH symbols.
       if (is_pscch_sym && i == 0) {
@@ -323,6 +350,9 @@ void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr
         k_prime++;
         k_prime &= 1;
         n += (k_prime) ? 0 : 1;
+      } else if (is_csi[k]) {
+        /* Reserved for CSI-RS -> no SLSCH data here. nr_generate_csi_rs_sl (called after this)
+           writes the CSI-RS symbol; the de-rate-matched G above already excluded these REs. */
       } else if (!is_dmrs_sym
                  || allowed_xlsch_re_in_dmrs_symbol(k, start_sc, fp->ofdm_symbol_size, cdm_grps_no_data, dmrs_type)) {
         if (m < n_data_re)
@@ -335,4 +365,71 @@ void nr_ue_slsch_procedures(PHY_VARS_NR_UE *ue, uint32_t frame, uint8_t slot, nr
   ue->SL_UE_PHY_PARAMS.pssch.num_pssch_tx++;
   LOG_D(NR_PHY, "%d.%d PSSCH TX: G %u sci2_re %d mapped %d data REs (rb %d, Qm %d)\n",
         frame, slot, G, sci2_re, m, nb_rb, mod_order);
+}
+
+/* Place a sidelink CSI-RS resource onto the PSSCH grid.
+
+   nr_generate_csi_rs is REFERENCE-only: it maps at k = n*12 + koverline + kp with NO
+   first_carrier_offset, and the SL RX reconciles that by reading the received signal at the
+   physical k while reading the regenerated reference at the offset-less k. So we cannot let
+   nr_generate_csi_rs write straight onto txdataF. Instead generate the reference symbols into
+   ue->nr_csi_info->csi_rs_generated_signal (byte-identical to what the RX regenerates for
+   correlation), then relocate each RE from its offset-less k_ref onto the physical grid at
+   k_phys = (first_carrier_offset + k_ref) % N. The SLSCH RE-map above already skipped these
+   physical positions, so no data is overwritten. Single layer / port 0 for the F1 SL path. */
+void nr_generate_csi_rs_sl(PHY_VARS_NR_UE *ue,
+                           c16_t **txdataF,
+                           const NR_DL_FRAME_PARMS *fp,
+                           const int slot,
+                           const uint16_t scramb_id,
+                           const sl_nr_tti_csi_rs_pdu_t *sl_csi)
+{
+  if (sl_csi->csi_type == NR_CSI_RS_TYPE_ZP) // ZP CSI-RS: nothing to transmit (REs are just muted by the SLSCH puncture)
+    return;
+
+  const uint8_t num_of_layers = min(fp->nb_antennas_tx, fp->nb_antennas_rx);
+  const int16_t beta_csirs =
+      (int16_t)((uint16_t)(AMP * ceil(sqrt((double)num_of_layers / fp->nb_antennas_tx))) & 0xFFFF);
+
+  const csi_mapping_parms_t p = get_csi_mapping_parms(sl_csi->row, sl_csi->freq_domain, sl_csi->symb_l0, sl_csi->symb_l1);
+
+  nr_csi_info_t *csi_info = ue->nr_csi_info;
+  nr_generate_csi_rs(fp,
+                     &p,
+                     beta_csirs,
+                     slot,
+                     sl_csi->freq_density,
+                     sl_csi->start_rb,
+                     sl_csi->nr_of_rbs,
+                     sl_csi->symb_l0,
+                     sl_csi->symb_l1,
+                     sl_csi->row,
+                     scramb_id,
+                     sl_csi->power_control_offset_ss,
+                     sl_csi->cdm_type,
+                     csi_info->csi_rs_generated_signal);
+  csi_info->csi_rs_generated_signal_bits = log2_approx(beta_csirs);
+
+  const int gs = get_cdm_group_size(sl_csi->cdm_type);
+  // Relocate every generated CSI-RS RE from its offset-less reference position onto the physical grid.
+  for (int n = sl_csi->start_rb; n < sl_csi->start_rb + sl_csi->nr_of_rbs; n++) {
+    if (!((sl_csi->freq_density > 1) || (sl_csi->freq_density == (n % 2))))
+      continue;
+    for (int ji = 0; ji < p.size; ji++) {
+      for (int s = 0; s < gs; s++) {
+        const int port = s + p.j[ji] * gs;
+        if (port != 0) // SL F1 path: single antenna / single layer -> transmit CSI-RS port 0 only
+          continue;
+        for (int kp = 0; kp <= p.kprime; kp++) {
+          const int k_ref = n * NR_NB_SC_PER_RB + p.koverline[ji] + kp;
+          const int k_phys = (fp->first_carrier_offset + k_ref) % fp->ofdm_symbol_size;
+          for (int lp = 0; lp <= p.lprime; lp++) {
+            const int l = lp + p.loverline[ji];
+            txdataF[0][l * fp->ofdm_symbol_size + k_phys] =
+                csi_info->csi_rs_generated_signal[port][l * fp->ofdm_symbol_size + k_ref];
+          }
+        }
+      }
+    }
+  }
 }

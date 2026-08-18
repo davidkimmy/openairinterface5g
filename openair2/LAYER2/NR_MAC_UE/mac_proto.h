@@ -84,8 +84,7 @@ void de_normalize(int64_t abs_slot_idx, uint8_t mu, frameslot_t *frame_slot);
 bool is_sl_slot(NR_UE_MAC_INST_t *mac, uint64_t abs_slot);
 bool slot_has_psfch(NR_UE_MAC_INST_t *mac,
                     uint64_t abs_index_cur_slot,
-                    uint8_t psfch_period,
-                    NR_TDD_UL_DL_ConfigCommon_t *tdd);
+                    uint8_t psfch_period);
 void print_prb_set_allocation(psfch_params_t *psfch_params, uint8_t psfch_period, uint8_t num_subchannels);
 int get_psfch_index(int frame, int slot, int n_slots_frame, const NR_TDD_UL_DL_Pattern_t *tdd, int sched_psfch_max_size);
 int nr_ue_sl_acknack_scheduling(NR_UE_MAC_INST_t *mac,
@@ -117,6 +116,17 @@ int get_mcs_from_bler(const NR_bler_options_t *bler_options,
                       NR_bler_stats_t *bler_stats,
                       int max_mcs,
                       frame_t frame);
+/* SL CSI report round-trip: latch measured CSI (csirs_measurements) into the pending report, and schedule
+ * it onto a TX slot in this node's half so it is sent back to the peer that requested it. */
+void set_csi_report_params(NR_UE_MAC_INST_t *mac, NR_SL_UE_sched_ctrl_t *sched_ctrl);
+void nr_ue_sl_csi_report_scheduling(NR_UE_MAC_INST_t *mac, NR_SL_UE_sched_ctrl_t *sched_ctrl, uint32_t rx_frame, uint32_t rx_slot);
+/* Periodic (debug-mode) SL CSI-RS occasion selection, ported from episys/sl-mode1-relay. */
+SL_CSI_Report_t *set_nr_ue_sl_csi_meas_periodicity(const NR_TDD_UL_DL_Pattern_t *tdd,
+                                                   NR_SL_UE_sched_ctrl_t *sched_ctrl,
+                                                   NR_UE_MAC_INST_t *mac,
+                                                   int uid,
+                                                   uint8_t psfch_period);
+void nr_ue_sl_csi_period_offset(SL_CSI_Report_t *sl_csi_report, int *period, int *offset);
 int nr_ue_process_sci2_indication_pdu(NR_UE_MAC_INST_t *mac, module_id_t mod_id, int cc_id, frame_t frame,
                                       int slot, sl_nr_sci_indication_pdu_t *sci, void *phy_data);
 // MAC handler for a decoded SCI-1A (PSCCH) indication - records the

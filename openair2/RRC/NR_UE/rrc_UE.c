@@ -2545,6 +2545,19 @@ static int8_t nr_rrc_ue_decode_ccch(NR_UE_RRC_INST_t *rrc, const NRRrcMacCcchDat
          break;
 
        case NR_DL_CCCH_MessageType__c1_PR_rrcSetup:
+         /* SL mode-1 U2N relay (Remote UE, DL): the single gNB RRCSetup can arrive twice over the
+          * PC5/SRAP path (SRB0 is RLC-TM with no PDCP SN, so the SLSCH NDI dup-guard does not span a
+          * re-forwarded TB). Processing it twice generates two RRCSetupComplete -> two Registration
+          * Requests -> a duplicate NGAP UE context at the gNB (AMF NGAP ID mismatch) -> the network
+          * sends an Authentication Reject and registration fails. Drop the duplicate once RRC has
+          * already reached CONNECTED. Remote-UE only (relay enabled, not the relay itself) so the
+          * normal Uu CCCH path is untouched. */
+         if (get_softmodem_params()->relay_type == 1 && !get_softmodem_params()->is_relay_ue
+             && rrc->nrRrcState == RRC_STATE_CONNECTED_NR) {
+           LOG_I(NR_RRC, "[UE%ld][RAPROC] Ignoring duplicate RRCSetup on DL-CCCH (already RRC_CONNECTED)\n", rrc->ue_id);
+           rval = 0;
+           break;
+         }
          LOG_I(NR_RRC, "[UE%ld][RAPROC] Logical Channel DL-CCCH (SRB0), Received NR_RRCSetup\n", rrc->ue_id);
          nr_rrc_process_rrcsetup(rrc, dl_ccch_msg->message.choice.c1->choice.rrcSetup);
          rval = 0;

@@ -26,8 +26,8 @@ typedef struct {
   int len;
 } NR_list_t;
 
-// NR_list_t helpers (defined in NR_MAC_gNB/gNB_scheduler_primitives.c). Declared here next to NR_list_t
-// so UE-side sidelink HARQ code (episys SL PSFCH port) can use them without including the gNB proto header.
+/* NR_list_t helpers (defined in NR_MAC_gNB/gNB_scheduler_primitives.c). Declared here next to NR_list_t
+   so UE-side sidelink HARQ code (episys SL PSFCH port) can use them without including the gNB proto header. */
 void create_nr_list(NR_list_t *listP, int len);
 void remove_nr_list(NR_list_t *listP, int id);
 void add_tail_nr_list(NR_list_t *listP, int id);
@@ -70,8 +70,27 @@ typedef struct {
   int16_t slot;
 } frameslot_t;
 
-// episys SL PSFCH port (Stage 3): PSSCH-RX-slot -> PSFCH-feedback-slot for sl-PSFCH-Period 1/2/4.
-int16_t get_feedback_slot(long psfch_period, uint16_t slot, bool use_first_half);
+// episys SL PSFCH port: bitmap-driven physical SL pool + PSFCH occasions (TS 38.213 clause 16.3).
+size_t sl_abs_slot_to_bit_pos(uint64_t abs_slot, size_t phy_map_sz);
+int64_t get_feedback_abs_slot(const BIT_STRING_t *phy_sl_bitmap, size_t phy_map_sz,
+                              uint64_t tx_abs_slot, uint8_t min_time_gap, uint8_t psfch_period);
+
+int get_bit_from_map(const uint8_t *buf, size_t bit_pos);
+void append_bit(uint8_t *buf, size_t bit_pos, int bit_value);
+/* uu_reserved_sl_slots: number of sidelink slots at the START of each TDD
+   period to hand back to the relay's Uu uplink (SL Mode 1 relay PC5 link).
+   0 = no reservation (SL Mode 2 and SA behave exactly as before). */
+int build_physical_sl_pool(const NR_TDD_UL_DL_Pattern_t *tdd,
+                           uint8_t mu,
+                           const uint64_t *ulsch_slot_bitmap,
+                           BIT_STRING_t *sl_time_rsrc,
+                           BIT_STRING_t *phy_sl_bitmap,
+                           int uu_reserved_sl_slots);
+/* Pad an sl-TimeResource BIT STRING to the canonical over-the-air length so every node
+   (gNB, relay, remote) derives an identical phy_map_sz. Idempotent; returns valid-bit count. */
+int sl_canonical_time_resource_len(BIT_STRING_t *sl_time_rsrc, int ul_slots_period, int nr_slots_period, int n_slots_frame);
+bool sl_slot_carries_psfch(const BIT_STRING_t *phy_sl_bitmap, size_t phy_map_sz, size_t bit_pos, uint8_t psfch_period);
+int sl_psfch_pssch_slot_index(const BIT_STRING_t *phy_sl_bitmap, size_t phy_map_sz, uint64_t abs_slot, uint8_t psfch_period);
 
 // Directional MAC stats (moved here from NR_MAC_gNB/nr_mac_gNB.h so UE sidelink MAC stats can reuse it).
 typedef struct NR_mac_dir_stats {
@@ -255,6 +274,7 @@ uint16_t get_ul_bitmap(const frame_structure_t *fs, int slot);
 bool is_ul_slot(const slot_t slot, const frame_structure_t *fs);
 bool is_dl_slot(const slot_t slot, const frame_structure_t *fs);
 bool is_mixed_slot(const slot_t slot, const frame_structure_t *fs);
+int get_first_ul_slot(const frame_structure_t *fs, bool mixed);
 int get_tdd_period_idx(NR_TDD_UL_DL_ConfigCommon_t *tdd);
 void config_frame_structure(int mu,
                             const NR_TDD_UL_DL_ConfigCommon_t *tdd_UL_DL_ConfigurationCommon,

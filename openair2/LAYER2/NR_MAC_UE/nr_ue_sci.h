@@ -111,27 +111,39 @@ uint32_t nr_sci_size(const struct NR_SL_ResourcePool_r16 *sl_res_pool, nr_sci_pd
 void nr_pack_sci1(nr_sci_pdu_t *sci, int sci_size, uint64_t *payload);
 void nr_pack_sci2(nr_sci_pdu_t *sci2, int sci2_size, nr_sci_format_t format, uint64_t *payload);
 int get_nREDMRS(const struct NR_SL_ResourcePool_r16 *sl_res_pool);
-int get_nRECSI_RS(uint8_t freq_density, uint16_t nr_of_rbs);
+// get_nRECSI_RS (MAC divisor form) is file-local (static) in nr_ue_sci_slsch.c — see note there.
 int get_NREsci2(const int sci2_alpha, const int sci2_payload_len, const int sci2_beta_offset, const int pssch_numsym,
                 const int pscch_numsym, const int pscch_numrbs, const int l_subch, const int subchannel_size,
                 const int mcs, const int mcs_tb_ind);
 // Assemble the PSCCH+PSSCH TX PDU (SCI-1A/SCI-2 payloads + SLSCH TB size + PSSCH DMRS positions). In nr_ue_sci_slsch.c.
 struct NR_SL_BWP_Generic_r16;
 struct sl_nr_tx_config_pscch_pssch_pdu;
+/* csi_freq_density/csi_nr_of_rbs let the TB-size math subtract the CSI-RS
+   REs from the SLSCH when sci2_pdu->csi_req is set (must match the PHY G reduction). Pass 0 to disable. */
 void fill_pssch_pscch_pdu(struct sl_nr_tx_config_pscch_pssch_pdu *pdu,
                           const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic,
                           const struct NR_SL_ResourcePool_r16 *sl_res_pool,
                           nr_sci_pdu_t *sci_pdu,
                           nr_sci_pdu_t *sci2_pdu,
                           const nr_sci_format_t format1,
-                          const nr_sci_format_t format2);
+                          const nr_sci_format_t format2,
+                          uint8_t csi_freq_density,
+                          uint16_t csi_nr_of_rbs);
+/* fill the FAPI CSI-RS resource PDU (MAC->PHY) from the parsed sl_mac
+   CSI-RS config. Defined in nr_ue_scheduler_sl.c; shared so the multi-pass SCI-2 handler can arm CSI-RS
+   RX alongside the SLSCH RX config. Same values on TX (generation) and RX (measurement). */
+struct sl_nr_tti_csi_rs_pdu;
+struct sl_nr_ue_mac_params;
+void fill_sl_csi_rs_pdu(struct sl_nr_tti_csi_rs_pdu *csi, const struct sl_nr_ue_mac_params *sl_mac, uint8_t scs);
 // RX blind-decode config builders (from a decoded/preconfigured SCI-1 PDU). In nr_ue_sci_slsch.c.
 struct sl_nr_rx_config_pssch_pdu;
 struct sl_nr_rx_config_pssch_sci_pdu;
 void config_pssch_slsch_pdu_rx(struct sl_nr_rx_config_pssch_pdu *nr_sl_pssch_pdu,
                                nr_sci_pdu_t *sci_pdu,
                                const struct NR_SL_BWP_Generic_r16 *sl_bwp_generic,
-                               const struct NR_SL_ResourcePool_r16 *sl_res_pool);
+                               const struct NR_SL_ResourcePool_r16 *sl_res_pool,
+                               uint8_t csi_freq_density,
+                               uint16_t csi_nr_of_rbs);
 int config_pssch_sci_pdu_rx(struct sl_nr_rx_config_pssch_sci_pdu *nr_sl_pssch_sci_pdu,
                             nr_sci_format_t sci2_format,
                             nr_sci_pdu_t *sci_pdu,
@@ -161,7 +173,8 @@ void nr_schedule_slsch(const struct NR_SL_ResourcePool_r16 *sl_tx_res_pool,
                        uint8_t rv,
                        uint16_t src_id,
                        uint16_t dest_id,
-                       uint8_t mcs);
+                       uint8_t mcs,
+                       uint8_t psfch_overhead);
 
 // episys SL PSFCH port (4c-A): SCI-2 (format 2A) RX decode -> mac->sci_pdu_rx.
 // (nr_ue_process_sci2_indication_pdu proto is in mac_proto.h, which has NR_UE_MAC_INST_t.)

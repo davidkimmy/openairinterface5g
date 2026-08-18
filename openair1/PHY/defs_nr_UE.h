@@ -248,6 +248,13 @@ typedef struct {
   fapi_nr_dl_config_csirs_pdu_rel15_t csirs_config_pdu;
 } NR_UE_CSI_RS;
 
+/* Sidelink (PC5) CSI-RS measurement state. Kept separate from the Uu NR_UE_CSI_RS
+   because the SL config PDU is sl_nr_tti_csi_rs_pdu_t, not the Uu variant. */
+typedef struct {
+  bool active;
+  sl_nr_tti_csi_rs_pdu_t csirs_config_pdu;
+} NR_UE_SL_CSI_RS;
+
 typedef struct {
   uint8_t csi_rs_generated_signal_bits;
   c16_t **csi_rs_generated_signal;
@@ -638,6 +645,10 @@ typedef struct nr_phy_data_s {
   sl_nr_rx_config_pssch_pdu_t nr_sl_pssch_pdu;
   sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu_list;
   uint8_t num_psfch_pdus;
+  /* Sidelink (PC5) CSI-RS measurement state, populated by fapi_nr_ue_l1.c from the SL
+     RX config's rx_csi_rs_config_pdu. Distinct from the Uu csirs_vars[] above. */
+  int num_sl_csirs;
+  NR_UE_SL_CSI_RS sl_csirs_vars[MAX_CSI_RES_SLOT];
   NR_UE_CSI_IM csiim_vars;
 } nr_phy_data_t;
 

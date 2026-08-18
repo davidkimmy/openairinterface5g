@@ -109,7 +109,11 @@ static void nr_psbch_symbol_process(PHY_VARS_NR_UE *ue,
 {
   sl_nr_ue_phy_params_t *sl_phy_params = &ue->SL_UE_PHY_PARAMS;
   NR_DL_FRAME_PARMS *fp = &sl_phy_params->sl_frame_params;
-  int slss_id = sl_phy_params->sl_config.sl_sync_source.rx_slss_id;
+  /* Steady-state PSBCH must use the SLSS id detected during acquisition
+   * (sl_nr_extract_sss -> sync_params.N_sl_id), not the configured rx_slss_id.
+   * The DMRS channel estimate is scrambled by the real transmitted id; using
+   * the configured id (often 0) yields a wrong estimate and a guaranteed CRC miss. */
+  int slss_id = sl_phy_params->sync_params.N_sl_id;
 
   __attribute__((aligned(32))) c16_t dl_ch_estimates[fp->nb_antennas_rx][fp->ofdm_symbol_size];
   start_meas(&sl_phy_params->channel_estimation_stats);
@@ -157,7 +161,7 @@ static unsigned int get_psbch_symbol_bitmap(const int num_symbols)
 
 static bool is_psbch_symbol(const unsigned bitmap, const unsigned int symbol)
 {
-  return ((bitmap >> symbol) == 1);
+  return ((bitmap >> symbol) & 0x1) == 1;
 }
 
 static int nr_psbch_process(PHY_VARS_NR_UE *ue,
@@ -184,7 +188,8 @@ static int nr_psbch_process(PHY_VARS_NR_UE *ue,
   nr_psbch_symbol_process(ue, proc, symbol, rxdataF, psbch_e_rx_offset, psbch_e_rx, psbch_unClipped, dl_ch_estimates_time);
 
   if (symbol == last_symbol) {
-    const int slss_id = sl_phy_params->sl_config.sl_sync_source.rx_slss_id;
+    /* Descramble with the detected SLSS id (see nr_psbch_symbol_process), not the configured one. */
+    const int slss_id = sl_phy_params->sync_params.N_sl_id;
     uint8_t decoded_pdu[4] = {0};
     const int psbchSuccess = nr_psbch_decode(ue, psbch_e_rx, proc, *psbch_e_rx_offset, slss_id, phy_data, decoded_pdu);
 
@@ -236,11 +241,12 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
     LOG_I(NR_PHY, "%s[UE%d] %d:%d PSSCH/SCI2 Stats: TX %u, RX ok %u, RX not ok %u\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,
           sl_phy_params->pssch.num_pssch_sci2_tx, sl_phy_params->pssch.rx_sci2_ok, sl_phy_params->pssch.rx_sci2_errors);
-    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSSCH Stats: TX %u, RX ok %u, RX not ok (%u/%u/%u/%u)\n", KGRN,
+    LOG_I(NR_PHY, "%s[UE%d] %d:%d PSSCH Stats: TX %u, RX ok %u, RX not ok (%u/%u/%u/%u), DTX %u\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,
           sl_phy_params->pssch.num_pssch_tx, sl_phy_params->pssch.rx_ok,
           sl_phy_params->pssch.rx_errors[0], sl_phy_params->pssch.rx_errors[1],
-          sl_phy_params->pssch.rx_errors[2], sl_phy_params->pssch.rx_errors[3]);
+          sl_phy_params->pssch.rx_errors[2], sl_phy_params->pssch.rx_errors[3],
+          sl_phy_params->pssch.rx_dtx);
     LOG_I(NR_PHY, "%s[UE%d] %d:%d PSFCH Stats: TX %u, RX %u\n", KGRN,
           ue->Mod_id, frame_rx, nr_slot_rx,
           sl_phy_params->psfch.num_psfch_tx, sl_phy_params->psfch.num_psfch_rx);
@@ -263,8 +269,13 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
         /* TODO: Remove this buffer reshaping in later commit after rxdataF is in right format */
         memcpy(rxdataF_symb[aarx], &rxdataF[aarx][sym * fp->ofdm_symbol_size], sizeof(c16_t) * fp->ofdm_symbol_size);
       }
-      sampleShift =
+      /* Only the PSBCH decode symbol yields a timing estimate; the trailing non-PSBCH symbols return 0.
+       * Keep the measured shift instead of letting the last iteration clobber it back to 0, and leave
+       * sampleShift at its INT_MAX "no measurement" sentinel when no decode produced an estimate. */
+      const int symShift =
           nr_psbch_process(ue, phy_data, proc, sym, rxdataF_symb, &e_rx_offset, psbch_e_rx, psbch_unClippled, dl_ch_estimates_time);
+      if (symShift != 0)
+        sampleShift = symShift;
     }
   }
   /* ---- SL receive pipeline: three staged decodes, chained by re-reading sl_rx_action. Each stage raises
@@ -275,7 +286,8 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
   else if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSCCH
            || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SCI
            || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH
-           || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH) {
+           || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH
+           || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS) {
     NR_gNB_PUSCH *pssch_vars = ue->pssch_vars;
 
     /* STAGE 1 of 3: PSCCH / SCI-1A. On success the MAC handler programs stage 2 with the Nid taken from
@@ -348,29 +360,51 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
         bool detected = dB_fixed_x10(pssch_vars->ulsch_power_tot)
                         >= dB_fixed_x10(pssch_vars->ulsch_noise_power_tot) + ue->pssch_thres;
         pssch_vars->DTX = detected ? 0 : 1;
-        if (!detected)
+        if (!detected) {
+          /* Expected a TB but its energy is below threshold: it is dropped here (no STAGE 3 decode), so
+           * rx_errors never sees it. Count it as DTX so the stats reflect the real loss. */
+          sl_phy_params->pssch.rx_dtx++;
           LOG_D(NR_PHY, "%d.%d PSSCH not detected (pwr %d < noise %d + thr %d)\n", frame_rx, nr_slot_rx,
                 dB_fixed_x10(pssch_vars->ulsch_power_tot), dB_fixed_x10(pssch_vars->ulsch_noise_power_tot),
                 ue->pssch_thres);
+        }
       }
     }
 
-    /* STAGE 3 of 3: SLSCH transport decode. Reached only because stage 2 decoded SCI-2, so the transport
-     * config in phy_data->nr_sl_pssch_pdu carries the transmitter's real HARQ state. */
-    if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH
-        || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH) {
+    /* STAGE 3 of 3: SLSCH transport decode. A PSFCH-only feedback slot reaches here with an empty
+     * grant (MAC zeroes pssch_numsym/num_subch), which would make nr_sl_get_G() return 0 and trip
+     * its AssertFatal, so re-check the grant and skip the decode on such slots. */
+    sl_nr_rx_config_pssch_sci_pdu_t *slsch_sci_pdu = &phy_data->nr_sl_pssch_sci_pdu;
+    bool slsch_grant_valid = slsch_sci_pdu->pssch_numsym >= 1
+                             && slsch_sci_pdu->pssch_numsym <= NR_SYMBOLS_PER_SLOT - 1
+                             && slsch_sci_pdu->num_subch >= 1;
+    if (slsch_grant_valid
+        && (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH
+            || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH
+            || phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS)) {
       int ret = nr_slsch_procedures(ue, proc, phy_data, 0);
       LOG_D(NR_PHY, "%d.%d PSSCH SLSCH decode returned %d (harq %d rv %d ndi %d)\n", frame_rx, nr_slot_rx,
             ret, phy_data->nr_sl_pssch_pdu.harq_pid, phy_data->nr_sl_pssch_pdu.rv_index,
             phy_data->nr_sl_pssch_pdu.ndi);
     }
 
-    // episys SL PSFCH port (Stage 2 PHY RX): decode HARQ ACK/NACK feedback on this slot's PSFCH resources.
-    // phy_data->psfch_pdu_list is populated by the MAC HARQ scheduler (Stages 3-4); until then
-    // num_psfch_pdus is 0 so this loop is dormant. The decoded ack_nack_rcvd[] is consumed at Stage 3.
+    /* On a CSI-RS RX slot, measure the CSI-RS resources the MAC configured (in
+       phy_data->sl_csirs_vars[]). FEP the CSI-RS OFDM symbol explicitly so the measurement is
+       correct even when the PSSCH itself was skipped (DTX / !valid_pssch). This call only reads;
+       it does not affect the SLSCH decode above. */
+    if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS && phy_data->num_sl_csirs) {
+      for (int c = 0; c < phy_data->num_sl_csirs; c++) {
+        if (phy_data->sl_csirs_vars[c].active)
+          nr_slot_fep(ue, fp, proc->nr_slot_rx, phy_data->sl_csirs_vars[c].csirs_config_pdu.symb_l0,
+                      rxdataF, link_type_sl, 0, sl_rxdata);
+      }
+      nr_ue_sl_csi_rs_procedures(ue, proc, rxdataF, phy_data);
+    }
+
+    /* Decode HARQ ACK/NACK feedback on this slot's PSFCH resources. psfch_pdu_list is populated by the
+       MAC HARQ scheduler; num_psfch_pdus is 0 otherwise, so this loop is dormant. */
     if (phy_data->sl_rx_action == SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH && phy_data->num_psfch_pdus) {
       int8_t *ack_nack_rcvd = calloc(phy_data->num_psfch_pdus, sizeof(*ack_nack_rcvd));
-      LOG_D(NR_PHY, "%d.%d PSFCH RX: num_psfch_pdus %d\n", frame_rx, nr_slot_rx, phy_data->num_psfch_pdus);
       for (int k = 0; k < phy_data->num_psfch_pdus; k++) {
         sl_nr_tx_rx_config_psfch_pdu_t *psfch_pdu = &phy_data->psfch_pdu_list[k];
         // OFDM front-end for the PSFCH symbol(s) (PUCCH-format-0 layout). Guard the symbol index — a bad
@@ -386,11 +420,9 @@ int psbch_pscch_pssch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *pr
           nr_slot_fep(ue, fp, proc->nr_slot_rx, sym, rxdataF, link_type_sl, 0, sl_rxdata);
         ack_nack_rcvd[k] = nr_ue_decode_psfch0(ue, frame_rx, nr_slot_rx, rxdataF, psfch_pdu);
         sl_phy_params->psfch.num_psfch_rx++;
-        LOG_D(NR_PHY, "%d.%d PSFCH[%d] HARQ %s\n", frame_rx, nr_slot_rx, k,
-              ack_nack_rcvd[k] == 0 ? "ACK" : "NACK");
       }
-      // episys SL PSFCH port (Stage 4d): deliver the decoded ACK/NACK to the MAC (handle_nr_ue_sl_harq)
-      // via an SLSCH_PSFCH rx indication. sl_indication is synchronous, so free after it returns.
+      /* Deliver the decoded ACK/NACK to the MAC (handle_nr_ue_sl_harq) via an SLSCH_PSFCH rx indication.
+         sl_indication is synchronous, so free after it returns. */
       sl_nr_rx_indication_t rx_ind = {0};
       rx_ind.sfn = frame_rx;
       rx_ind.slot = nr_slot_rx;
@@ -440,8 +472,13 @@ void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc
     tx_action = 1;
   }
   // episys SL data-plane port: PSCCH+PSSCH transmit. PSCCH (SCI-1) is encoded UE-native (nr_generate_sci1).
-  else if (phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH) {
-    LOG_D(NR_PHY, "(%d.%d) Sidelink TX PSCCH(+PSSCH)\n", frame_tx, slot_tx);
+  /* The CSI-RS action is a PSCCH+PSSCH slot that additionally carries a CSI-RS resource; the
+     PSCCH/PSSCH TX is identical (the SLSCH RE map already punctured the CSI-RS REs and
+     de-rate-matched G, gated on sl_tx_action), then nr_generate_csi_rs_sl places the symbols. */
+  else if (phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH
+           || phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS) {
+    LOG_D(NR_PHY, "(%d.%d) Sidelink TX PSCCH(+PSSCH)%s\n", frame_tx, slot_tx,
+          phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS ? "+CSI-RS" : "");
     /* PSCCH SCI-1 (PC5). nr_generate_sci1 writes the PSCCH and returns its CRC; per 38.211 8.3.1.1 the low
      * 16 bits are the PSSCH DMRS / SLSCH / SCI-2 scrambling Nid.
      *
@@ -457,17 +494,22 @@ void phy_procedures_nrUE_SL_TX(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc
     phy_data->pscch_Nid = sci1_crc & 0xFFFF;
     // PSSCH data: SLSCH encode + SCI-2 polar encode + PSSCH DMRS + SL RE map (SCI-1 REs already written above).
     nr_ue_slsch_procedures(ue, frame_tx, slot_tx, phy_data, txdataF);
+    /* CSI-RS (if this is the CSI-RS action): scramble by the same Nid the SLSCH/PSSCH use, so the
+       receiver's regenerated reference (csi_rx.c uses phy_data->nr_sl_pssch_sci_pdu.Nid) matches. */
+    if (phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS) {
+      nr_generate_csi_rs_sl(ue, txdataF, fp, slot_tx, phy_data->pscch_Nid % (1 << 10),
+                            &phy_data->nr_sl_pssch_pscch_pdu.nr_sl_csi_rs_pdu);
+    }
     tx_action = 1;
   }
-  // episys SL PSFCH port: standalone PSFCH TX action (no PSSCH data this slot). Generation is done by the
-  // common block below (shared with the MUXED case where PSFCH rides a TX_PSCCH_PSSCH slot's last symbol).
+  /* Standalone PSFCH TX action (no PSSCH data this slot); generation is done by the common block below
+     (shared with the muxed case where PSFCH rides a TX_PSCCH_PSSCH slot's last symbol). */
   else if (phy_data->sl_tx_action == SL_NR_CONFIG_TYPE_TX_PSFCH) {
     LOG_D(NR_PHY, "(%d.%d) Sidelink standalone TX PSFCH: %d pdu(s)\n", frame_tx, slot_tx, phy_data->num_psfch_pdus);
   }
 
-  // episys SL PSFCH port (Stage 1/4c PHY TX): generate HARQ-feedback PSFCH(s) on PC5. Runs for BOTH the
-  // standalone TX_PSFCH action and the MUXED TX_PSCCH_PSSCH slot (PSFCH in the last symbol, no data
-  // preemption). nr_generate_psfch0 writes each PSFCH (PUCCH-format-0 sequence) onto the SL grid.
+  /* Generate HARQ-feedback PSFCH(s): runs for both the standalone TX_PSFCH action and the muxed
+     TX_PSCCH_PSSCH slot (PSFCH in the last symbol, no data preemption). */
   if (phy_data->num_psfch_pdus && phy_data->psfch_pdu_list) {
     for (int k = 0; k < phy_data->num_psfch_pdus; k++)
       nr_generate_psfch0(ue, txdataF, fp, AMP, slot_tx, &phy_data->psfch_pdu_list[k]);

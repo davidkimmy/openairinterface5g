@@ -115,6 +115,9 @@ typedef struct SL_NR_UE_PSSCH {
   int16_t rsrp_dBm_per_RE;
   // STATS - CRC Errors observed during PSSCH reception (per HARQ round)
   uint32_t rx_errors[8];
+  /* STATS - PSSCH expected but energy below pssch_thres, dropped before decode (DTX).
+     Separate from rx_errors, which only counts TBs that reached the LDPC decoder. */
+  uint32_t rx_dtx;
   // STATS - CRC Errors observed during PSSCH SCI2 reception
   uint32_t rx_sci2_errors;
   // STATS - Receptions with CRC OK

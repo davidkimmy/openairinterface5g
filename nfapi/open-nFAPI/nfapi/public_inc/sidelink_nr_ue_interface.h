@@ -48,6 +48,7 @@ typedef enum sl_nr_rx_config_type_enum {
   SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH,
   SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_PSFCH,  // episys SL data-plane port: PSSCH+SLSCH with PSFCH feedback
   SL_NR_CONFIG_TYPE_RX_PSFCH,
+  SL_NR_CONFIG_TYPE_RX_PSSCH_SLSCH_CSI_RS,  // episys SL data-plane port: PSSCH+SLSCH with CSI-RS measurement
   SL_NR_CONFIG_TYPE_RX_MAXIMUM
 } sl_nr_rx_config_type_enum_t;
 
@@ -56,6 +57,7 @@ typedef enum sl_nr_tx_config_type_enum {
   SL_NR_CONFIG_TYPE_TX_PSBCH = SL_NR_CONFIG_TYPE_RX_MAXIMUM + 1,
   SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH,
   SL_NR_CONFIG_TYPE_TX_PSFCH,
+  SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS,  // episys SL data-plane port: PSSCH+PSCCH carrying CSI-RS
   SL_NR_CONFIG_TYPE_TX_MAXIMUM
 } sl_nr_tx_config_type_enum_t;
 
@@ -209,6 +211,37 @@ typedef struct sl_nr_rx_config_pssch_pdu {
   uint8_t ndi;
 } sl_nr_rx_config_pssch_pdu_t;
 
+/* csi_type values [3GPP TS 38.211, sec 7.4.1.5] shared by the SL and Uu CSI-RS PDUs. */
+#define NR_CSI_RS_TYPE_ZP  2  // Zero-Power CSI-RS (REs muted by the SLSCH puncture; nothing transmitted)
+
+/* measurement_bitmap bit positions (OAI nFAPI convention, shared with the Uu interface). */
+#define NR_CSI_MEAS_RSRP_BIT 0
+#define NR_CSI_MEAS_RI_BIT   1
+#define NR_CSI_MEAS_LI_BIT   2
+#define NR_CSI_MEAS_PMI_BIT  3
+#define NR_CSI_MEAS_CQI_BIT  4
+#define NR_CSI_MEAS_I1_BIT   5
+
+/* ---- episys SL data-plane port: CSI-RS resource config PDU (mirrors nfapi_nr_dl_tti_csi_rs_pdu_rel15_t) ----
+ * Defined here (ahead of the RX/TX config request structs) because those embed it by value. */
+typedef struct sl_nr_tti_csi_rs_pdu {
+  uint8_t subcarrier_spacing;       // subcarrierSpacing [3GPP TS 38.211, sec 4.2], Value:0->4
+  uint8_t cyclic_prefix;            // Cyclic prefix type [3GPP TS 38.211, sec 4.2], 0: Normal; 1: Extended
+  uint16_t start_rb;                // PRB where this CSI resource starts related to common resource block #0 (CRB#0). Only multiples of 4 are allowed. [3GPP TS 38.331, sec 6.3.2 parameter CSIFrequencyOccupation], Value: 0 ->274
+  uint16_t nr_of_rbs;               // Number of PRBs across which this CSI resource spans. Only multiples of 4 are allowed. [3GPP TS 38.331, sec 6.3.2 parameter CSI-FrequencyOccupation], Value: 24 -> 276
+  uint8_t csi_type;                 // CSI Type [3GPP TS 38.211, sec 7.4.1.5], Value: 0:TRS; 1:CSI-RS NZP; 2:CSI-RS ZP
+  uint8_t row;                      // Row entry into the CSI Resource location table. [3GPP TS 38.211, sec 7.4.1.5.3 and table 7.4.1.5.3-1], Value: 1-18
+  uint16_t freq_domain;             // Bitmap defining the frequencyDomainAllocation [3GPP TS 38.211, sec 7.4.1.5.3] [3GPP TS 38.331 CSIResourceMapping], Value: Up to the 12 LSBs, actual size is determined by the Row parameter
+  uint8_t symb_l0;                  // The time domain location l0 and firstOFDMSymbolInTimeDomain [3GPP TS 38.211, sec 7.4.1.5.3], Value: 0->13
+  uint8_t symb_l1;                  // The time domain location l1 and firstOFDMSymbolInTimeDomain2 [3GPP TS 38.211, sec 7.4.1.5.3], Value: 2->12
+  uint8_t cdm_type;                 // The cdm-Type field [3GPP TS 38.211, sec 7.4.1.5.3 and table 7.4.1.5.3-1], Value: 0: noCDM; 1: fd-CDM2; 2: cdm4-FD2-TD2; 3: cdm8-FD2-TD4
+  uint8_t freq_density;             // The density field, p and comb offset (for dot5). [3GPP TS 38.211, sec 7.4.1.5.3 and table 7.4.1.5.3-1], Value: 0: dot5 (even RB); 1: dot5 (odd RB); 2: one; 3: three
+  uint16_t scramb_id;               // ScramblingID of the CSI-RS [3GPP TS 38.214, sec 5.2.2.3.1], Value: 0->1023
+  uint8_t power_control_offset;     // Ratio of PDSCH EPRE to NZP CSI-RSEPRE [3GPP TS 38.214, sec 5.2.2.3.1], Value: 0->23 representing -8 to 15 dB in 1dB steps; 255: L1 is configured with ProfileSSS
+  uint8_t power_control_offset_ss;  // Ratio of NZP CSI-RS EPRE to SSB/PBCH block EPRE [3GPP TS 38.214, sec 5.2.2.3.1], Values: 0: -3dB; 1: 0dB; 2: 3dB; 3: 6dB; 255: L1 is configured with ProfileSSS
+  uint8_t measurement_bitmap;       // NR_CSI_MEAS_*_BIT: bit0 RSRP, bit1 RI, bit2 LI, bit3 PMI, bit4 CQI, bit5 i1
+} sl_nr_tti_csi_rs_pdu_t;
+
 typedef struct {
   sl_nr_rx_config_type_enum_t pdu_type; // indicates the type of RX config request
   union {
@@ -216,6 +249,9 @@ typedef struct {
     sl_nr_rx_config_pssch_sci_pdu_t rx_sci2_config_pdu;
     sl_nr_rx_config_pssch_pdu_t rx_pssch_config_pdu;
   };
+  /* episys SL data-plane port: CSI-RS resource to measure on this RX slot (outside the union — coexists
+     with the PSSCH RX config). Copied into ue->sl_csirs_vars by fapi_nr_ue_l1.c. */
+  sl_nr_tti_csi_rs_pdu_t rx_csi_rs_config_pdu;
   // episys SL PSFCH port (Stage 4d): HARQ-feedback PSFCH resource(s) to decode this RX slot (outside the
   // union — coexists with the PSSCH RX config). Copied into nr_phy_data_t by fapi_nr_ue_l1.c.
   struct sl_nr_tx_rx_config_psfch_pdu *psfch_pdu_list;
@@ -307,6 +343,10 @@ typedef struct sl_nr_tx_config_pscch_pssch_pdu {
   // Struct tag used (incomplete type OK for a pointer); full def is sl_nr_tx_rx_config_psfch_pdu below.
   struct sl_nr_tx_rx_config_psfch_pdu *psfch_pdu_list;
   uint8_t num_psfch_pdus;
+
+  /* episys SL data-plane port: CSI-RS resource to generate on this TX slot (when the scheduled action is
+     SL_NR_CONFIG_TYPE_TX_PSCCH_PSSCH_CSI_RS). Carried MAC->PHY via the scheduled_response. */
+  sl_nr_tti_csi_rs_pdu_t nr_sl_csi_rs_pdu;
 
 } sl_nr_tx_config_pscch_pssch_pdu_t;
 

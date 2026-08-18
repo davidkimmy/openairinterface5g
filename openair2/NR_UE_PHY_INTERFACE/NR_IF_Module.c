@@ -574,7 +574,6 @@ void sl_nr_process_rx_ind(int ue_id,
             nr_mac_rlc_data_ind_sl_srb(mac->src_id, 1, sdu, mac_len);
           else
             nr_mac_rlc_data_ind_sl(mac->src_id, 1 /*SL DRB id*/, sdu, mac_len);
-          LOG_D(NR_MAC, "[UE%d] SL RX SLSCH sub-PDU lcid %d len %d\n", ue_id, rx_lcid, mac_len);
           p += mac_subheader_len + mac_len;
           remaining -= mac_subheader_len + mac_len;
         }
@@ -590,6 +589,17 @@ void sl_nr_process_rx_ind(int ue_id,
           psfch_period = *mac->sl_tx_res_pool->sl_PSFCH_Config_r16->choice.setup->sl_PSFCH_Period_r16;
         if (psfch_period && mac->sci_pdu_rx.harq_feedback)
           configure_psfch_params_tx(ue_id, mac, rx_ind, num_pdus - 1);
+      }
+      /* SL CSI report round-trip (RX side): if the peer requested CSI (csi_req=1) and its CSI-RS was
+       * measured, latch that measurement and schedule a CSI report MAC CE back on our next TX slot. */
+      {
+        NR_UE_MAC_INST_t *mac = get_mac_inst(ue_id);
+        sl_nr_slsch_pdu_t *slsch = &rx_ind->rx_indication_body[num_pdus - 1].rx_slsch_pdu;
+        if (slsch->ack_nack && mac->sci_pdu_rx.csi_req && mac->sl_info.list[0]) {
+          NR_SL_UE_sched_ctrl_t *sched_ctrl = &mac->sl_info.list[0]->UE_sched_ctrl;
+          set_csi_report_params(mac, sched_ctrl);
+          nr_ue_sl_csi_report_scheduling(mac, sched_ctrl, frame, slot);
+        }
       }
       break;
     }

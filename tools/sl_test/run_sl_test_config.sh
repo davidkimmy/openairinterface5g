@@ -45,12 +45,38 @@ RELAY_UE_USRP_SN_FOR_UU="340EA03"
 RELAY_UE_USRP_SN_FOR_SL="340EA3B"
 
 #############################################################
+# Sidelink TDD Configuration
+#############################################################
+# Preset token format: "DL<dl>UL<ul>SL<sl>" where dl+ul is the slots-per-period
+# (10 at SCS index 1) and sl is the usable sidelink slots per period (plumbed via
+# --sl-slots). Example: DL6UL4SL4 = 6 DL / 4 UL slots, 4 of the UL slots usable for SL.
+# Used when tdd_sweep_enable=0.
+tdd_config_default="DL6UL4SL4"
+
+# tdd_sweep_enable=1 sweeps the two mode preset arrays below index-by-index: pass i
+# applies tdd_configs_mode1[i] to SL Mode 1 (relay) / Uu tests and tdd_configs_mode2[i]
+# to SL Mode 2 (peer-to-peer) tests, so every test runs under a preset matched to its
+# mode. Each pass rewrites the sidelink .conf, validates the preset, and suffixes results
+# with _ul<ul>sl<sl>. =0 uses tdd_config_default with no suffix. Each entry is a
+# "DL<dl>UL<ul>SL<sl>" token, so any DL/UL split and usable-SL count works without
+# editing run_sl_test.sh. The two arrays are index-aligned; keep them the same length.
+tdd_sweep_enable=0
+#   Mode 1 (relay): usable SL slots < UL slots, leaving UL headroom for the relay's Uu uplink.
+tdd_configs_mode1=("DL2UL8SL6" "DL4UL6SL4")
+#   Mode 2 (peer-to-peer, no Uu): usable SL slots == UL slots, every UL slot to the SL pool.
+tdd_configs_mode2=("DL4UL6SL6" "DL6UL4SL4")
+
+#############################################################
 # Default Configuration Values
 #############################################################
 # These values are read from config files but can be overridden here
 # Leave empty to auto-detect from configuration files
 DEFAULT_CSI_ACQ=""        # Auto-detect from sl_sync_ref.conf if empty
 DEFAULT_PSFCH_PERIOD=""   # Auto-detect from sl_sync_ref.conf if empty
+
+# SL CSI-RS trigger mode. 1 = debug (periodic CSI-RS, clean PC5 link), 0 = production
+# (aperiodic NACK-driven, adds PC5 impairment). Written into sl_csi_mode of each SL/gNB config.
+SL_CSI_DEBUG=1
 
 #############################################################
 # Test Case Selection
@@ -220,6 +246,36 @@ pilot_tests=(
     #slmode1_iperf3_tests[2]
 )
 
+# vrtsim channel impairment on the PC5 (SL) nodes only; the gNB Uu link stays clean
+# (chanmod off) or the relay never syncs/registers. Chanmod turns on when a noise level is set
+# OR ploss != 0.
+#
+# NOISE uses the GLOBAL --channelmod.noise_power_dBFS (the only value vrtsim's AWGN path reads).
+# dBFS scale: value nearer 0 = LOUDER noise, more negative = quieter; empty = no AWGN (clean).
+# Start around -40 and move toward 0 to increase noise until you see PSSCH "RX not ok"/DTX and
+# aperiodic CSI-RS trigger; too loud collapses the RRC control plane and stalls registration.
+# (The old per-model noise_power_dB was a no-op: parsed but never applied, so every run decoded 100%.)
+vrtsim_sl_noise_power_dBFS=10
+vrtsim_sl_ploss_dB=0
+# Seconds of clean PC5 link before impairment engages (0 = immediate). Remote-UE registration/TUN
+# completes ~3.5 s of stream time on a healthy link; 8 s gives ~2x margin. Once elapsed, the noise
+# above degrades established data -> NACKs -> aperiodic CSI-RS -> CQI->MCS adaptation.
+vrtsim_sl_chanmod_warmup_sec=8
+
+# rfsimulator PC5 impairment for the FUNCTIONAL SL ping tests (separate simulator from vrtsim).
+# noise_power_dB scale (noise_per_sample = 10^(noise_power_dB/10)*256): nearer 0 = LOUDER, more negative
+# = quieter; empty = no AWGN. ploss_dB is straight path loss in dB; empty = none.
+#
+# IMPORTANT: on the RELAY UE these per-model knobs are NOT PC5-only. The relay's PC5 card wants channel
+# model rfsimu_channel_enB1, which does not exist, so rfsim falls back to rfsimu_channel_enB0 -- the SAME
+# model the Uu card uses (simulator.cpp addModule fallback). So modellist_rfsimu_1.[N].noise_power_dB
+# also hits the relay's Uu link. noise_power_dB=0 is MAX AWGN (~0 dB SNR): it drove the relay's Uu CSI-RS
+# SINR to ~0 dB, so it reported wideband CQI 0 and the gNB logged "invalid cqi_idx 0, default to MCS 9".
+# Keep noise_power_dB EMPTY for the functional ping baseline (Uu must stay clean for sync/registration).
+# WARNING: rfsim has NO warmup gate, so impairment engages from t=0 and can break sync/registration.
+rfsim_sl_noise_power_dB=-12
+rfsim_sl_ploss_dB=5
+
 verbose_config=0  # 0=quiet, 1=show config details before each test
 # Set to 1 if your system needs additional time for:
 #   - TUN interface initialization
@@ -250,7 +306,7 @@ if [[ $test_profile == "pilot" ]]; then
     enabled_tests=("${pilot_tests[@]}")
     num_repeat=1
     mcs_array=(9)
-    duration=45
+    duration=30
     iperf3_bw_array=(6M)
     group_specific_mcs["slmode1_iperf3_tests"]="9"
     group_specific_duration["slmode1_basic_tests"]=45

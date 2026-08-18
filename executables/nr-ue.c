@@ -1212,6 +1212,10 @@ void *UE_thread_sl(void *arg)
   UE->is_synchronized_sl = 0;
   int absolute_slot = 0, decoded_frame_rx = MAX_FRAME_NUMBER - 1, trashed_frames = 0;
   int initialSyncOffset = 0;
+  /* Steady-state SL RX timing tracking (mirrors the Uu UE_thread drift loop). On free-running radios
+     with no shared clock the sync-time estimate drifts; psbch_pscch_pssch_processing returns a residual
+     sample offset from the PSBCH channel estimate, carried here and applied at the next frame boundary. */
+  int shiftForNextFrame = 0;
   bool syncRunning = false, synced_in = false;
   openair0_timestamp_t sync_timestamp;
 
@@ -1318,7 +1322,15 @@ void *UE_thread_sl(void *arg)
     c16_t *rxp[fp->nb_antennas_rx];
     for (int i = 0; i < fp->nb_antennas_rx; i++)
       rxp[i] = &UE->common_vars.rxdata_sl[i][firstSymSamp + get_samples_slot_timestamp(fp, slot_nr)];
-    const int readBlockSize = get_readBlockSize(slot_nr, fp);
+    /* Apply the accumulated timing correction once per frame (last slot), shortening/lengthening the read so
+       the next frame re-aligns to the peer's OFDM grid. The SyncRef defines the PC5 timeline, so it never
+       adjusts. Consume-and-reset each frame (no max_pos_acc accumulator; the estimate is already absolute). */
+    int iq_shift_to_apply = 0;
+    if (!is_sync_ref && slot_nr == nb_slot_frame - 1) {
+      iq_shift_to_apply = shiftForNextFrame;
+      shiftForNextFrame = 0;
+    }
+    const int readBlockSize = get_readBlockSize(slot_nr, fp) - iq_shift_to_apply;
     openair0_timestamp_t rx_timestamp;
     int rd = nrue_ru_read_sl(UE, &rx_timestamp, (void **)rxp, readBlockSize, fp->nb_antennas_rx);
     AssertFatal(rd == readBlockSize, "");
@@ -1337,8 +1349,12 @@ void *UE_thread_sl(void *arg)
         nr_fill_sl_indication(&sl_ind, NULL, NULL, &proc, UE, &phy_data);
         UE->if_inst->sl_indication(&sl_ind);
       }
-      if (phy_data.sl_rx_action)
-        psbch_pscch_pssch_processing(UE, &proc, &phy_data);
+      if (phy_data.sl_rx_action) {
+        const int ret = psbch_pscch_pssch_processing(UE, &proc, &phy_data);
+        // INT_MAX = no PSBCH timing measurement this slot; only keep a real residual offset.
+        if (!is_sync_ref && ret != INT_MAX)
+          shiftForNextFrame = ret;
+      }
     }
 
     // SL TX. Do NOT apply the Uu N_TA_offset here: sidelink timing is independent of the gNB Uu timing
@@ -1349,7 +1365,7 @@ void *UE_thread_sl(void *arg)
     // (The Uu link keeps using N_TA_offset on card 0 / UE_thread; this only affects the PC5 card.)
     const openair0_timestamp_t writeTimestamp =
         rx_timestamp + get_samples_slot_duration(fp, slot_nr, duration_rx_to_tx) - firstSymSamp;
-    const int writeBlockSize = get_samples_per_slot(proc.nr_slot_tx, fp);
+    const int writeBlockSize = get_samples_per_slot(proc.nr_slot_tx, fp) - iq_shift_to_apply;
     c16_t *txp[fp->nb_antennas_tx];
     for (int i = 0; i < fp->nb_antennas_tx; i++)
       txp[i] = UE->common_vars.txData_sl[i] + get_samples_slot_timestamp(fp, proc.nr_slot_tx);
