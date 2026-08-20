@@ -16,7 +16,6 @@
 #include "intertask_interface.h"
 #include "rlc.h"
 #include "nr_sdap.h"
-#include <netinet/ip.h>
 #include "executables/softmodem-common.h"
 
 #define NO_SDAP_HEADER 0
@@ -93,19 +92,6 @@ void nr_pdcp_submit_sdap_ctrl_pdu(ue_id_t ue_id, int sdap_ctrl_pdu_drb, nr_sdap_
   return;
 }
 
-/* ip-demo == 1 (SL U2N relay DL routing): at the gNB, choose the DRB from the DL packet's DESTINATION
- * IP address rather than the QFI->DRB map. Traffic for the remote UE (IP ending in .100) is routed to
- * the relayed DRB (2 -> gNB SRAP -> PC5 -> remote); the relay UE's own traffic stays on DRB 1.
- * Ported from episys/sl-mode1-relay. Interim: the remote UE IP is assumed to end in .100. */
-static void update_drb_id(unsigned char *const sdu_buffer, int offset, int *drb_id)
-{
-  struct iphdr *ip = (struct iphdr *)&sdu_buffer[offset];
-  const unsigned char *bytes = (const unsigned char *)&ip->daddr;
-  int last_octet = bytes[3];
-  *drb_id = (last_octet == 100) ? 2 : 1;
-  LOG_D(SDAP, "ip-demo DL: dest IP last octet %d -> DRB %d\n", last_octet, *drb_id);
-}
-
 static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
                               protocol_ctxt_t *ctxt_p,
                               const srb_flag_t srb_flag,
@@ -135,38 +121,12 @@ static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
     LOG_W(SDAP, "Dropping TX SDAP SDU: no DRB mapping for QFI %u (pdu_session=%d)\n", qfi, entity->pdusession_id);
     return false;
   }
-  // non-const: the ip-demo SL-relay DL path (update_drb_id below) overrides the DRB from the dest IP.
-  int drb_id = map->drb_id;
+  const int drb_id = map->drb_id;
   const int drb_role = map->entity_role;
 
   sdap_ul_tx = drb_role & SDAP_UL_TX;
   sdap_dl_tx = drb_role & SDAP_DL_TX;
   LOG_D(SDAP, "TX - QFI: %u is mapped to DRB ID: %d\n", qfi, drb_id);
-
-  /* Effective QFI for SDAP-header/role selection. If this QFI has no direct mapping rule, qfi2drb_map
-   * fell back to the default DRB (e.g. a gNB DL packet the UPF marked with a QFI the RAN never
-   * configured — seen with a core whose N3 DL QFI marking differs from the SMF-signalled QFI). In that
-   * case inherit BOTH the SDAP-header config (entity_role) AND a peer-known QFI value from the default
-   * DRB's mapped QFI: otherwise the DL SDAP header would be omitted (role empty) or carry an unmapped
-   * QFI, and the receiver drops the packet as "unmapped QFI". */
-  uint8_t eff_qfi = qfi;
-  if (entity->qfi2drb_table[qfi].drb_id == 0) {
-    for (int q = 0; q < SDAP_MAX_QFI; q++) {
-      if (entity->qfi2drb_table[q].drb_id == drb_id) {
-        eff_qfi = q;
-        break;
-      }
-    }
-    LOG_D(SDAP, "TX - unmapped QFI %u -> default DRB %d; inheriting header/role from mapped QFI %u\n", qfi, drb_id, eff_qfi);
-  }
-  sdap_ul_tx = entity->qfi2drb_table[eff_qfi].entity_role & SDAP_UL_TX; // UE TX entity
-  sdap_dl_tx = entity->qfi2drb_table[eff_qfi].entity_role & SDAP_DL_TX; // gNB TX entity
-  LOG_D(SDAP, "TX - QFI: %u (eff %u) mapped to DRB ID: %d\n", qfi, eff_qfi, drb_id);
-
-  /* SL U2N relay DL: override the DRB from the destination IP (ip-demo=1). offset is 0 here — the raw
-   * IP packet from the core, before any SDAP header is prepended. */
-  if (ctxt_p->enb_flag && get_softmodem_params()->ip_demo)
-    update_drb_id(sdu_buffer, offset, &drb_id);
 
   /* SL U2N relay (gNB): the relay-specific DRB (drb_id > 1) carries the remote UE's relayed DL, which
    * must be raw IP with NO SDAP header — the remote's SL DRB is headerless (sl-SDAP-Header absent), so an
@@ -231,7 +191,7 @@ static bool nr_sdap_tx_entity(nr_sdap_entity_t *entity,
      * Construct the DL SDAP data PDU.
      */
     nr_sdap_dl_hdr_t sdap_hdr;
-    sdap_hdr.QFI = eff_qfi; // peer-known QFI (falls back to the default DRB's QFI for unmapped QFIs)
+    sdap_hdr.QFI = hdr_qfi;
     sdap_hdr.RQI = rqi;
     sdap_hdr.RDI = 0; // SDAP Hardcoded Value
     /* Add the SDAP DL Header to the buffer */
